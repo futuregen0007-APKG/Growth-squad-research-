@@ -14,6 +14,8 @@ import AIInsightCard from "@/components/widgets/AIInsightCard";
 import SectorHeatmap from "@/components/widgets/SectorHeatmap";
 import StockTable from "@/components/widgets/StockTable";
 import ResearchCard from "@/components/widgets/ResearchCard";
+import MarketSentiment from "@/components/widgets/MarketSentiment";
+import EarningsSnapshot from "@/components/widgets/EarningsSnapshot";
 import {
   INDICES,
   AI_INSIGHTS,
@@ -52,20 +54,35 @@ export default function Dashboard() {
       {/* Page Heading */}
       <div className="flex items-end justify-between flex-wrap gap-3">
         <div>
-          <div className="gs-label">Indian Equity Markets</div>
-          <h1 className="font-display text-3xl sm:text-4xl font-bold text-gs-text mt-1">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="gs-label">// Live Workspace</span>
+            <span className="text-gs-textDim/40">·</span>
+            <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-gs-pos font-semibold">
+              <span className="w-1.5 h-1.5 rounded-full bg-gs-pos animate-pulse-dot" />
+              Market Open
+            </span>
+            <span className="text-gs-textDim/40">·</span>
+            <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-gs-textDim">
+              Closes 15:30 IST
+            </span>
+          </div>
+          <h1 className="font-display text-3xl sm:text-4xl font-bold text-gs-text mt-2">
             Market Pulse
           </h1>
           <p className="text-sm text-gs-textMuted mt-1">
             Live institutional view of Nifty, sectors, AI signals and capital flows.
           </p>
         </div>
-        <div className="flex items-center gap-2 text-[11px] font-mono text-gs-textDim">
-          <span className="px-2 py-1 bg-gs-panel border border-gs-border rounded-sm">
-            DATA · 15 min delay
-          </span>
+        <div className="flex items-center gap-2 text-[10.5px] font-mono text-gs-textDim flex-wrap">
           <span className="px-2 py-1 bg-gs-panel border border-gs-border rounded-sm">
             FY26 · Q3
+          </span>
+          <span className="px-2 py-1 bg-gs-panel border border-gs-border rounded-sm">
+            NSE · BSE · 15-min delay
+          </span>
+          <span className="px-2 py-1 bg-gs-goldMuted border border-gs-gold/30 text-gs-gold rounded-sm flex items-center gap-1.5">
+            <Sparkles className="w-3 h-3" />
+            AI Synced · 13:42 IST
           </span>
         </div>
       </div>
@@ -76,6 +93,9 @@ export default function Dashboard() {
           <KPITile key={idx.symbol} {...idx} />
         ))}
       </div>
+
+      {/* Market Sentiment row */}
+      <MarketSentiment />
 
       {/* Main Grid */}
       <div className="grid grid-cols-12 gap-4">
@@ -264,6 +284,9 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Earnings Snapshot strip */}
+      <EarningsSnapshot />
 
       {/* Research feed + News */}
       <div className="grid grid-cols-12 gap-4">

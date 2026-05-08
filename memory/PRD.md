@@ -27,6 +27,14 @@ Build the foundational architecture and premium institutional UI system for **Gr
 - All data mock; no backend, no auth
 
 ## What's Been Implemented (May 2026)
+### v1.2 — Dashboard Polish (current iteration)
+- ✅ **Enhanced KPITile**: intraday Low/High range bar with glowing current-position marker; subtle radial accent on positive/negative; tighter typography rhythm
+- ✅ **NEW MarketSentiment widget** — 3-tile row: (1) Market Breadth A/D ratio with 3-color stacked bar + 52W highs/lows, (2) AI Sentiment Index gauge (0–100) with gradient meter and PCR/VIX/Bull-Bear stats, (3) Institutional FII/DII flows with 1D/5D/1M cuts
+- ✅ **NEW EarningsSnapshot strip** on dashboard — 4 upcoming Indian prints as compact cards with date pills, EPS/revenue estimates and AI 'what to watch' commentary
+- ✅ **Refined Dashboard header** — "// Live Workspace · ● Market Open · Closes 15:30 IST" eyebrow row + gold-pilled "AI Synced 13:42 IST" status badge
+- ✅ Mock data extended: `MARKET_BREADTH`, `SENTIMENT`, `INSTITUTIONAL_FLOWS`
+- ✅ All changes additive — no routing or component-API breakage; lint clean
+
 ### v1.1 — Landing Page Extension (current iteration)
 - ✅ **Routing change:** `/` now renders new premium Landing page (no Sidebar). `/dashboard` and all app routes preserved inside `Layout` — zero breakage.
 - ✅ **14-section landing page** composed at `/app/frontend/src/pages/Landing.jsx`:

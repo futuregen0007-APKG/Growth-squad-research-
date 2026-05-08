@@ -485,3 +485,29 @@ export const NEWS_FEED = [
     tickers: [],
   },
 ];
+
+export const MARKET_BREADTH = {
+  advances: 1532,
+  declines: 821,
+  unchanged: 84,
+  newHighs: 142,
+  newLows: 38,
+  exchange: "NSE",
+};
+
+export const SENTIMENT = {
+  fgScore: 64,
+  fgLabel: "Greed",
+  bullPct: 62,
+  bearPct: 38,
+  putCallRatio: 0.84,
+  vixDirection: "cooling",
+  niftyOiBias: "Long",
+  bankNiftyOiBias: "Neutral",
+};
+
+export const INSTITUTIONAL_FLOWS = {
+  asOf: "5 Feb",
+  fii: { "1D": 1248, "5D": 4380, "1M": 18420 },
+  dii: { "1D": 980, "5D": 3720, "1M": 24180 },
+};
