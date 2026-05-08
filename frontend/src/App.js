@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
 
 import Layout from "@/components/layout/Layout";
+import Landing from "@/pages/Landing";
 import Dashboard from "@/pages/Dashboard";
 import Watchlist from "@/pages/Watchlist";
 import SectorIntelligence from "@/pages/SectorIntelligence";
@@ -15,16 +16,16 @@ function App() {
     <div className="App min-h-screen bg-gs-bg text-gs-text">
       <BrowserRouter>
         <Routes>
+          <Route path="/" element={<Landing />} />
           <Route element={<Layout />}>
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/watchlist" element={<Watchlist />} />
             <Route path="/sectors" element={<SectorIntelligence />} />
             <Route path="/earnings" element={<EarningsIntelligence />} />
             <Route path="/ai-research" element={<AIResearch />} />
             <Route path="/stock/:ticker" element={<StockDetail />} />
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
       <Toaster

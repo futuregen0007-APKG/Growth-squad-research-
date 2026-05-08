@@ -27,7 +27,29 @@ Build the foundational architecture and premium institutional UI system for **Gr
 - All data mock; no backend, no auth
 
 ## What's Been Implemented (May 2026)
-### v1.0 — Foundation MVP (this iteration)
+### v1.1 — Landing Page Extension (current iteration)
+- ✅ **Routing change:** `/` now renders new premium Landing page (no Sidebar). `/dashboard` and all app routes preserved inside `Layout` — zero breakage.
+- ✅ **14-section landing page** composed at `/app/frontend/src/pages/Landing.jsx`:
+  1. Sticky LandingNav (glass blur on scroll, anchor links + Launch Terminal CTA + mobile drawer)
+  2. Hero (headline, subhead, dual CTA, dashboard preview frame with live KPI tiles + AI insight, social proof)
+  3. Market Intelligence stats strip (5,200+ stocks · 1.2M filings · 7 sectors · 24/7 AI)
+  4. Dashboard Showcase (Bloomberg-style mock terminal with full KPI grid + heatmap + movers)
+  5. Features Grid (8 capability cards with iconography & accent stripes)
+  6. AI Workflow (3-stage pipeline: Ingest · Reason · Deliver with source tags)
+  7. Sector Showcase (7 Indian sector cards with sparklines, market cap, leaders)
+  8. Earnings Preview (live calendar mock + post-print AI lens)
+  9. AI Assistant Preview (chat-style mockup with formatted markdown reply)
+  10. Why GrowthSquad (8-row comparison table vs generic stock apps)
+  11. Institutional Benefits (6 persona cards: Analysts, Researchers, PMs, Students, Citations, Indian Hours)
+  12. Testimonials (3 placeholder Indian-analyst quotes with monogram avatars)
+  13. CTA Banner (final conversion CTA with gold wash)
+  14. Premium Footer (4 link columns, social icons, SEBI compliance, disclaimer)
+- ✅ Reused existing widgets: KPITile, AIInsightCard, SectorHeatmap, Sparkline, BrandLogo
+- ✅ Deep section linking via anchors (#dashboard-showcase, #ai-workflow, #sector-showcase, #earnings-preview, #why-growthsquad)
+- ✅ Full data-testid coverage on all interactive landing elements
+- ✅ Fully responsive (mobile drawer, single-col stack at <lg)
+
+### v1.0 — Foundation MVP
 - ✅ Tailwind theme + custom palette (`gs-*` tokens)
 - ✅ Fonts loaded from Fontshare + Google Fonts
 - ✅ GS monogram brand logo (CSS-only, gold accents, corner ticks)
