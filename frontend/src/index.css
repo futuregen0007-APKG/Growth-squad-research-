@@ -45,6 +45,33 @@
   * {
     @apply border-border;
   }
+
+  /* Premium keyboard focus ring */
+  *:focus {
+    outline: none;
+  }
+  *:focus-visible {
+    outline: 2px solid rgba(212, 175, 55, 0.55);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  /* Smoother default transitions on interactive elements */
+  button,
+  a,
+  [role="button"],
+  input,
+  textarea,
+  select {
+    transition:
+      color 160ms ease,
+      background-color 160ms ease,
+      border-color 160ms ease,
+      opacity 160ms ease,
+      transform 160ms ease,
+      box-shadow 160ms ease;
+  }
+
   html,
   body {
     @apply bg-gs-bg text-gs-text;
@@ -52,6 +79,7 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     font-feature-settings: "ss01", "cv11";
+    overflow-x: hidden;
   }
   body {
     margin: 0;
@@ -85,14 +113,17 @@
   ::-webkit-scrollbar-thumb {
     background: #1e222a;
     border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: content-box;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #2a2f39;
+    background: #2f3640;
+    background-clip: content-box;
   }
 
   /* Selection */
   ::selection {
-    background: rgba(212, 175, 55, 0.3);
+    background: rgba(212, 175, 55, 0.32);
     color: #fff;
   }
 }
@@ -117,6 +148,100 @@
       linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
     background-size: 24px 24px;
   }
+
+  /* === New polish utilities === */
+
+  /* Section eyebrow / page header sub-tag */
+  .gs-eyebrow {
+    @apply font-mono text-[10px] uppercase tracking-[0.18em] text-gs-textDim font-semibold;
+  }
+
+  /* Buttons */
+  .gs-btn-primary {
+    @apply inline-flex items-center gap-1.5 bg-gs-gold text-gs-bg font-semibold text-[12.5px] px-4 py-2 rounded-sm hover:bg-gs-gold/90 active:scale-[0.98];
+  }
+  .gs-btn-outline {
+    @apply inline-flex items-center gap-1.5 bg-gs-card border border-gs-border text-gs-text font-medium text-[12.5px] px-4 py-2 rounded-sm hover:border-gs-gold/40 active:scale-[0.98];
+  }
+  .gs-btn-ghost {
+    @apply inline-flex items-center gap-1 font-mono text-[10.5px] uppercase tracking-wider text-gs-textDim hover:text-gs-gold;
+  }
+
+  /* Pills */
+  .gs-pill {
+    @apply inline-flex items-center gap-1.5 px-2 py-1 bg-gs-panel border border-gs-border rounded-sm font-mono text-[10px] uppercase tracking-wider text-gs-textDim;
+  }
+  .gs-pill-gold {
+    @apply inline-flex items-center gap-1.5 px-2 py-1 bg-gs-goldMuted border border-gs-gold/30 text-gs-gold rounded-sm font-mono text-[10px] uppercase tracking-wider;
+  }
+  .gs-pill-pos {
+    @apply inline-flex items-center gap-1.5 px-2 py-1 bg-gs-posBg border border-gs-pos/30 text-gs-pos rounded-sm font-mono text-[10px] uppercase tracking-wider;
+  }
+
+  /* Card hover modifier — opt-in, prevents non-interactive cards from animating */
+  .gs-card-hover {
+    @apply transition-[background-color,border-color,box-shadow] duration-200;
+  }
+  .gs-card-hover:hover {
+    background-color: #171a21;
+    border-color: rgba(148, 163, 184, 0.18);
+  }
+
+  /* Stagger entrance — apply to grid containers */
+  .gs-stagger > * {
+    opacity: 0;
+    animation: fade-up 0.4s ease-out forwards;
+  }
+  .gs-stagger > *:nth-child(1) { animation-delay: 0.04s; }
+  .gs-stagger > *:nth-child(2) { animation-delay: 0.08s; }
+  .gs-stagger > *:nth-child(3) { animation-delay: 0.12s; }
+  .gs-stagger > *:nth-child(4) { animation-delay: 0.16s; }
+  .gs-stagger > *:nth-child(5) { animation-delay: 0.20s; }
+  .gs-stagger > *:nth-child(6) { animation-delay: 0.24s; }
+  .gs-stagger > *:nth-child(7) { animation-delay: 0.28s; }
+  .gs-stagger > *:nth-child(8) { animation-delay: 0.32s; }
+
+  /* Card 'group' hover gold edge — for highlighting selectable cards */
+  .gs-edge-gold {
+    position: relative;
+  }
+  .gs-edge-gold::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 1px solid transparent;
+    border-radius: inherit;
+    pointer-events: none;
+    transition: border-color 200ms ease;
+  }
+  .group:hover .gs-edge-gold::before {
+    border-color: rgba(212, 175, 55, 0.35);
+  }
+
+  /* Soft top divider for sections */
+  .gs-section-divider {
+    @apply h-px w-full;
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(30, 34, 42, 1) 8%,
+      rgba(30, 34, 42, 1) 92%,
+      transparent 100%
+    );
+  }
+
+  /* Quiet (muted) link */
+  .gs-link-muted {
+    @apply text-gs-textMuted hover:text-gs-gold;
+  }
+
+  /* Premium loading dots — for chat / async UX */
+  .gs-typing > span {
+    @apply inline-block w-1.5 h-1.5 rounded-full bg-gs-gold mx-0.5;
+    animation: pulse-dot 1.6s ease-in-out infinite;
+  }
+  .gs-typing > span:nth-child(2) { animation-delay: 0.2s; }
+  .gs-typing > span:nth-child(3) { animation-delay: 0.4s; }
 }
 
 @layer base {

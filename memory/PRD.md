@@ -27,6 +27,21 @@ Build the foundational architecture and premium institutional UI system for **Gr
 - All data mock; no backend, no auth
 
 ## What's Been Implemented (May 2026)
+### v1.4 — Premium UI Polish Pass (current iteration)
+- ✅ **Global a11y focus ring** — gold 2px outline on `:focus-visible` for all interactive elements (premium + accessible)
+- ✅ **Smoother default transitions** on `button`, `a`, `[role="button"]`, `input`, `textarea`, `select` (160ms ease)
+- ✅ **Refined scrollbar** — 8px with rounded inner thumb on hover
+- ✅ **Tighter selection color** (32% gold)
+- ✅ **Mobile overflow guard** — `overflow-x: hidden` on body to prevent horizontal scroll
+- ✅ **NEW utility classes** in `index.css`:
+  - Buttons: `.gs-btn-primary`, `.gs-btn-outline`, `.gs-btn-ghost` (with active scale-down on press)
+  - Pills: `.gs-pill`, `.gs-pill-gold`, `.gs-pill-pos`
+  - Card variants: `.gs-card-hover`, `.gs-edge-gold` (group-hover gold edge)
+  - Layout: `.gs-eyebrow`, `.gs-section-divider`, `.gs-link-muted`
+  - Animations: `.gs-stagger > *` (8-step staggered entrance), `.gs-typing > span` (animated chat dots)
+- ✅ **Staggered grid entrance** applied to: Dashboard KPI grid, Landing FeaturesGrid, Landing SectorShowcase
+- ✅ Lint clean, frontend compiles, no per-component refactor needed
+
 ### v1.3 — Company Research + AI Assistant Enhancement (current iteration)
 - ✅ **StockDetail.jsx — fully institutional research view** (substantial rewrite). New sections include:
   - Header with verdict pill (BUY/HOLD/SELL) + price + target with upside

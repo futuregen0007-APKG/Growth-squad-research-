@@ -88,7 +88,7 @@ export default function Dashboard() {
       </div>
 
       {/* Indices KPI grid */}
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 gs-stagger">
         {INDICES.map((idx) => (
           <KPITile key={idx.symbol} {...idx} />
         ))}
