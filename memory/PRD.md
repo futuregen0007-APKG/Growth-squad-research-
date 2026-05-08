@@ -27,6 +27,14 @@ Build the foundational architecture and premium institutional UI system for **Gr
 - All data mock; no backend, no auth
 
 ## What's Been Implemented (May 2026)
+### v1.5 — Premium Polish · Typography & Depth (current iteration)
+- ✅ **Typography swap** — IBM Plex Sans → **Satoshi** (Fontshare premium). Pairs with Cabinet Grotesk display for a distinctly Linear/Vercel-tier institutional feel. Auto-cascades across every component.
+- ✅ **Multi-layer card depth** — `.gs-card` now has `inset 1px highlight + outer 1–2px shadow`. Two new variants: `.gs-card-elevated` (deeper outer shadow) and `.gs-card-glow-gold` (gold glow ring + soft halo)
+- ✅ **Subtle film grain** — fixed SVG noise overlay at 3.5% opacity with `mix-blend-mode: overlay` for filmic depth
+- ✅ **Premium hover lift** — `.gs-card-hover` now adds `translateY(-1px)` + deeper shadow on hover
+- ✅ **Stronger numerics** — `font-feature-settings: ss01, ss02, cv01, cv11, tnum` for cleaner tabular numerals throughout
+- ✅ **Gold-glow applied** to AIInsightCard, RatingPanel, MarketSentiment AI Sentiment Index — the three most institutionally important AI accent components
+
 ### v1.4 — Premium UI Polish Pass (current iteration)
 - ✅ **Global a11y focus ring** — gold 2px outline on `:focus-visible` for all interactive elements (premium + accessible)
 - ✅ **Smoother default transitions** on `button`, `a`, `[role="button"]`, `input`, `textarea`, `select` (160ms ease)

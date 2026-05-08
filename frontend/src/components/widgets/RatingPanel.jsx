@@ -28,7 +28,7 @@ export default function RatingPanel({ rating, currentPrice }) {
 
   return (
     <div
-      className="gs-card p-5 border-l-2 border-l-gs-gold relative overflow-hidden"
+      className="gs-card gs-card-glow-gold p-5 border-l-2 border-l-gs-gold relative overflow-hidden"
       data-testid="rating-panel"
     >
       <span

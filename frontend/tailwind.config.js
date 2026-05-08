@@ -6,7 +6,7 @@ module.exports = {
     extend: {
       fontFamily: {
         display: ['"Cabinet Grotesk"', "system-ui", "sans-serif"],
-        sans: ['"IBM Plex Sans"', "system-ui", "sans-serif"],
+        sans: ['"Satoshi"', '"Cabinet Grotesk"', "system-ui", "sans-serif"],
         mono: ['"JetBrains Mono"', "ui-monospace", "monospace"],
       },
       borderRadius: {

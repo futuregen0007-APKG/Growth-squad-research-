@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 export default function AIInsightCard({ insight, onOpen }) {
   return (
     <div
-      className="relative gs-card p-5 border-l-2 border-l-gs-gold hover:bg-gs-cardHover transition-colors cursor-pointer group"
+      className="relative gs-card gs-card-glow-gold p-5 border-l-2 border-l-gs-gold hover:bg-gs-cardHover transition-colors cursor-pointer group"
       onClick={() => onOpen?.(insight)}
       data-testid={`ai-insight-${insight.id}`}
     >

@@ -1,5 +1,5 @@
-@import url("https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@500,700,800&display=swap");
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap");
+@import url("https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@500,700,800&f[]=satoshi@300,400,500,700,900&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap");
 
 @tailwind base;
 @tailwind components;
@@ -75,17 +75,31 @@
   html,
   body {
     @apply bg-gs-bg text-gs-text;
-    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    font-family: "Satoshi", "Cabinet Grotesk", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    font-feature-settings: "ss01", "cv11";
+    font-feature-settings: "ss01", "ss02", "cv01", "cv11", "tnum";
     overflow-x: hidden;
   }
   body {
     margin: 0;
+    background-color: #060709;
     background-image:
-      radial-gradient(1200px circle at 0% 0%, rgba(212, 175, 55, 0.04), transparent 40%),
-      radial-gradient(1000px circle at 100% 100%, rgba(37, 99, 235, 0.04), transparent 50%);
+      radial-gradient(1200px circle at 0% 0%, rgba(212, 175, 55, 0.045), transparent 40%),
+      radial-gradient(1000px circle at 100% 100%, rgba(37, 99, 235, 0.05), transparent 50%);
+    background-attachment: fixed;
+    position: relative;
+  }
+  /* Subtle film grain — adds filmic depth without heavy compute */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1000;
+    background-image: url("data:image/svg+xml;utf8,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.92' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+    opacity: 0.035;
+    mix-blend-mode: overlay;
   }
   h1,
   h2,
@@ -134,7 +148,27 @@
     @apply text-[10px] uppercase tracking-[0.18em] text-gs-textDim font-semibold;
   }
   .gs-card {
-    @apply bg-gs-card border border-gs-border rounded-sm shadow-inset-hi;
+    @apply bg-gs-card border border-gs-border rounded-sm;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.045),
+      0 1px 2px rgba(0, 0, 0, 0.35);
+  }
+
+  /* Elevated variant — for hero callouts & primary AI cards */
+  .gs-card-elevated {
+    @apply bg-gs-card border border-gs-border rounded-sm;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 8px 32px rgba(0, 0, 0, 0.4),
+      0 1px 2px rgba(0, 0, 0, 0.5);
+  }
+
+  /* Gold glow ring — for institutional / AI accent cards */
+  .gs-card-glow-gold {
+    box-shadow:
+      inset 0 1px 0 rgba(212, 175, 55, 0.10),
+      0 0 24px rgba(212, 175, 55, 0.06),
+      0 1px 2px rgba(0, 0, 0, 0.4);
   }
   .gs-divider {
     @apply h-px bg-gs-border w-full;
@@ -178,13 +212,18 @@
     @apply inline-flex items-center gap-1.5 px-2 py-1 bg-gs-posBg border border-gs-pos/30 text-gs-pos rounded-sm font-mono text-[10px] uppercase tracking-wider;
   }
 
-  /* Card hover modifier — opt-in, prevents non-interactive cards from animating */
+  /* Card hover modifier — opt-in lift + subtle border-glow */
   .gs-card-hover {
-    @apply transition-[background-color,border-color,box-shadow] duration-200;
+    @apply transition-all duration-200;
   }
   .gs-card-hover:hover {
     background-color: #171a21;
-    border-color: rgba(148, 163, 184, 0.18);
+    border-color: rgba(148, 163, 184, 0.22);
+    transform: translateY(-1px);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 12px 32px rgba(0, 0, 0, 0.45),
+      0 1px 2px rgba(0, 0, 0, 0.5);
   }
 
   /* Stagger entrance — apply to grid containers */

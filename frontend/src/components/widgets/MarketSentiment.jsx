@@ -109,7 +109,7 @@ export default function MarketSentiment() {
       </div>
 
       {/* AI Sentiment Gauge */}
-      <div className="gs-card p-4 border-l-2 border-l-gs-gold">
+      <div className="gs-card gs-card-glow-gold p-4 border-l-2 border-l-gs-gold">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <Gauge className="w-3.5 h-3.5 text-gs-gold" />
