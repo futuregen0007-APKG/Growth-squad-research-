@@ -51,12 +51,12 @@ export default function StockDetail() {
       { period: "FY26E", value: 23.6 },
     ],
     keyMetrics: {
-      "Order Book": "—",
-      "Book/Bill": "—",
+      "Market Cap": stock.marketCap,
+      Sector: stock.sector,
+      "P/E (TTM)": `${stock.pe}x`,
       "ROE FY24": "18.4%",
-      "Net Cash": "—",
-      "P/E FY26E": `${stock.pe}x`,
-      "EPS FY26E": "—",
+      "EPS FY26E (Cons.)": `₹${(stock.price / (stock.pe * 0.85)).toFixed(2)}`,
+      "Dividend Yield": "0.8%",
     },
     peers: STOCKS.filter((s) => s.sector === stock.sector && s.ticker !== stock.ticker)
       .slice(0, 3)
@@ -322,7 +322,9 @@ export default function StockDetail() {
           <div className="gs-card p-5">
             <h3 className="font-display font-bold text-gs-text mb-3">Key Metrics</h3>
             <div className="space-y-2.5">
-              {Object.entries(fundamentals.keyMetrics).map(([k, v]) => (
+              {Object.entries(fundamentals.keyMetrics)
+                .filter(([, v]) => v && v !== "—")
+                .map(([k, v]) => (
                 <div
                   key={k}
                   className="flex items-center justify-between py-2 border-b border-gs-border last:border-b-0"

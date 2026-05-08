@@ -9,6 +9,7 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/components/ui/command";
+import { DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
   LayoutDashboard,
   Star,
@@ -40,6 +41,10 @@ export default function CommandPalette({ open, setOpen }) {
 
   return (
     <CommandDialog open={open} onOpenChange={setOpen}>
+      <DialogTitle className="sr-only">Universal Search</DialogTitle>
+      <DialogDescription className="sr-only">
+        Search tickers, sectors, or open AI research from anywhere.
+      </DialogDescription>
       <CommandInput
         placeholder="Search tickers, sectors, or ask AI…"
         data-testid="command-input"

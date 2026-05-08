@@ -4,7 +4,7 @@ import Sidebar from "./Sidebar";
 import TopBar from "./TopBar";
 import CommandPalette from "./CommandPalette";
 import MarketTicker from "../widgets/MarketTicker";
-import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -45,6 +45,10 @@ export default function Layout() {
           side="left"
           className="w-72 bg-gs-panel border-r border-gs-border p-0 text-gs-text"
         >
+          <SheetTitle className="sr-only">Navigation</SheetTitle>
+          <SheetDescription className="sr-only">
+            Browse the GrowthSquad Research Terminal workspace.
+          </SheetDescription>
           <div className="h-14 flex items-center px-5 border-b border-gs-border">
             <BrandLogo />
           </div>
