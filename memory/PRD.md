@@ -27,6 +27,24 @@ Build the foundational architecture and premium institutional UI system for **Gr
 - All data mock; no backend, no auth
 
 ## What's Been Implemented (May 2026)
+### v1.3 — Company Research + AI Assistant Enhancement (current iteration)
+- ✅ **StockDetail.jsx — fully institutional research view** (substantial rewrite). New sections include:
+  - Header with verdict pill (BUY/HOLD/SELL) + price + target with upside
+  - Full-width **RatingPanel** (verdict, score 0-100, consensus target, analyst breakdown buy/hold/sell with stacked bar)
+  - Right column: **Company Overview** (description, founded, HQ, employees, CEO, indices) + **Sector Positioning** (rank vs peers with metric breakdown) + **Valuation Overview** (P/E, P/B, EV/EBITDA, PEG, dividend yield each vs sector avg with cheaper/richer cue)
+  - 4-tab analytics: **Financials** (revenue bar + EPS/ROE/ROCE table) · **Margins** (gross/EBITDA/net line chart) · **Debt Analysis** (D/E, IC, net cash, credit rating, current ratio, cash conversion) · **AI Outlook** (full thesis + Bull/Base/Bear cases with probability + key catalysts list)
+  - **Earnings Highlights** strip — last 4 quarters with revenue/PAT YoY + beat/miss surprise pill
+  - **SWOTGrid** — 4-quadrant institutional SWOT with severity-coded accents
+  - **RiskFlagsList** — severity-coded (high/medium/low) risk cards with descriptions
+  - **Management Commentary** — 3 quote cards with author, role, source, sentiment-coded border
+  - **Peer Comparison** — 4 peer cards with price/change/mkt cap/PE
+- ✅ Rich `COMPANY_RESEARCH` mock dataset for HAL + `getCompanyResearch` fallback generator that derives plausible data from any stock's metadata
+- ✅ NEW reusable widgets: **RatingPanel**, **SWOTGrid**, **RiskFlagsList** (all in `/components/widgets/`)
+- ✅ **AIResearch.jsx — categorized smart prompts**:
+  - 10 prompt chips grouped by category (Earnings, Compare, Sector, Risk, Thesis) with colored category dots
+  - 4 new mock replies: **compare** (HAL vs BEL table), **risksRailway** (4-risk map with mitigants), **defenceOrderBook** (B/B ratio table with top picks), **tataMotors** (full earnings synthesis)
+  - Updated `pickReply` keyword routing for compare, vs, risks+railway, defence+best, tata+motors
+
 ### v1.2 — Dashboard Polish (current iteration)
 - ✅ **Enhanced KPITile**: intraday Low/High range bar with glowing current-position marker; subtle radial accent on positive/negative; tighter typography rhythm
 - ✅ **NEW MarketSentiment widget** — 3-tile row: (1) Market Breadth A/D ratio with 3-color stacked bar + 52W highs/lows, (2) AI Sentiment Index gauge (0–100) with gradient meter and PCR/VIX/Bull-Bear stats, (3) Institutional FII/DII flows with 1D/5D/1M cuts

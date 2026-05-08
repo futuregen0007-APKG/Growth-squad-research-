@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Sparkles, Send, Cpu, RefreshCcw, FileText, ChevronRight } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
-import { AI_CHAT_SUGGESTIONS, AI_SEED_CONVERSATION } from "@/data/mockData";
+import { AI_CHAT_SUGGESTIONS, AI_SEED_CONVERSATION, AI_PROMPT_CHIPS } from "@/data/mockData";
 import { toast } from "sonner";
 
 const MOCK_REPLIES = {
@@ -64,11 +64,99 @@ Sorted by Book-to-Bill ratio (FY24):
 **BDL** has the highest order-to-revenue conversion runway — but execution capacity is the bottleneck. **HAL** offers the cleanest combination of scale, margin and visibility.`,
 
   railways: AI_SEED_CONVERSATION[1].content,
+
+  compare: `**HAL vs BEL — Order Book & Quality Compare**
+
+| Metric           | HAL              | BEL              | Δ          |
+|------------------|------------------|------------------|------------|
+| Order Book       | ₹1.42L Cr        | ₹76,800 Cr       | HAL +85%   |
+| Book/Bill        | 4.7x             | 3.9x             | HAL +0.8x  |
+| EBITDA Margin    | 28.6%            | 24.2%            | HAL +440bp |
+| ROE FY24         | 26.4%            | 22.1%            | HAL +430bp |
+| Net Cash         | ₹38,400 Cr       | ₹13,800 Cr       | HAL +178%  |
+| P/E (FY26E)      | 26.8x            | 31.4x            | HAL cheaper |
+
+**Verdict** — HAL is the cleaner balance-sheet play with longer revenue visibility. BEL is more diversified across electronics & systems. We prefer **HAL** on a relative basis through FY27.
+
+_Both are core defence portfolio holds; pair-trade view: long HAL, neutral BEL._`,
+
+  risksRailway: `**Indian Railway Sector — Key Risks Map**
+
+**1. Execution & timeline slippage**
+• Order awarding has accelerated, but L1-to-revenue conversion lag is 6–9 quarters
+• Working capital pressure during peak deployment
+• Risk: 1–2 quarter slip can re-rate FY27 numbers 8–12% lower
+
+**2. Single-buyer concentration**
+• Indian Railways is >90% revenue source for RVNL, IRCON, RAILTEL
+• Mitigant: Vande Bharat exports, metro projects, KAVACH digital signalling
+
+**3. Margin pressure**
+• Competitive bidding intensity has compressed EPC margins by 80–120 bps in FY24
+• Watch: management guidance on order quality vs quantity
+
+**4. Budget cycle dependency**
+• 64% of FY26 capex deployed in H1 — sustainability into H2 is debated
+• Election cycle timing creates additional uncertainty
+
+**Bottom line**: structural tailwind intact, but timing & margin discipline are the differentiators. Prefer **TITAGARH** (rolling stock) and **RAILTEL** (digital) over pure EPC plays.`,
+
+  defenceOrderBook: `**Indian Defence — Top by Book/Bill Ratio**
+
+Sorted by order intake to revenue conversion runway:
+
+| Rank | Ticker     | Order Book   | TTM Revenue | B/B Ratio |
+|------|------------|--------------|-------------|-----------|
+| 1    | **BDL**    | ₹19,400 Cr   | ₹2,800 Cr   | **6.9x**  |
+| 2    | **HAL**    | ₹1.42L Cr    | ₹30.4K Cr   | **4.7x**  |
+| 3    | **BEL**    | ₹76,800 Cr   | ₹19,820 Cr  | **3.9x**  |
+| 4    | **MAZDOCK**| ₹38,400 Cr   | ₹9,840 Cr   | **3.9x**  |
+| 5    | **BEML**   | ₹14,200 Cr   | ₹4,210 Cr   | **3.4x**  |
+
+**Key takeaways**
+• **BDL** has the highest visibility runway, but execution capacity is the bottleneck — 12–18 month delivery cycles on missile platforms
+• **HAL** offers the cleanest combination of scale, margin and balance sheet
+• **BEL** is the most diversified across electronics, weapons systems and avionics
+• Sub-scale plays (BEML) tend to be high-beta — appropriate for cyclical traders
+
+**Top picks (institutional view)**: **HAL** (BUY · TP ₹5,400) > **BEL** (BUY · TP ₹360) > **BDL** (ACCUMULATE · TP ₹1,250)`,
+
+  tataMotors: `**Tata Motors — Latest Earnings Synthesis**
+
+**Top-line**
+• Revenue ₹1.10L Cr (+5.6% YoY) — in-line with consensus
+• JLR revenue £6.9B (-1.8% YoY) — driven by China weakness; UK/EU demand resilient
+
+**Profitability**
+• EBITDA margin 14.2% (+120 bps YoY) — JLR margin expansion to 16.8%
+• PAT ₹6,840 Cr (+25.4% YoY) — beat by 4.2%
+
+**Segment commentary**
+• **JLR**: Defender + Range Rover Sport demand robust; China remains soft
+• **CV India**: Demand inflection; HCV segment +18% YoY
+• **PV India**: Market share at 14.2%; EV segment growing 38% YoY
+
+**Management commentary**
+• JLR margin guidance for FY26 raised to 16% (from 15%)
+• Net debt to fall below ₹40,000 Cr by FY26-end (vs ₹52,000 Cr currently)
+• Demerger value-unlock catalyst into FY26
+
+**Verdict — BUY** (TP ₹1,180, +8% upside)
+Key swing factor is JLR China recovery and Indian CV cycle momentum.`,
 };
 
 const pickReply = (q) => {
   const lower = q.toLowerCase();
-  if (lower.includes("earnings") || lower.includes("hal q2")) return MOCK_REPLIES.earnings;
+  if (lower.includes("tata") && (lower.includes("motors") || lower.includes("earnings")))
+    return MOCK_REPLIES.tataMotors;
+  if (lower.includes("compare") || lower.includes(" vs ") || lower.includes("hal vs bel") || lower.includes("bel vs hal"))
+    return MOCK_REPLIES.compare;
+  if (lower.includes("risks") && (lower.includes("railway") || lower.includes("rail")))
+    return MOCK_REPLIES.risksRailway;
+  if (lower.includes("defence") && (lower.includes("order book") || lower.includes("best") || lower.includes("top")))
+    return MOCK_REPLIES.defenceOrderBook;
+  if (lower.includes("earnings") || lower.includes("hal q2"))
+    return MOCK_REPLIES.earnings;
   if (lower.includes("margin") || lower.includes("nim") || lower.includes("hdfc"))
     return MOCK_REPLIES.margins;
   if (lower.includes("defence") || lower.includes("order book"))
@@ -168,25 +256,52 @@ export default function AIResearch() {
       data-testid="ai-research-page"
     >
       {/* Left rail — suggestions & threads */}
-      <aside className="col-span-12 lg:col-span-3 space-y-4">
+      <aside className="col-span-12 lg:col-span-3 space-y-4 overflow-y-auto pr-1">
         <div>
-          <div className="gs-label mb-2">Prompts</div>
-          <div className="space-y-2">
-            {AI_CHAT_SUGGESTIONS.map((s, i) => (
-              <button
-                key={i}
-                onClick={() => send(s)}
-                className="w-full text-left gs-card p-3 hover:bg-gs-cardHover transition-colors group"
-                data-testid={`suggestion-${i}`}
-              >
-                <div className="flex items-start gap-2">
-                  <Sparkles className="w-3.5 h-3.5 text-gs-gold mt-0.5 shrink-0" />
-                  <span className="text-[12.5px] text-gs-textMuted group-hover:text-gs-text leading-snug">
-                    {s}
-                  </span>
+          <div className="gs-label mb-2">Smart Prompts</div>
+          <div className="space-y-3">
+            {Object.entries(
+              AI_PROMPT_CHIPS.reduce((acc, c) => {
+                (acc[c.category] = acc[c.category] || []).push(c);
+                return acc;
+              }, {}),
+            ).map(([cat, chips]) => {
+              const accent =
+                chips[0].color === "gold"
+                  ? "text-gs-gold"
+                  : chips[0].color === "red"
+                    ? "text-gs-neg"
+                    : chips[0].color === "green"
+                      ? "text-gs-pos"
+                      : "text-gs-blue";
+              return (
+                <div key={cat}>
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <span className={`w-1 h-1 rounded-full ${accent.replace("text-", "bg-")}`} />
+                    <span className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-gs-textDim">
+                      {cat}
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {chips.map((chip, i) => (
+                      <button
+                        key={`${cat}-${i}`}
+                        onClick={() => send(chip.text)}
+                        className="w-full text-left gs-card p-2.5 hover:bg-gs-cardHover transition-colors group"
+                        data-testid={`prompt-chip-${cat.toLowerCase()}-${i}`}
+                      >
+                        <div className="flex items-start gap-2">
+                          <Sparkles className={`w-3 h-3 ${accent} mt-0.5 shrink-0 opacity-70 group-hover:opacity-100 transition-opacity`} />
+                          <span className="text-[12px] text-gs-textMuted group-hover:text-gs-text leading-snug">
+                            {chip.text}
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </button>
-            ))}
+              );
+            })}
           </div>
         </div>
 

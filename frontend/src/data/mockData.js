@@ -511,3 +511,356 @@ export const INSTITUTIONAL_FLOWS = {
   fii: { "1D": 1248, "5D": 4380, "1M": 18420 },
   dii: { "1D": 980, "5D": 3720, "1M": 24180 },
 };
+
+// =====================================================================
+// COMPANY RESEARCH — institutional equity research dataset
+// Rich data for HAL; helper generates fallback for other tickers.
+// =====================================================================
+
+export const COMPANY_RESEARCH = {
+  HAL: {
+    overview: {
+      description:
+        "Hindustan Aeronautics Limited (HAL) is India's largest defence aerospace public-sector undertaking — designing and manufacturing fighter aircraft, helicopters, engines, avionics and accessories for the Indian Armed Forces and export markets.",
+      founded: "1940",
+      hq: "Bengaluru, Karnataka",
+      employees: "~25,400",
+      ceo: "C.B. Ananthakrishnan",
+      indices: ["NIFTY 50", "NIFTY Defence", "BSE 100"],
+      isin: "INE066F01020",
+    },
+    rating: {
+      verdict: "BUY",
+      score: 87,
+      target: 5400,
+      upside: 19.4,
+      analystCount: 28,
+      breakdown: { buy: 22, hold: 4, sell: 2 },
+      sentiment: "Strong Bullish",
+      conviction: "High",
+      lastUpdated: "2 days ago",
+    },
+    profitability: [
+      { period: "FY22", eps: 84.5, roe: 24.1, roce: 28.4 },
+      { period: "FY23", eps: 96.7, roe: 25.6, roce: 29.8 },
+      { period: "FY24", eps: 108.2, roe: 26.4, roce: 31.2 },
+      { period: "FY25E", eps: 138.0, roe: 28.2, roce: 33.4 },
+      { period: "FY26E", eps: 168.4, roe: 29.6, roce: 35.2 },
+    ],
+    margins: [
+      { period: "FY22", gross: 35.2, ebitda: 25.4, net: 18.6 },
+      { period: "FY23", gross: 36.4, ebitda: 27.8, net: 20.2 },
+      { period: "FY24", gross: 37.8, ebitda: 28.6, net: 21.2 },
+      { period: "FY25E", gross: 38.8, ebitda: 29.4, net: 22.0 },
+      { period: "FY26E", gross: 39.6, ebitda: 30.2, net: 22.8 },
+    ],
+    debt: {
+      debtEquity: 0.05,
+      interestCoverage: 142,
+      netCash: "₹38,400 Cr",
+      creditRating: "AAA / Stable",
+      currentRatio: 1.4,
+      cashConversion: "84%",
+    },
+    earningsQuarters: [
+      { period: "Q3 FY24", revenue: 7508, pat: 1261, revGrowth: 9.4, patGrowth: 3.0, surprise: 1.2 },
+      { period: "Q4 FY24", revenue: 14769, pat: 4309, revGrowth: 18.4, patGrowth: 50.6, surprise: 4.8 },
+      { period: "Q1 FY25", revenue: 4348, pat: 1437, revGrowth: 11.2, patGrowth: 76.8, surprise: 6.2 },
+      { period: "Q2 FY25", revenue: 5976, pat: 1530, revGrowth: 6.0, patGrowth: 22.4, surprise: 3.4 },
+    ],
+    swot: {
+      strengths: [
+        "₹1.42L Cr order book — 4.7x book/bill",
+        "Monopoly producer of LCA Tejas & Su-30 MKI HALOE",
+        "Strong balance sheet — ₹38,400 Cr net cash",
+        "Vertically integrated R&D + manufacturing",
+      ],
+      weaknesses: [
+        "Single-customer (MoD) concentration risk",
+        "Long execution cycles (6–10 yrs for fighter platforms)",
+        "Public-sector wage structure caps margin upside",
+      ],
+      opportunities: [
+        "Defence exports — ₹35,000 Cr addressable by FY30",
+        "GE-414 JV opens engine manufacturing vertical",
+        "LCA Mk2 + AMCA pipeline (~₹2L Cr potential)",
+      ],
+      threats: [
+        "Geopolitical disruption to defence supply chain",
+        "Private competition (Tata, L&T, Adani Defence)",
+        "Budget-cycle order timing slippage risk",
+      ],
+    },
+    risks: [
+      {
+        severity: "medium",
+        title: "Execution Timeline",
+        desc: "LCA Mk1A delivery slippage by 1–2 quarters could re-rate FY26 numbers 6–8% lower.",
+      },
+      {
+        severity: "low",
+        title: "Customer Concentration",
+        desc: "MoD is 98% of FY24 revenue. Diversification via exports is the long-term mitigant.",
+      },
+      {
+        severity: "medium",
+        title: "Private Competition",
+        desc: "Tata Advanced Systems & L&T Defence gradually winning sub-system tenders.",
+      },
+      {
+        severity: "low",
+        title: "Working Capital",
+        desc: "Receivable days at 162 (vs 148 FY23) — typical for defence PSU but worth monitoring.",
+      },
+    ],
+    valuation: {
+      pe: 32.1,
+      peSector: 38.4,
+      pb: 7.8,
+      pbSector: 6.4,
+      evEbitda: 22.1,
+      evEbitdaSector: 26.8,
+      pegRatio: 0.85,
+      dividendYield: 1.2,
+      verdict:
+        "Trading at ~16% P/E discount to sector despite superior growth & balance sheet — re-rating bias.",
+    },
+    aiOutlook: {
+      verdict: "BUY",
+      score: 87,
+      conviction: "High",
+      thesis:
+        "HAL is the cleanest play on India's defence indigenisation. The combination of a 4.7x book/bill ratio, expanding margin profile from indigenous content, and a clean balance sheet warrants a premium multiple. Three structural drivers: (1) LCA Mk1A delivery ramp through FY27, (2) GE-414 JV opens the engine vertical, (3) defence exports inflection.",
+      bullCase: { target: 6400, upside: 41.6, prob: 25 },
+      baseCase: { target: 5400, upside: 19.4, prob: 55 },
+      bearCase: { target: 3800, upside: -16.0, prob: 20 },
+      catalysts: [
+        "Q3 FY26 print + delivery commentary (Jan)",
+        "GE-414 JV commercial milestones",
+        "Budget FY27 defence capex trajectory (Feb)",
+        "AMCA program timeline confirmation",
+      ],
+    },
+    management: [
+      {
+        quote:
+          "We have signed contracts worth ₹47,000 crore in FY24 and our visible order pipeline through FY28 stands at ₹2.1 lakh crore — the strongest in our 80-year history.",
+        author: "C.B. Ananthakrishnan",
+        role: "Chairman & MD",
+        source: "Q2 FY26 Earnings Call",
+        sentiment: "positive",
+      },
+      {
+        quote:
+          "LCA Mk1A deliveries will commence in Q4 FY26 with a target of 16 units in FY27 and full ramp to 24 units annually thereafter.",
+        author: "C.B. Ananthakrishnan",
+        role: "Chairman & MD",
+        source: "Q2 FY26 Earnings Call",
+        sentiment: "positive",
+      },
+      {
+        quote:
+          "Working capital intensity has stabilised. We expect inventory days to compress by 12–15 days over FY26 as platform deliveries ramp.",
+        author: "Mihir Joshi",
+        role: "CFO",
+        source: "Q2 FY26 Earnings Call",
+        sentiment: "neutral",
+      },
+    ],
+    sectorPositioning: {
+      rank: 1,
+      total: 8,
+      metrics: [
+        { name: "Order Book", value: "₹1.42L Cr", rank: 1, sectorAvg: "₹38,000 Cr" },
+        { name: "EBITDA Margin", value: "28.6%", rank: 1, sectorAvg: "21.4%" },
+        { name: "ROE FY24", value: "26.4%", rank: 2, sectorAvg: "18.2%" },
+        { name: "Net Cash", value: "₹38,400 Cr", rank: 1, sectorAvg: "₹4,200 Cr" },
+      ],
+    },
+  },
+};
+
+// Fallback generator — produces plausible mock data driven by stock metadata
+export function getCompanyResearch(stock) {
+  if (COMPANY_RESEARCH[stock.ticker]) return COMPANY_RESEARCH[stock.ticker];
+
+  const baseScore = Math.max(48, Math.min(92, 62 + Math.round(stock.changePct * 6)));
+  const verdict =
+    baseScore >= 75 ? "BUY" : baseScore >= 60 ? "ACCUMULATE" : baseScore >= 45 ? "HOLD" : "REDUCE";
+  const target = +(stock.price * (1 + (baseScore - 60) / 100)).toFixed(0);
+  const upside = +(((target - stock.price) / stock.price) * 100).toFixed(1);
+  const baseEps = +(stock.price / (stock.pe || 25)).toFixed(2);
+
+  return {
+    overview: {
+      description: `${stock.name} is a key player in India's ${stock.sector} sector, with a market capitalisation of ${stock.marketCap}. Operations span manufacturing, services and adjacent verticals serving institutional and retail customers across the country.`,
+      founded: "—",
+      hq: "India",
+      employees: "—",
+      ceo: "—",
+      indices: [stock.sector === "Banking" ? "NIFTY BANK" : "NIFTY 500"],
+      isin: "—",
+    },
+    rating: {
+      verdict,
+      score: baseScore,
+      target,
+      upside,
+      analystCount: 18 + Math.floor(Math.random() * 12),
+      breakdown: {
+        buy: Math.round(baseScore / 5),
+        hold: Math.round((100 - baseScore) / 8),
+        sell: Math.max(0, Math.round((100 - baseScore) / 25)),
+      },
+      sentiment:
+        baseScore >= 75 ? "Bullish" : baseScore >= 55 ? "Constructive" : "Cautious",
+      conviction: baseScore >= 70 ? "High" : baseScore >= 55 ? "Medium" : "Low",
+      lastUpdated: "1 day ago",
+    },
+    profitability: [
+      { period: "FY22", eps: +(baseEps * 0.62).toFixed(2), roe: 14.2, roce: 16.8 },
+      { period: "FY23", eps: +(baseEps * 0.74).toFixed(2), roe: 16.4, roce: 18.6 },
+      { period: "FY24", eps: +(baseEps * 0.86).toFixed(2), roe: 18.2, roce: 20.4 },
+      { period: "FY25E", eps: +(baseEps * 0.94).toFixed(2), roe: 19.6, roce: 21.8 },
+      { period: "FY26E", eps: baseEps, roe: 20.8, roce: 23.0 },
+    ],
+    margins: [
+      { period: "FY22", gross: 28.4, ebitda: 18.2, net: 12.4 },
+      { period: "FY23", gross: 29.6, ebitda: 19.4, net: 13.2 },
+      { period: "FY24", gross: 30.8, ebitda: 20.6, net: 14.0 },
+      { period: "FY25E", gross: 31.4, ebitda: 21.4, net: 14.6 },
+      { period: "FY26E", gross: 32.0, ebitda: 22.2, net: 15.2 },
+    ],
+    debt: {
+      debtEquity: 0.42,
+      interestCoverage: 8.4,
+      netCash: "—",
+      creditRating: "AA / Stable",
+      currentRatio: 1.6,
+      cashConversion: "72%",
+    },
+    earningsQuarters: [
+      { period: "Q3 FY24", revenue: 8420, pat: 1180, revGrowth: 12.4, patGrowth: 18.6, surprise: 1.4 },
+      { period: "Q4 FY24", revenue: 9240, pat: 1320, revGrowth: 14.2, patGrowth: 22.1, surprise: 2.8 },
+      { period: "Q1 FY25", revenue: 8980, pat: 1280, revGrowth: 11.6, patGrowth: 16.4, surprise: -0.6 },
+      { period: "Q2 FY25", revenue: 9620, pat: 1410, revGrowth: 13.8, patGrowth: 19.8, surprise: 1.8 },
+    ],
+    swot: {
+      strengths: [
+        `Established ${stock.sector} sector positioning`,
+        "Growing institutional sponsorship",
+        "Operating leverage upside on capacity utilisation",
+      ],
+      weaknesses: [
+        "Cyclicality of sector demand",
+        "Margin sensitivity to input cost inflation",
+        "Concentration in core geographies",
+      ],
+      opportunities: [
+        "Indian capex cycle revival tailwind",
+        "Premiumisation + product-mix improvement",
+        "Adjacencies into export markets",
+      ],
+      threats: [
+        "Macro slowdown / rate cycle",
+        "Regulatory & policy shifts",
+        "Increased competitive intensity",
+      ],
+    },
+    risks: [
+      {
+        severity: "medium",
+        title: "Cyclicality",
+        desc: `Earnings are exposed to ${stock.sector} cycle volatility — a meaningful slowdown could compress FY26 numbers 8–12%.`,
+      },
+      {
+        severity: "low",
+        title: "Working Capital",
+        desc: "Receivable days have stabilised but remain a watch-item for cash conversion.",
+      },
+      {
+        severity: "medium",
+        title: "Competitive Intensity",
+        desc: "Pricing pressure from organised peers may delay margin expansion timelines.",
+      },
+    ],
+    valuation: {
+      pe: stock.pe,
+      peSector: +(stock.pe * 1.08).toFixed(1),
+      pb: 3.4,
+      pbSector: 3.8,
+      evEbitda: 18.2,
+      evEbitdaSector: 19.6,
+      pegRatio: 1.1,
+      dividendYield: 0.8,
+      verdict: "Fairly priced relative to sector — earnings delivery is the key swing factor.",
+    },
+    aiOutlook: {
+      verdict,
+      score: baseScore,
+      conviction: baseScore >= 70 ? "High" : "Medium",
+      thesis: `${stock.name} sits within the ${stock.sector} basket which is currently exhibiting a ${stock.changePct >= 0 ? "constructive" : "defensive"} tone. Earnings trajectory and capital efficiency support a ${verdict.toLowerCase()} stance, anchored by sector tailwinds and disciplined execution. Watch quarterly print + management commentary as the primary near-term re-rating triggers.`,
+      bullCase: { target: +(target * 1.18).toFixed(0), upside: +(upside + 18).toFixed(1), prob: 25 },
+      baseCase: { target, upside, prob: 55 },
+      bearCase: { target: +(target * 0.78).toFixed(0), upside: +(upside - 22).toFixed(1), prob: 20 },
+      catalysts: [
+        "Quarterly earnings print",
+        "Sector-level capex / policy update",
+        "Management guidance refresh",
+        "Peer comp re-rating trigger",
+      ],
+    },
+    management: [
+      {
+        quote: `We are seeing strong demand momentum across our core ${stock.sector.toLowerCase()} verticals, supported by both private capex and government-led initiatives.`,
+        author: "Management",
+        role: "CEO",
+        source: "Most Recent Earnings Call",
+        sentiment: "positive",
+      },
+      {
+        quote:
+          "Margin trajectory remains intact. Operating leverage from capacity utilisation will continue to drive profitability into FY26 and FY27.",
+        author: "Management",
+        role: "CFO",
+        source: "Most Recent Earnings Call",
+        sentiment: "positive",
+      },
+      {
+        quote:
+          "We're cautious on near-term input cost inflation but have hedging structures in place to protect margin downside.",
+        author: "Management",
+        role: "COO",
+        source: "Most Recent Earnings Call",
+        sentiment: "neutral",
+      },
+    ],
+    sectorPositioning: {
+      rank: 3,
+      total: 8,
+      metrics: [
+        { name: "Revenue Growth", value: "14.2%", rank: 3, sectorAvg: "11.8%" },
+        { name: "EBITDA Margin", value: "21.4%", rank: 4, sectorAvg: "20.6%" },
+        { name: "ROE FY24", value: "18.2%", rank: 3, sectorAvg: "16.4%" },
+        { name: "P/E (TTM)", value: `${stock.pe}x`, rank: "—", sectorAvg: `${(stock.pe * 1.08).toFixed(1)}x` },
+      ],
+    },
+  };
+}
+
+// =====================================================================
+// AI Research Assistant — categorized prompt chips
+// =====================================================================
+export const AI_PROMPT_CHIPS = [
+  { category: "Earnings", text: "Analyse HAL Q2 FY26 results", color: "gold" },
+  { category: "Earnings", text: "Summarise Tata Motors latest earnings", color: "gold" },
+  { category: "Compare", text: "Compare BEL vs HAL on order book", color: "blue" },
+  { category: "Compare", text: "HDFCBANK vs ICICIBANK margin trends", color: "blue" },
+  { category: "Sector", text: "Best defence companies by order book", color: "green" },
+  { category: "Sector", text: "Build a thesis on Indian railway capex theme", color: "green" },
+  { category: "Risk", text: "Risks in Indian railway sector", color: "red" },
+  { category: "Risk", text: "NIM compression risk for private banks", color: "red" },
+  { category: "Thesis", text: "Why is Defence sector re-rating?", color: "gold" },
+  { category: "Thesis", text: "Top 3 stocks for FY27 capex theme", color: "blue" },
+];
+
