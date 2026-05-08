@@ -252,7 +252,7 @@ export default function AIResearch() {
 
   return (
     <div
-      className="grid grid-cols-12 gap-4 animate-fade-up h-[calc(100vh-3.5rem-2.25rem-3rem)]"
+      className="grid grid-cols-12 gap-4 animate-fade-up lg:h-[calc(100vh-3.5rem-2.25rem-3rem)]"
       data-testid="ai-research-page"
     >
       {/* Left rail — suggestions & threads */}

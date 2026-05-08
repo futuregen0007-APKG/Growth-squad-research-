@@ -27,6 +27,12 @@ Build the foundational architecture and premium institutional UI system for **Gr
 - All data mock; no backend, no auth
 
 ## What's Been Implemented (May 2026)
+### v1.6 — Final Stabilization Pass (current iteration)
+- ✅ **Cross-breakpoint verification** — `document.scrollWidth === viewport` confirmed on all pages at 390px (mobile), 820px (tablet), 1920px (desktop). Zero horizontal overflow.
+- ✅ **AI Research mobile fix** — `h-[calc(100vh-...)]` was forcing fixed height on mobile, compressing chat. Changed to `lg:h-[calc(...)]` so mobile/tablet flow naturally with content-driven height.
+- ✅ Verified: Sidebar hides cleanly at <1024px (mobile drawer works), KPI grid responsive 2/3/6 cols, MarketSentiment row 1/3 cols, Hero stacks correctly, Stock Detail 3-stat header doesn't overflow, all charts respect `ResponsiveContainer`, every page renders without console errors
+- ✅ Lint clean across 30+ source files
+
 ### v1.5 — Premium Polish · Typography & Depth (current iteration)
 - ✅ **Typography swap** — IBM Plex Sans → **Satoshi** (Fontshare premium). Pairs with Cabinet Grotesk display for a distinctly Linear/Vercel-tier institutional feel. Auto-cascades across every component.
 - ✅ **Multi-layer card depth** — `.gs-card` now has `inset 1px highlight + outer 1–2px shadow`. Two new variants: `.gs-card-elevated` (deeper outer shadow) and `.gs-card-glow-gold` (gold glow ring + soft halo)
