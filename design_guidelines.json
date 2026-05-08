@@ -1,0 +1,129 @@
+{
+  "project_name": "GrowthSquad Research Terminal",
+  "theme": "dark",
+  "archetype": "Archetype 5 (Jewel & Luxury) + Archetype 4 (Swiss & High-Contrast)",
+  "core_philosophy": "Institutional-grade equity research terminal built for the Indian market. Combining Bloomberg's information density with AlphaSense's AI-native workflows. The design must feel highly premium, cinematic, precision-engineered, and strictly avoid generic SaaS aesthetics (no purple gradients, no soft playful corners).",
+  "colors": {
+    "background": {
+      "app": "#060709",
+      "sidebar": "#0C0E12",
+      "card": "#111318",
+      "card_hover": "#171A21",
+      "header": "rgba(6, 7, 9, 0.8)"
+    },
+    "text": {
+      "primary": "#F8FAFC",
+      "secondary": "#94A3B8",
+      "tertiary": "#64748B",
+      "muted": "#475569"
+    },
+    "border": {
+      "default": "#1E222A",
+      "focus": "#D4AF37",
+      "divider": "#1E222A"
+    },
+    "accents": {
+      "ai_gold": "#D4AF37",
+      "ai_gold_muted": "rgba(212, 175, 55, 0.15)",
+      "action_blue": "#2563EB",
+      "action_blue_muted": "rgba(37, 99, 235, 0.15)"
+    },
+    "financial": {
+      "positive": "#059669",
+      "positive_bg": "rgba(5, 150, 105, 0.1)",
+      "negative": "#DC2626",
+      "negative_bg": "rgba(220, 38, 38, 0.1)",
+      "neutral": "#94A3B8"
+    }
+  },
+  "typography": {
+    "fonts": {
+      "heading": "Cabinet Grotesk, sans-serif",
+      "body": "IBM Plex Sans, sans-serif",
+      "mono": "JetBrains Mono, monospace"
+    },
+    "rules": {
+      "h1": "text-3xl font-bold tracking-tight text-white",
+      "h2": "text-2xl font-bold tracking-tight text-white",
+      "h3": "text-xl font-semibold tracking-tight text-white",
+      "h4": "text-lg font-medium text-white",
+      "body": "text-sm text-secondary leading-relaxed",
+      "ticker": "font-mono text-sm font-semibold tracking-wider text-white",
+      "financial_data": "font-mono text-sm tracking-tight",
+      "label": "text-xs font-semibold uppercase tracking-[0.15em] text-tertiary"
+    },
+    "anti_patterns": [
+      "No Inter or Roboto for headings",
+      "No center-aligned dense text",
+      "No gray-on-gray unreadable text (always ensure contrast)"
+    ]
+  },
+  "spacing_and_layout": {
+    "strategy": "The 'Control Room' Grid",
+    "gaps": "gap-4 md:gap-6",
+    "padding": "p-4 sm:p-6",
+    "radius": "rounded-sm",
+    "borders": "1px solid border-default, no soft shadows, prefer inset 1px top highlight for cards (box-shadow: inset 0 1px 0 rgba(255,255,255,0.03))",
+    "card_structure": "Flat backgrounds, sharp edges, dense information packing. Maximize vertical space.",
+    "sidebar": "w-64 fixed left-0 top-0 bottom-0 border-r border-default bg-sidebar z-40",
+    "header": "h-14 fixed top-0 right-0 left-64 border-b border-default backdrop-blur-xl bg-header z-30 flex items-center px-6",
+    "main_content": "ml-64 mt-14 p-6 min-h-screen bg-app"
+  },
+  "components": {
+    "branding": {
+      "logo": "CSS-based monogram. A square box (w-8 h-8) with bg-[#111318] border border-[#1E222A], text 'GS' in Cabinet Grotesk font-bold text-ai_gold. Institutional and sharp."
+    },
+    "buttons": {
+      "primary": "bg-white text-black hover:bg-gray-200 font-medium px-4 py-2 rounded-sm transition-colors",
+      "ai_action": "bg-ai_gold_muted text-ai_gold border border-ai_gold/30 hover:bg-ai_gold/20 font-medium px-4 py-2 rounded-sm transition-colors flex items-center gap-2",
+      "outline": "border border-default bg-transparent text-secondary hover:text-white hover:border-gray-500 rounded-sm"
+    },
+    "cards": {
+      "kpi": "p-4 bg-card border border-default rounded-sm flex flex-col gap-2 relative overflow-hidden",
+      "ai_insight": "p-5 bg-card border-l-2 border-l-ai_gold border-y border-r border-default rounded-sm relative",
+      "research": "p-5 bg-card border border-default rounded-sm hover:border-gray-500 transition-colors cursor-pointer"
+    },
+    "tables": {
+      "style": "Dense tabular layout. text-sm. font-mono for numbers. border-b border-default on rows. hover:bg-card_hover.",
+      "headers": "text-xs uppercase tracking-wider text-tertiary font-semibold pb-2 border-b border-default"
+    },
+    "ai_assistant": {
+      "chat_bubble_user": "bg-card border border-default rounded-sm p-3 max-w-[80%] self-end",
+      "chat_bubble_ai": "bg-transparent border-none p-3 max-w-[90%] self-start flex gap-3",
+      "indicator": "text-xs font-mono text-ai_gold flex items-center gap-1 opacity-80"
+    }
+  },
+  "media": {
+    "images": [
+      {
+        "url": "https://images.unsplash.com/photo-1688141585058-50787735e064?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2OTF8MHwxfHNlYXJjaHwyfHxkYXJrJTIwYWJzdHJhY3QlMjBnZW9tZXRyaWMlMjBwYXR0ZXJufGVufDB8fHx8MTc3ODIzMzI2N3ww&ixlib=rb-4.1.0&q=85",
+        "category": "texture",
+        "description": "Dark abstract geometric pattern, used sparingly for AI card backgrounds at low opacity (e.g., opacity-10 mix-blend-overlay)"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1675140267995-8096bdf130d5?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjV8MHwxfHNlYXJjaHwxfHxtdW1iYWklMjBic2UlMjBidWlsZGluZyUyMHNreWxpbmV8ZW58MHx8fHwxNzc4MjMzMjU3fDA&ixlib=rb-4.1.0&q=85",
+        "category": "hero_background",
+        "description": "Mumbai BSE skyline, can be used for the top dashboard banner or login screen with heavy dark overlay (bg-black/80)."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1656221009898-694595f2119b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjh8MHwxfHNlYXJjaHwxfHxpbmRpYW4lMjBidXNpbmVzcyUyMG1hbiUyMHBvcnRyYWl0fGVufDB8fHx8MTc3ODIzMzI2N3ww&ixlib=rb-4.1.0&q=85",
+        "category": "avatar",
+        "description": "Profile picture for the authenticated user."
+      }
+    ]
+  },
+  "libraries": {
+    "icons": "lucide-react",
+    "charts": "recharts (monochrome styling with single accent color, no complex 3D or gradients, keep it flat and institutional)",
+    "ui": "shadcn/ui (customized via tailwind base to have 0px or 2px radius, dark theme by default)"
+  },
+  "instructions_to_main_agent": [
+    "Strictly adhere to the dark theme colors defined. Avoid any default Tailwind blues/purples.",
+    "Install fonts: `yarn add @fontsource/cabinet-grotesk @fontsource/ibm-plex-sans @fontsource/jetbrains-mono` and import them in index.css.",
+    "Do NOT use the generic 'Card' component from Shadcn with its heavy default shadow and rounded-xl corners. Strip the radius to `rounded-sm` and remove shadows. Use 1px borders.",
+    "Implement the Treemap using Recharts for the Sector Heatmap, colored by positive/negative performance.",
+    "Add a Command Palette (Ctrl+K) feeling for the universal search.",
+    "In the AI Research Assistant page, format the AI responses meticulously (bullet points, bold tickers) to look like high-quality equity research, not generic ChatGPT outputs.",
+    "For the 'GS' logo, implement it as a pure HTML/Tailwind element as described in branding, not as an image tag."
+  ]
+}
