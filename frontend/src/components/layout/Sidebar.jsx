@@ -14,17 +14,34 @@ import {
   HardHat,
   HeartPulse,
   CircleDot,
+  Wallet,
+  Settings,
+  Newspaper,
+  Target,
+  Briefcase,
+  Calculator,
+  Umbrella,
+  PieChart,
 } from "lucide-react";
 import BrandLogo from "../widgets/BrandLogo";
 import { SECTORS } from "@/data/mockData";
 import { cn } from "@/lib/utils";
+import { useMarketStatus } from "@/hooks/useMarketStatus";
 
 const NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, badge: null },
   { to: "/watchlist", label: "Watchlist", icon: Star, badge: "4" },
+  { to: "/portfolio", label: "Portfolio", icon: Wallet, badge: null },
+  { to: "/goals", label: "Goals", icon: Target, badge: null },
+  { to: "/baskets", label: "Investment Baskets", icon: Briefcase, badge: null },
+  { to: "/sip-planner", label: "SIP Planner", icon: Calculator, badge: null },
+  { to: "/retirement", label: "Retirement", icon: Umbrella, badge: null },
+  { to: "/net-worth", label: "Net Worth", icon: PieChart, badge: null },
+  { to: "/news", label: "News", icon: Newspaper, badge: null },
   { to: "/sectors", label: "Sector Intelligence", icon: Layers, badge: null },
   { to: "/earnings", label: "Earnings Intelligence", icon: CalendarDays, badge: "Q3" },
   { to: "/ai-research", label: "AI Research", icon: Sparkles, badge: "AI" },
+  { to: "/settings", label: "Settings", icon: Settings, badge: null },
   { to: "/stock/HAL", label: "Stock Detail", icon: TrendingUp, badge: null },
 ];
 
@@ -39,6 +56,8 @@ const SECTOR_ICON = {
 };
 
 export default function Sidebar() {
+  const marketStatus = useMarketStatus();
+
   return (
     <aside
       className="hidden lg:flex flex-col fixed left-0 top-0 bottom-0 w-64 bg-gs-panel border-r border-gs-border z-40"
@@ -53,16 +72,23 @@ export default function Sidebar() {
       <div className="px-5 py-3 border-b border-gs-border">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5">
-            <CircleDot className="w-3 h-3 text-gs-pos animate-pulse-dot" />
-            <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-gs-pos">
-              Market Open
+            <CircleDot className={`w-3 h-3 ${marketStatus.isOpen ? 'text-gs-pos' : 'text-gs-neg'} ${marketStatus.isOpen ? 'animate-pulse-dot' : ''}`} />
+            <span className={`font-mono text-[10px] uppercase tracking-[0.18em] ${marketStatus.isOpen ? 'text-gs-pos' : 'text-gs-neg'}`}>
+              Market {marketStatus.isOpen ? 'Open' : 'Closed'}
             </span>
           </div>
           <span className="font-mono text-[10px] text-gs-textDim">NSE • BSE</span>
         </div>
         <div className="mt-2 flex items-baseline justify-between">
-          <span className="text-[10px] text-gs-textDim uppercase tracking-wider">Closes</span>
-          <span className="font-mono text-[11px] text-gs-textMuted">15:30 IST</span>
+          <span className="text-[10px] text-gs-textDim uppercase tracking-wider">
+            {marketStatus.isOpen ? 'Closes' : 'Opens'}
+          </span>
+          <span className="font-mono text-[11px] text-gs-textMuted">
+            {marketStatus.isOpen ? '15:30 IST' : '09:15 IST'}
+          </span>
+        </div>
+        <div className="mt-1 text-[10px] text-gs-textDim font-mono uppercase tracking-wider">
+          {marketStatus.session}
         </div>
       </div>
 

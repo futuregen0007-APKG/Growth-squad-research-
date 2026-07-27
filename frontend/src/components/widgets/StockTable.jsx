@@ -1,9 +1,9 @@
 import { useNavigate } from "react-router-dom";
-import { Star } from "lucide-react";
+import { Star, X } from "lucide-react";
 import Sparkline from "./Sparkline";
 import ChangeBadge from "./ChangeBadge";
 
-export default function StockTable({ rows, showSector = true, dense = false, title }) {
+export default function StockTable({ rows, showSector = true, dense = false, title, onRemoveStock, showRemove = false }) {
   const navigate = useNavigate();
   return (
     <div className="gs-card overflow-hidden" data-testid="stock-table">
@@ -19,7 +19,7 @@ export default function StockTable({ rows, showSector = true, dense = false, tit
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-gs-border bg-gs-panel/50">
-              <th className="gs-label text-left px-4 py-2 w-8" />
+              {showRemove && <th className="gs-label text-left px-4 py-2 w-8" />}
               <th className="gs-label text-left px-2 py-2">Ticker</th>
               {showSector && <th className="gs-label text-left px-2 py-2 hidden md:table-cell">Sector</th>}
               <th className="gs-label text-right px-2 py-2">Price</th>
@@ -32,21 +32,32 @@ export default function StockTable({ rows, showSector = true, dense = false, tit
           <tbody>
             {rows.map((s) => {
               const isPos = s.changePct >= 0;
+              const ticker = s.ticker || s.symbol;
               return (
                 <tr
-                  key={s.ticker}
+                  key={ticker}
                   className={`border-b border-gs-border hover:bg-gs-cardHover transition-colors cursor-pointer ${
                     dense ? "" : ""
                   }`}
-                  onClick={() => navigate(`/stock/${s.ticker}`)}
-                  data-testid={`stock-row-${s.ticker}`}
+                  onClick={() => navigate(`/stock/${ticker}`)}
+                  data-testid={`stock-row-${ticker}`}
                 >
-                  <td className="px-4 py-3">
-                    <Star className="w-3.5 h-3.5 text-gs-textDim hover:text-gs-gold transition-colors" />
-                  </td>
+                  {showRemove && (
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRemoveStock(ticker);
+                        }}
+                        className="p-1 text-gs-textDim hover:text-gs-neg transition-colors"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </td>
+                  )}
                   <td className="px-2 py-3">
                     <div className="font-mono text-[12.5px] font-semibold tracking-wider text-gs-text">
-                      {s.ticker}
+                      {ticker}
                     </div>
                     <div className="text-[11px] text-gs-textMuted truncate max-w-[180px]">
                       {s.name}

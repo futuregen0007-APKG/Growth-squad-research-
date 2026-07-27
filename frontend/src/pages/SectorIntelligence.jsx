@@ -1,15 +1,37 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { TrendingUp, TrendingDown, Sparkles } from "lucide-react";
-import { SECTORS, STOCKS, SECTOR_HEATMAP_DATA } from "@/data/mockData";
+import { SECTORS, SECTOR_HEATMAP_DATA } from "@/data/mockData";
 import SectorHeatmap from "@/components/widgets/SectorHeatmap";
 import StockTable from "@/components/widgets/StockTable";
+import { fetchAllStocks } from "@/services/stockApi";
 
 export default function SectorIntelligence() {
   const [active, setActive] = useState(SECTORS[0]);
+  const [allStocks, setAllStocks] = useState([]);
+  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
-  const sectorStocks = STOCKS.filter((s) => s.sector === active.name);
+  useEffect(() => {
+    const loadStocks = async () => {
+      try {
+        const stocks = await fetchAllStocks();
+        setAllStocks(stocks);
+      } catch (err) {
+        console.error('Error loading stocks:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadStocks();
+  }, []);
+
+  // Filter stocks by active sector name
+  const sectorStocks = allStocks.filter((s) => {
+    const stockSector = s.sector || '';
+    return stockSector.toLowerCase() === active.name.toLowerCase() ||
+           stockSector === active.name;
+  });
 
   return (
     <div className="space-y-6 animate-fade-up" data-testid="sectors-page">

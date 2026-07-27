@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Search, Sparkles, Bell, Command, Globe, Settings, Menu } from "lucide-react";
+import { Sparkles, Bell, Command, Globe, Settings, Menu } from "lucide-react";
 import { useLocation } from "react-router-dom";
 import BrandLogo from "../widgets/BrandLogo";
+import SearchBar from "../SearchBar";
 
 const PAGE_TITLES = {
   "/dashboard": { title: "Market Dashboard", subtitle: "Live overview of Indian equities" },
@@ -63,20 +64,9 @@ export default function TopBar({ onOpenCommand, onOpenMobileNav }) {
       </div>
 
       {/* Search */}
-      <button
-        onClick={onOpenCommand}
-        className="ml-auto lg:ml-6 flex items-center gap-3 flex-1 max-w-md bg-gs-card border border-gs-border rounded-sm px-3 py-1.5 text-left hover:border-gs-textDim/50 transition-colors group"
-        data-testid="universal-search-btn"
-      >
-        <Search className="w-3.5 h-3.5 text-gs-textDim group-hover:text-gs-gold" />
-        <span className="text-[12.5px] text-gs-textDim flex-1 truncate">
-          Search ticker, sector, or ask AI…
-        </span>
-        <span className="hidden sm:flex items-center gap-1 font-mono text-[10px] text-gs-textDim">
-          <kbd className="px-1.5 py-0.5 bg-gs-panel border border-gs-border rounded-sm">⌘</kbd>
-          <kbd className="px-1.5 py-0.5 bg-gs-panel border border-gs-border rounded-sm">K</kbd>
-        </span>
-      </button>
+      <div className="ml-auto lg:ml-6 flex-1 max-w-md">
+        <SearchBar />
+      </div>
 
       {/* Quick actions */}
       <div className="hidden md:flex items-center gap-1.5">
@@ -88,14 +78,17 @@ export default function TopBar({ onOpenCommand, onOpenMobileNav }) {
           <Sparkles className="w-3.5 h-3.5" />
           <span className="hidden xl:inline">Ask AI</span>
         </button>
+        <button 
+          onClick={() => navigate("/settings")}
+          className="p-1.5 text-gs-textMuted hover:text-gs-text rounded-sm border border-transparent hover:border-gs-border"
+        >
+          <Settings className="w-4 h-4" />
+        </button>
         <button className="p-1.5 text-gs-textMuted hover:text-gs-text rounded-sm border border-transparent hover:border-gs-border">
           <Bell className="w-4 h-4" />
         </button>
         <button className="p-1.5 text-gs-textMuted hover:text-gs-text rounded-sm border border-transparent hover:border-gs-border">
           <Globe className="w-4 h-4" />
-        </button>
-        <button className="p-1.5 text-gs-textMuted hover:text-gs-text rounded-sm border border-transparent hover:border-gs-border">
-          <Settings className="w-4 h-4" />
         </button>
       </div>
 

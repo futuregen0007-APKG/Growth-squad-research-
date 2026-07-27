@@ -140,6 +140,35 @@
     background: rgba(212, 175, 55, 0.32);
     color: #fff;
   }
+
+  /* Price flash animations for real-time updates */
+  @keyframes flash-green {
+    0% { background-color: rgba(5, 150, 105, 0.3); }
+    100% { background-color: transparent; }
+  }
+
+  @keyframes flash-red {
+    0% { background-color: rgba(220, 38, 38, 0.3); }
+    100% { background-color: transparent; }
+  }
+
+  .animate-flash-green {
+    animation: flash-green 1s ease-out;
+  }
+
+  .animate-flash-red {
+    animation: flash-red 1s ease-out;
+  }
+
+  /* Pulse animation for live indicators */
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  .animate-pulse-dot {
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
 }
 
 @layer components {
