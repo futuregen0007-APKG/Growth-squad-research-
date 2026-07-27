@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { Menu, X, ArrowUpRight } from "lucide-react";
 import BrandLogo from "../widgets/BrandLogo";
+import { useAuth } from "../../hooks/useAuth";
 
 const NAV_LINKS = [
   { label: "Product", href: "#dashboard-showcase" },
@@ -15,6 +16,7 @@ export default function LandingNav() {
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const navigate = useNavigate();
+  const { logout } = useAuth();
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 12);
@@ -48,13 +50,16 @@ export default function LandingNav() {
         </nav>
 
         <div className="flex items-center gap-2">
-          <Link
-            to="/dashboard"
+          <button
+            onClick={() => {
+              logout();
+              navigate("/login");
+            }}
             className="hidden sm:inline-flex text-[12px] font-mono uppercase tracking-[0.18em] text-gs-textMuted hover:text-gs-text px-3 py-1.5"
             data-testid="nav-signin"
           >
             Sign in
-          </Link>
+          </button>
           <button
             onClick={() => navigate("/dashboard")}
             className="hidden sm:inline-flex items-center gap-1.5 bg-gs-gold text-gs-bg font-semibold text-[12.5px] px-4 py-2 rounded-sm hover:bg-gs-gold/90 transition-colors"

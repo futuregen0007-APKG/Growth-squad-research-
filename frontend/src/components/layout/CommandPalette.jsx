@@ -17,6 +17,14 @@ import {
   CalendarDays,
   Sparkles,
   TrendingUp,
+  Wallet,
+  Settings,
+  Newspaper,
+  Target,
+  Briefcase,
+  Calculator,
+  Umbrella,
+  PieChart,
 } from "lucide-react";
 import { STOCKS, SECTORS } from "@/data/mockData";
 
@@ -61,6 +69,34 @@ export default function CommandPalette({ open, setOpen }) {
             <Star className="mr-2 h-4 w-4" />
             <span>Watchlist</span>
           </CommandItem>
+          <CommandItem onSelect={() => go("/portfolio")}>
+            <Wallet className="mr-2 h-4 w-4" />
+            <span>Portfolio</span>
+          </CommandItem>
+          <CommandItem onSelect={() => go("/goals")}>
+            <Target className="mr-2 h-4 w-4" />
+            <span>Goals</span>
+          </CommandItem>
+          <CommandItem onSelect={() => go("/baskets")}>
+            <Briefcase className="mr-2 h-4 w-4" />
+            <span>Investment Baskets</span>
+          </CommandItem>
+          <CommandItem onSelect={() => go("/sip-planner")}>
+            <Calculator className="mr-2 h-4 w-4" />
+            <span>SIP Planner</span>
+          </CommandItem>
+          <CommandItem onSelect={() => go("/retirement")}>
+            <Umbrella className="mr-2 h-4 w-4" />
+            <span>Retirement Planner</span>
+          </CommandItem>
+          <CommandItem onSelect={() => go("/net-worth")}>
+            <PieChart className="mr-2 h-4 w-4" />
+            <span>Net Worth Tracker</span>
+          </CommandItem>
+          <CommandItem onSelect={() => go("/news")}>
+            <Newspaper className="mr-2 h-4 w-4" />
+            <span>News</span>
+          </CommandItem>
           <CommandItem onSelect={() => go("/sectors")}>
             <Layers className="mr-2 h-4 w-4" />
             <span>Sector Intelligence</span>
@@ -72,6 +108,10 @@ export default function CommandPalette({ open, setOpen }) {
           <CommandItem onSelect={() => go("/ai-research")}>
             <Sparkles className="mr-2 h-4 w-4" />
             <span>AI Research Assistant</span>
+          </CommandItem>
+          <CommandItem onSelect={() => go("/settings")}>
+            <Settings className="mr-2 h-4 w-4" />
+            <span>Settings</span>
           </CommandItem>
         </CommandGroup>
 

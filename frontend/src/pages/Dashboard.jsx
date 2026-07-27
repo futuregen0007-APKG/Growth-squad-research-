@@ -1,4 +1,7 @@
 import { useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useAuth } from "@/hooks/useAuth";
+import { useMarketStatus } from "@/hooks/useMarketStatus";
 import {
   ResponsiveContainer,
   AreaChart,
@@ -8,7 +11,7 @@ import {
   Tooltip,
   CartesianGrid,
 } from "recharts";
-import { ArrowUpRight, Sparkles, Newspaper } from "lucide-react";
+import { ArrowUpRight, Sparkles, Newspaper, AlertCircle } from "lucide-react";
 import KPITile from "@/components/widgets/KPITile";
 import AIInsightCard from "@/components/widgets/AIInsightCard";
 import SectorHeatmap from "@/components/widgets/SectorHeatmap";
@@ -17,19 +20,13 @@ import ResearchCard from "@/components/widgets/ResearchCard";
 import MarketSentiment from "@/components/widgets/MarketSentiment";
 import EarningsSnapshot from "@/components/widgets/EarningsSnapshot";
 import {
-  INDICES,
   AI_INSIGHTS,
   SECTOR_HEATMAP_DATA,
-  TOP_MOVERS,
   RESEARCH_FEED,
   NEWS_FEED,
+  INDICES,
 } from "@/data/mockData";
-
-const niftySeries = INDICES[0].series.map((d, i) => ({
-  t: i,
-  v: d.v,
-  ts: `09:${String(15 + Math.floor(i * 12)).padStart(2, "0")}`,
-}));
+import { fetchAllStocks, fetchIndexQuotes } from "@/services/stockApi";
 
 const ChartTooltip = ({ active, payload }) => {
   if (!active || !payload?.length) return null;
@@ -48,6 +45,81 @@ const ChartTooltip = ({ active, payload }) => {
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const marketStatus = useMarketStatus();
+  const [stocks, setStocks] = useState([]);
+  const [dynamicIndexData, setDynamicIndexData] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const loadStocks = async () => {
+      try {
+        setLoading(true);
+        const [stocksData, indexData] = await Promise.all([
+          fetchAllStocks(),
+          fetchIndexQuotes(['NIFTY 50', 'NIFTYIT', 'SENSEX']),
+        ]);
+        setStocks(stocksData);
+        setDynamicIndexData(
+          indexData.reduce((map, index) => {
+            map[index.symbol] = index;
+            return map;
+          }, {})
+        );
+        setError(null);
+      } catch (err) {
+        console.error('Failed to load stocks or indices:', err);
+        setError('Failed to load market data');
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadStocks();
+  }, []);
+
+  const buildSeries = (index) => {
+    const base = index?.price ?? index?.value ?? 0;
+    if (Array.isArray(index?.series) && index.series.length > 0) {
+      return index.series.map((d, i) => ({
+        t: i,
+        v: d.v ?? d.value ?? base,
+        ts: `09:${String(15 + Math.floor(i * 12)).padStart(2, "0")}`,
+      }));
+    }
+
+    return Array.from({ length: 8 }, (_, i) => ({
+      t: i,
+      v: Number((base + (Math.random() - 0.5) * base * 0.02).toFixed(2)),
+      ts: `09:${String(15 + Math.floor(i * 12)).padStart(2, "0")}`,
+    }));
+  };
+
+  const niftyIndex = dynamicIndexData['NIFTY 50'] || INDICES[0];
+  const niftySeries = buildSeries(niftyIndex);
+  const niftyValue = niftyIndex.price ?? niftyIndex.value ?? 0;
+  const niftyChange = niftyIndex.change ?? 0;
+  const niftyChangePct = niftyIndex.changePct ?? 0;
+
+  // Sort stocks by change% to get gainers and losers
+  const sortedByChange = [...stocks].sort((a, b) => (b.changePct || 0) - (a.changePct || 0));
+  const gainers = sortedByChange.slice(0, 4);
+  const losers = sortedByChange.slice(-4).reverse();
+
+  if (error) {
+    return (
+      <div className="space-y-6 animate-fade-up">
+        <div className="bg-gs-card border border-gs-neg/30 rounded-lg p-4 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-gs-neg flex-shrink-0 mt-0.5" />
+          <div>
+            <h3 className="font-semibold text-gs-text">Error Loading Market Data</h3>
+            <p className="text-sm text-gs-textMuted mt-1">{error}</p>
+            <p className="text-xs text-gs-textDim mt-2">Make sure your backend is running on http://localhost:3000</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-fade-up" data-testid="dashboard-page">
@@ -57,13 +129,17 @@ export default function Dashboard() {
           <div className="flex items-center gap-3 flex-wrap">
             <span className="gs-label">// Live Workspace</span>
             <span className="text-gs-textDim/40">·</span>
-            <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-gs-pos font-semibold">
-              <span className="w-1.5 h-1.5 rounded-full bg-gs-pos animate-pulse-dot" />
-              Market Open
+            <span className={`flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.18em] font-semibold ${marketStatus.isOpen ? 'text-gs-pos' : 'text-gs-neg'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${marketStatus.isOpen ? 'bg-gs-pos' : 'bg-gs-neg'} ${marketStatus.isOpen ? 'animate-pulse-dot' : ''}`} />
+              Market {marketStatus.isOpen ? 'Open' : 'Closed'}
             </span>
             <span className="text-gs-textDim/40">·</span>
             <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-gs-textDim">
-              Closes 15:30 IST
+              {marketStatus.isOpen ? 'Closes 15:30 IST' : 'Opens 09:15 IST'}
+            </span>
+            <span className="text-gs-textDim/40">·</span>
+            <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-gs-textDim">
+              {marketStatus.session}
             </span>
           </div>
           <h1 className="font-display text-3xl sm:text-4xl font-bold text-gs-text mt-2">
@@ -74,6 +150,13 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex items-center gap-2 text-[10.5px] font-mono text-gs-textDim flex-wrap">
+          <div className="px-3 py-2 bg-gs-panel border border-gs-border rounded-sm min-w-[180px]">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-gs-textDim">Signed in as</div>
+            <div className="mt-1 font-semibold text-gs-text">
+              {user?.username || user?.email || 'Guest'}
+            </div>
+            <div className="text-[11px] text-gs-textMuted">{user?.email || 'No profile loaded yet'}</div>
+          </div>
           <span className="px-2 py-1 bg-gs-panel border border-gs-border rounded-sm">
             FY26 · Q3
           </span>
@@ -89,9 +172,10 @@ export default function Dashboard() {
 
       {/* Indices KPI grid */}
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 gs-stagger">
-        {INDICES.map((idx) => (
-          <KPITile key={idx.symbol} {...idx} />
-        ))}
+        {INDICES.map((idx) => {
+          const dynamicIndex = dynamicIndexData[idx.symbol];
+          return <KPITile key={idx.symbol} {...(dynamicIndex ? { ...idx, ...dynamicIndex } : idx)} />;
+        })}
       </div>
 
       {/* Market Sentiment row */}
@@ -107,10 +191,10 @@ export default function Dashboard() {
                 <div className="gs-label">Index · Nifty 50 · Intraday</div>
                 <div className="flex items-baseline gap-3 mt-1">
                   <span className="font-display text-2xl font-bold text-gs-text tabular-nums">
-                    {INDICES[0].value.toLocaleString("en-IN")}
+                    {niftyValue.toLocaleString("en-IN")}
                   </span>
                   <span className="font-mono text-sm text-gs-pos tabular-nums">
-                    +{INDICES[0].change.toFixed(2)} (+{INDICES[0].changePct.toFixed(2)}%)
+                    {niftyChange >= 0 ? '+' : ''}{niftyChange.toFixed(2)} ({niftyChangePct >= 0 ? '+' : ''}{niftyChangePct.toFixed(2)}%)
                   </span>
                 </div>
               </div>
@@ -217,34 +301,40 @@ export default function Dashboard() {
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-display font-bold text-gs-text text-sm">Top Gainers</h3>
               <span className="font-mono text-[10px] uppercase tracking-wider text-gs-pos">
-                ▲ {TOP_MOVERS.gainers.length}
+                ▲ {gainers.length}
               </span>
             </div>
             <div className="space-y-2">
-              {TOP_MOVERS.gainers.slice(0, 4).map((s) => (
-                <button
-                  key={s.ticker}
-                  onClick={() => navigate(`/stock/${s.ticker}`)}
-                  className="w-full flex items-center justify-between py-1.5 border-b border-gs-border last:border-b-0 hover:bg-gs-cardHover transition-colors px-1 -mx-1 rounded-sm"
-                >
-                  <div className="text-left">
-                    <div className="font-mono text-[12.5px] text-gs-text font-semibold tracking-wider">
-                      {s.ticker}
+              {loading ? (
+                <div className="text-center py-4 text-gs-textMuted text-sm">Loading...</div>
+              ) : gainers.length > 0 ? (
+                gainers.map((s) => (
+                  <button
+                    key={s.symbol || s.ticker}
+                    onClick={() => navigate(`/stock/${s.symbol || s.ticker}`)}
+                    className="w-full flex items-center justify-between py-1.5 border-b border-gs-border last:border-b-0 hover:bg-gs-cardHover transition-colors px-1 -mx-1 rounded-sm"
+                  >
+                    <div className="text-left">
+                      <div className="font-mono text-[12.5px] text-gs-text font-semibold tracking-wider">
+                        {s.symbol || s.ticker}
+                      </div>
+                      <div className="text-[10px] text-gs-textMuted truncate max-w-[140px]">
+                        {s.name || s.sector}
+                      </div>
                     </div>
-                    <div className="text-[10px] text-gs-textMuted truncate max-w-[140px]">
-                      {s.sector}
+                    <div className="text-right">
+                      <div className="font-mono text-xs text-gs-text tabular-nums">
+                        ₹{(s.price || 0).toFixed(2)}
+                      </div>
+                      <div className="font-mono text-[11px] text-gs-pos tabular-nums">
+                        +{(s.changePct || 0).toFixed(2)}%
+                      </div>
                     </div>
-                  </div>
-                  <div className="text-right">
-                    <div className="font-mono text-xs text-gs-text tabular-nums">
-                      ₹{s.price.toFixed(2)}
-                    </div>
-                    <div className="font-mono text-[11px] text-gs-pos tabular-nums">
-                      +{s.changePct.toFixed(2)}%
-                    </div>
-                  </div>
-                </button>
-              ))}
+                  </button>
+                ))
+              ) : (
+                <div className="text-center py-4 text-gs-textMuted text-sm">No gainers</div>
+              )}
             </div>
           </div>
 
@@ -252,34 +342,40 @@ export default function Dashboard() {
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-display font-bold text-gs-text text-sm">Top Losers</h3>
               <span className="font-mono text-[10px] uppercase tracking-wider text-gs-neg">
-                ▼ {TOP_MOVERS.losers.length}
+                ▼ {losers.length}
               </span>
             </div>
             <div className="space-y-2">
-              {TOP_MOVERS.losers.slice(0, 4).map((s) => (
-                <button
-                  key={s.ticker}
-                  onClick={() => navigate(`/stock/${s.ticker}`)}
-                  className="w-full flex items-center justify-between py-1.5 border-b border-gs-border last:border-b-0 hover:bg-gs-cardHover transition-colors px-1 -mx-1 rounded-sm"
-                >
-                  <div className="text-left">
-                    <div className="font-mono text-[12.5px] text-gs-text font-semibold tracking-wider">
-                      {s.ticker}
+              {loading ? (
+                <div className="text-center py-4 text-gs-textMuted text-sm">Loading...</div>
+              ) : losers.length > 0 ? (
+                losers.map((s) => (
+                  <button
+                    key={s.symbol || s.ticker}
+                    onClick={() => navigate(`/stock/${s.symbol || s.ticker}`)}
+                    className="w-full flex items-center justify-between py-1.5 border-b border-gs-border last:border-b-0 hover:bg-gs-cardHover transition-colors px-1 -mx-1 rounded-sm"
+                  >
+                    <div className="text-left">
+                      <div className="font-mono text-[12.5px] text-gs-text font-semibold tracking-wider">
+                        {s.symbol || s.ticker}
+                      </div>
+                      <div className="text-[10px] text-gs-textMuted truncate max-w-[140px]">
+                        {s.name || s.sector}
+                      </div>
                     </div>
-                    <div className="text-[10px] text-gs-textMuted truncate max-w-[140px]">
-                      {s.sector}
+                    <div className="text-right">
+                      <div className="font-mono text-xs text-gs-text tabular-nums">
+                        ₹{(s.price || 0).toFixed(2)}
+                      </div>
+                      <div className="font-mono text-[11px] text-gs-neg tabular-nums">
+                        {(s.changePct || 0).toFixed(2)}%
+                      </div>
                     </div>
-                  </div>
-                  <div className="text-right">
-                    <div className="font-mono text-xs text-gs-text tabular-nums">
-                      ₹{s.price.toFixed(2)}
-                    </div>
-                    <div className="font-mono text-[11px] text-gs-neg tabular-nums">
-                      {s.changePct.toFixed(2)}%
-                    </div>
-                  </div>
-                </button>
-              ))}
+                  </button>
+                ))
+              ) : (
+                <div className="text-center py-4 text-gs-textMuted text-sm">No losers</div>
+              )}
             </div>
           </div>
         </div>

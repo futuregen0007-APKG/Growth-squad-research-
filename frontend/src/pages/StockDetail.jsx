@@ -1,4 +1,5 @@
 import { useParams, useNavigate, Link } from "react-router-dom";
+import { useState, useEffect } from "react";
 import {
   ArrowLeft,
   Sparkles,
@@ -13,6 +14,9 @@ import {
   TrendingUp,
   TrendingDown,
   Award,
+  AlertCircle,
+  BarChart3,
+  LineChart as LineChartIcon,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -28,12 +32,15 @@ import {
   Line,
   Legend,
 } from "recharts";
-import { STOCKS, NEWS_FEED, getCompanyResearch } from "@/data/mockData";
+import { NEWS_FEED, getCompanyResearch, STOCKS } from "@/data/mockData";
 import ChangeBadge from "@/components/widgets/ChangeBadge";
 import RatingPanel from "@/components/widgets/RatingPanel";
 import SWOTGrid from "@/components/widgets/SWOTGrid";
 import RiskFlagsList from "@/components/widgets/RiskFlagsList";
+import LiveStockPrice from "@/components/LiveStockPrice";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { fetchStockBySymbol, fetchCompanyDetails } from "@/services/stockApi";
+import CandlestickChart from "@/components/charts/CandlestickChart";
 
 const ChartTooltip = ({ active, payload }) => {
   if (!active || !payload?.length) return null;
@@ -95,9 +102,57 @@ const ValuationRow = ({ name, value, sectorAvg, hint }) => {
 export default function StockDetail() {
   const { ticker } = useParams();
   const navigate = useNavigate();
-  const stock = STOCKS.find((s) => s.ticker === ticker?.toUpperCase()) || STOCKS[0];
+  const [stock, setStock] = useState(null);
+  const [details, setDetails] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [chartType, setChartType] = useState('area'); // 'area' or 'candlestick'
+
+  useEffect(() => {
+    const loadStock = async () => {
+      try {
+        setLoading(true);
+        const [stockData, detailsData] = await Promise.all([
+          fetchStockBySymbol(ticker?.toUpperCase()),
+          fetchCompanyDetails(ticker?.toUpperCase()),
+        ]);
+        setStock(stockData);
+        setDetails(detailsData);
+        setError(null);
+      } catch (err) {
+        console.error('Error loading stock:', err);
+        // Don't set error - fallback data should be available from API
+        // Only set error if truly no data available
+        setError(null);
+      } finally {
+        setLoading(false);
+      }
+    };
+    if (ticker) loadStock();
+  }, [ticker]);
+
+  if (error || !stock) {
+    return (
+      <div className="space-y-6 animate-fade-up">
+        <button
+          onClick={() => navigate(-1)}
+          className="flex items-center gap-2 text-[12px] font-mono uppercase tracking-wider text-gs-textDim hover:text-gs-text"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" /> Back
+        </button>
+        <div className="bg-gs-card border border-gs-neg/30 rounded-lg p-4 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-gs-neg flex-shrink-0 mt-0.5" />
+          <div>
+            <h3 className="font-semibold text-gs-text">Unable to Load Stock Data</h3>
+            <p className="text-sm text-gs-textMuted mt-1">{error || 'Stock not found'}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const research = getCompanyResearch(stock);
-  const isPos = stock.changePct >= 0;
+  const isPos = (stock.changePct || 0) >= 0;
 
   const peers = STOCKS.filter(
     (s) => s.sector === stock.sector && s.ticker !== stock.ticker,
@@ -141,12 +196,6 @@ export default function StockDetail() {
               </button>
             </div>
             <div className="text-sm text-gs-textMuted mt-1">{stock.name}</div>
-            <div className="flex items-baseline gap-3 mt-3">
-              <span className="font-display text-3xl font-bold text-gs-text tabular-nums">
-                ₹{stock.price.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
-              </span>
-              <ChangeBadge value={stock.changePct} size="lg" />
-            </div>
           </div>
           <div className="grid grid-cols-3 gap-4 sm:gap-6 text-right">
             <StatBox label="Mkt Cap" value={stock.marketCap} />
@@ -155,6 +204,22 @@ export default function StockDetail() {
           </div>
         </div>
       </div>
+
+      <LiveStockPrice
+        symbol={stock.ticker}
+        companyName={details?.name || stock.name}
+        initialData={{
+          price: stock.price,
+          open: stock.open,
+          high: stock.high,
+          low: stock.low,
+          previousClose: stock.previousClose,
+          volume: stock.volume,
+          change: stock.change,
+          percentage: stock.changePct,
+          timestamp: stock.lastUpdate,
+        }}
+      />
 
       {/* Institutional Rating Panel */}
       <RatingPanel rating={research.rating} currentPrice={stock.price} />
@@ -166,57 +231,81 @@ export default function StockDetail() {
           <div className="gs-card p-5">
             <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
               <div className="gs-label">Price · Intraday</div>
-              <div className="flex items-center gap-1">
-                {["1D", "5D", "1M", "6M", "1Y", "5Y"].map((r, i) => (
+              <div className="flex items-center gap-2">
+                {/* Chart type toggle */}
+                <div className="flex items-center bg-gs-panel border border-gs-border rounded-sm">
                   <button
-                    key={r}
-                    className={`font-mono text-[11px] px-2 py-1 rounded-sm border ${
-                      i === 0
-                        ? "bg-gs-card text-gs-gold border-gs-gold/40"
-                        : "bg-transparent text-gs-textDim border-gs-border hover:text-gs-text hover:border-gs-textDim/50"
-                    }`}
+                    onClick={() => setChartType('area')}
+                    className={`p-1.5 rounded-sm ${chartType === 'area' ? 'bg-gs-card text-gs-gold' : 'text-gs-textDim hover:text-gs-text'}`}
+                    title="Area Chart"
                   >
-                    {r}
+                    <LineChartIcon className="w-3.5 h-3.5" />
                   </button>
-                ))}
+                  <button
+                    onClick={() => setChartType('candlestick')}
+                    className={`p-1.5 rounded-sm ${chartType === 'candlestick' ? 'bg-gs-card text-gs-gold' : 'text-gs-textDim hover:text-gs-text'}`}
+                    title="Candlestick Chart"
+                  >
+                    <BarChart3 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                {/* Timeframe buttons */}
+                <div className="flex items-center gap-1">
+                  {["1D", "5D", "1M", "6M", "1Y", "5Y"].map((r, i) => (
+                    <button
+                      key={r}
+                      className={`font-mono text-[11px] px-2 py-1 rounded-sm border ${
+                        i === 0
+                          ? "bg-gs-card text-gs-gold border-gs-gold/40"
+                          : "bg-transparent text-gs-textDim border-gs-border hover:text-gs-text hover:border-gs-textDim/50"
+                      }`}
+                    >
+                      {r}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
             <div style={{ height: 280 }}>
-              <ResponsiveContainer>
-                <AreaChart data={stock.series} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="stockGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={isPos ? "#059669" : "#DC2626"} stopOpacity={0.3} />
-                      <stop offset="100%" stopColor={isPos ? "#059669" : "#DC2626"} stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid stroke="#1E222A" strokeDasharray="2 4" />
-                  <XAxis
-                    dataKey="x"
-                    stroke="#475569"
-                    tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }}
-                    tickLine={false}
-                    axisLine={{ stroke: "#1E222A" }}
-                  />
-                  <YAxis
-                    stroke="#475569"
-                    tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }}
-                    tickLine={false}
-                    axisLine={{ stroke: "#1E222A" }}
-                    domain={["dataMin - 5", "dataMax + 5"]}
-                    width={60}
-                  />
-                  <Tooltip content={<ChartTooltip />} cursor={{ stroke: "#D4AF37", strokeDasharray: "3 3" }} />
-                  <Area
-                    type="monotone"
-                    dataKey="v"
-                    stroke={isPos ? "#059669" : "#DC2626"}
-                    strokeWidth={1.8}
-                    fill="url(#stockGrad)"
-                    isAnimationActive={false}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
+              {chartType === 'area' ? (
+                <ResponsiveContainer>
+                  <AreaChart data={stock.series} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="stockGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={isPos ? "#059669" : "#DC2626"} stopOpacity={0.3} />
+                        <stop offset="100%" stopColor={isPos ? "#059669" : "#DC2626"} stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="#1E222A" strokeDasharray="2 4" />
+                    <XAxis
+                      dataKey="x"
+                      stroke="#475569"
+                      tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }}
+                      tickLine={false}
+                      axisLine={{ stroke: "#1E222A" }}
+                    />
+                    <YAxis
+                      stroke="#475569"
+                      tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }}
+                      tickLine={false}
+                      axisLine={{ stroke: "#1E222A" }}
+                      domain={["dataMin - 5", "dataMax + 5"]}
+                      width={60}
+                    />
+                    <Tooltip content={<ChartTooltip />} cursor={{ stroke: "#D4AF37", strokeDasharray: "3 3" }} />
+                    <Area
+                      type="monotone"
+                      dataKey="v"
+                      stroke={isPos ? "#059669" : "#DC2626"}
+                      strokeWidth={1.8}
+                      fill="url(#stockGrad)"
+                      isAnimationActive={false}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : (
+                <CandlestickChart data={stock.series} isPositive={isPos} />
+              )}
             </div>
           </div>
 

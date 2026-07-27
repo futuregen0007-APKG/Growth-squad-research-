@@ -4,168 +4,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { AI_CHAT_SUGGESTIONS, AI_SEED_CONVERSATION, AI_PROMPT_CHIPS } from "@/data/mockData";
 import { toast } from "sonner";
 
-const MOCK_REPLIES = {
-  default: `**Synthesis**
-
-Based on disclosed filings, sell-side consensus and management commentary, here is a structured view:
-
-• **Setup** — The current narrative is tilted constructive given improving order intake and indigenous policy support.
-• **Numbers** — Consensus FY26E EPS at +24% YoY with EBITDA margin expansion of 80–120 bps.
-• **Risks** — Execution timeline, working capital cycle, and policy continuity post-budget.
-
-**Top Picks (illustrative)**: HAL, BEL, RVNL, TITAGARH
-
-_This is a research-style synthesis from structured public data. Not investment advice._`,
-
-  earnings: `**HAL · Q2 FY26 Earnings Synthesis**
-
-**Top-line**
-• Revenue ₹6,410 Cr (+15.2% YoY) — beat consensus by 3.4%
-• Order book at ₹1.42L Cr (book-to-bill of 4.7x)
-
-**Profitability**
-• EBITDA margin 28.6% (vs 27.4% YoY) — 120 bps expansion
-• PAT ₹1,520 Cr — beat by 5.8%
-
-**Management commentary**
-• LCA Mk1A delivery ramp on track for FY26
-• GE-414 JV execution timeline reaffirmed
-• Maintenance & overhaul vertical growing 18% YoY
-
-**Verdict — BUY** (TP ₹5,400, +19% upside)`,
-
-  margins: `**Banking Sector — NIM Cliff Analysis (HDFCBANK vs ICICIBANK · 8Q)**
-
-| Quarter | HDFCBANK NIM | ICICIBANK NIM |
-|---------|--------------|----------------|
-| Q3 FY24 | 3.62%        | 4.43%          |
-| Q4 FY24 | 3.46%        | 4.40%          |
-| Q1 FY25 | 3.42%        | 4.36%          |
-| Q2 FY25 | 3.46%        | 4.27%          |
-
-**Key takeaways**
-• HDFCBANK NIM compressed 16 bps post-merger — deposit cost re-pricing still in progress.
-• ICICIBANK retains structural NIM advantage (~85 bps premium vs HDFCBANK).
-• Forward outlook: 8–12 bps further NIM compression possible at HDFCB; ICICIBANK relatively more insulated.
-
-**Verdict** — Prefer ICICIBANK on a relative basis through FY26.`,
-
-  defence: `**Defence Sector — Order Book vs Revenue Heatmap**
-
-Sorted by Book-to-Bill ratio (FY24):
-
-| Ticker     | Order Book      | TTM Revenue | B/B Ratio |
-|------------|-----------------|-------------|-----------|
-| HAL        | ₹1.42L Cr       | ₹30.4K Cr   | **4.7x**  |
-| BDL        | ₹19,400 Cr      | ₹2,800 Cr   | **6.9x**  |
-| BEL        | ₹76,800 Cr      | ₹19,820 Cr  | **3.9x**  |
-| MAZDOCK    | ₹38,400 Cr      | ₹9,840 Cr   | **3.9x**  |
-
-**BDL** has the highest order-to-revenue conversion runway — but execution capacity is the bottleneck. **HAL** offers the cleanest combination of scale, margin and visibility.`,
-
-  railways: AI_SEED_CONVERSATION[1].content,
-
-  compare: `**HAL vs BEL — Order Book & Quality Compare**
-
-| Metric           | HAL              | BEL              | Δ          |
-|------------------|------------------|------------------|------------|
-| Order Book       | ₹1.42L Cr        | ₹76,800 Cr       | HAL +85%   |
-| Book/Bill        | 4.7x             | 3.9x             | HAL +0.8x  |
-| EBITDA Margin    | 28.6%            | 24.2%            | HAL +440bp |
-| ROE FY24         | 26.4%            | 22.1%            | HAL +430bp |
-| Net Cash         | ₹38,400 Cr       | ₹13,800 Cr       | HAL +178%  |
-| P/E (FY26E)      | 26.8x            | 31.4x            | HAL cheaper |
-
-**Verdict** — HAL is the cleaner balance-sheet play with longer revenue visibility. BEL is more diversified across electronics & systems. We prefer **HAL** on a relative basis through FY27.
-
-_Both are core defence portfolio holds; pair-trade view: long HAL, neutral BEL._`,
-
-  risksRailway: `**Indian Railway Sector — Key Risks Map**
-
-**1. Execution & timeline slippage**
-• Order awarding has accelerated, but L1-to-revenue conversion lag is 6–9 quarters
-• Working capital pressure during peak deployment
-• Risk: 1–2 quarter slip can re-rate FY27 numbers 8–12% lower
-
-**2. Single-buyer concentration**
-• Indian Railways is >90% revenue source for RVNL, IRCON, RAILTEL
-• Mitigant: Vande Bharat exports, metro projects, KAVACH digital signalling
-
-**3. Margin pressure**
-• Competitive bidding intensity has compressed EPC margins by 80–120 bps in FY24
-• Watch: management guidance on order quality vs quantity
-
-**4. Budget cycle dependency**
-• 64% of FY26 capex deployed in H1 — sustainability into H2 is debated
-• Election cycle timing creates additional uncertainty
-
-**Bottom line**: structural tailwind intact, but timing & margin discipline are the differentiators. Prefer **TITAGARH** (rolling stock) and **RAILTEL** (digital) over pure EPC plays.`,
-
-  defenceOrderBook: `**Indian Defence — Top by Book/Bill Ratio**
-
-Sorted by order intake to revenue conversion runway:
-
-| Rank | Ticker     | Order Book   | TTM Revenue | B/B Ratio |
-|------|------------|--------------|-------------|-----------|
-| 1    | **BDL**    | ₹19,400 Cr   | ₹2,800 Cr   | **6.9x**  |
-| 2    | **HAL**    | ₹1.42L Cr    | ₹30.4K Cr   | **4.7x**  |
-| 3    | **BEL**    | ₹76,800 Cr   | ₹19,820 Cr  | **3.9x**  |
-| 4    | **MAZDOCK**| ₹38,400 Cr   | ₹9,840 Cr   | **3.9x**  |
-| 5    | **BEML**   | ₹14,200 Cr   | ₹4,210 Cr   | **3.4x**  |
-
-**Key takeaways**
-• **BDL** has the highest visibility runway, but execution capacity is the bottleneck — 12–18 month delivery cycles on missile platforms
-• **HAL** offers the cleanest combination of scale, margin and balance sheet
-• **BEL** is the most diversified across electronics, weapons systems and avionics
-• Sub-scale plays (BEML) tend to be high-beta — appropriate for cyclical traders
-
-**Top picks (institutional view)**: **HAL** (BUY · TP ₹5,400) > **BEL** (BUY · TP ₹360) > **BDL** (ACCUMULATE · TP ₹1,250)`,
-
-  tataMotors: `**Tata Motors — Latest Earnings Synthesis**
-
-**Top-line**
-• Revenue ₹1.10L Cr (+5.6% YoY) — in-line with consensus
-• JLR revenue £6.9B (-1.8% YoY) — driven by China weakness; UK/EU demand resilient
-
-**Profitability**
-• EBITDA margin 14.2% (+120 bps YoY) — JLR margin expansion to 16.8%
-• PAT ₹6,840 Cr (+25.4% YoY) — beat by 4.2%
-
-**Segment commentary**
-• **JLR**: Defender + Range Rover Sport demand robust; China remains soft
-• **CV India**: Demand inflection; HCV segment +18% YoY
-• **PV India**: Market share at 14.2%; EV segment growing 38% YoY
-
-**Management commentary**
-• JLR margin guidance for FY26 raised to 16% (from 15%)
-• Net debt to fall below ₹40,000 Cr by FY26-end (vs ₹52,000 Cr currently)
-• Demerger value-unlock catalyst into FY26
-
-**Verdict — BUY** (TP ₹1,180, +8% upside)
-Key swing factor is JLR China recovery and Indian CV cycle momentum.`,
-};
-
-const pickReply = (q) => {
-  const lower = q.toLowerCase();
-  if (lower.includes("tata") && (lower.includes("motors") || lower.includes("earnings")))
-    return MOCK_REPLIES.tataMotors;
-  if (lower.includes("compare") || lower.includes(" vs ") || lower.includes("hal vs bel") || lower.includes("bel vs hal"))
-    return MOCK_REPLIES.compare;
-  if (lower.includes("risks") && (lower.includes("railway") || lower.includes("rail")))
-    return MOCK_REPLIES.risksRailway;
-  if (lower.includes("defence") && (lower.includes("order book") || lower.includes("best") || lower.includes("top")))
-    return MOCK_REPLIES.defenceOrderBook;
-  if (lower.includes("earnings") || lower.includes("hal q2"))
-    return MOCK_REPLIES.earnings;
-  if (lower.includes("margin") || lower.includes("nim") || lower.includes("hdfc"))
-    return MOCK_REPLIES.margins;
-  if (lower.includes("defence") || lower.includes("order book"))
-    return MOCK_REPLIES.defence;
-  if (lower.includes("railway") || lower.includes("capex") || lower.includes("rvnl"))
-    return MOCK_REPLIES.railways;
-  return MOCK_REPLIES.default;
-};
-
 const formatMarkdown = (text) => {
   const lines = text.split("\n");
   return lines.map((ln, i) => {
@@ -231,18 +69,85 @@ export default function AIResearch() {
     }
   }, [messages, thinking]);
 
-  const send = (text) => {
-    const q = (text ?? input).trim();
-    if (!q) return;
-    setMessages((m) => [...m, { role: "user", content: q }]);
-    setInput("");
-    setThinking(true);
-    setTimeout(() => {
-      setMessages((m) => [...m, { role: "ai", content: pickReply(q) }]);
-      setThinking(false);
-    }, 750);
-  };
+ const send = async (text) => {
 
+    const q = (text ?? input).trim();
+
+    if (!q) return;
+
+    setMessages((m) => [
+
+        ...m,
+
+        {
+            role: "user",
+            content: q,
+        },
+
+    ]);
+
+    setInput("");
+
+    setThinking(true);
+
+    try {
+
+        const backendUrl = process.env.REACT_APP_API_BASE_URL || 'http://localhost:3000';
+        const res = await fetch(`${backendUrl}/api/chat`, {
+
+            method: "POST",
+
+            headers: {
+
+                "Content-Type": "application/json",
+
+            },
+
+            body: JSON.stringify({
+
+                message: q,
+
+            }),
+
+        });
+
+        const data = await res.json();
+
+        setMessages((m) => [
+
+            ...m,
+
+            {
+
+                role: "ai",
+
+                content: data.reply,
+
+            },
+
+        ]);
+
+    } catch {
+
+        setMessages((m) => [
+
+            ...m,
+
+            {
+
+                role: "ai",
+
+                content: "Something went wrong.",
+
+            },
+
+        ]);
+
+    }
+
+    setThinking(false);
+
+};
   const reset = () => {
     setMessages([]);
     toast.success("Conversation cleared", {
