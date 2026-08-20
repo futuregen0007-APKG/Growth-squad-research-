@@ -30,54 +30,72 @@ export class GrowwProvider extends BaseProvider {
   }
 
   async getStock(symbol) {
-    try {
-      this.validateSymbol(symbol);
-      const providerSymbol = String(symbol).trim().toUpperCase();
+    const maxRetries = 2;
 
-      logger.debug(`Groww: Fetching quote for ${providerSymbol}`);
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      try {
+        this.validateSymbol(symbol);
+        const providerSymbol = String(symbol).trim().toUpperCase();
 
-      const resp = await this.client.get('/v1/live-data/quote', {
-        params: {
-          exchange: 'NSE',
-          segment: 'CASH',
-          trading_symbol: providerSymbol,
-        },
-      });
+        logger.debug(`Groww: Fetching quote for ${providerSymbol}`);
 
-      if (!resp.data) {
-        throw createProviderError(this.providerName, `No quote data for ${providerSymbol}`);
+        const resp = await this.client.get('/v1/live-data/quote', {
+          params: {
+            exchange: 'NSE',
+            segment: 'CASH',
+            trading_symbol: providerSymbol,
+          },
+        });
+
+        if (!resp.data) {
+          throw createProviderError(this.providerName, `No quote data for ${providerSymbol}`);
+        }
+
+        const data = resp.data?.payload || resp.data;
+
+        const formatted = {
+          ticker: providerSymbol,
+          name: data.name || data.companyName || SUPPORTED_STOCKS[providerSymbol]?.name || providerSymbol,
+          price: Number(data.last_price ?? data.lastPrice ?? data.price ?? 0),
+          change: Number(data.day_change ?? data.change ?? 0),
+          changePct: Number(data.day_change_perc ?? data.changePercent ?? data.changePct ?? 0),
+          high: Number(data.ohlc?.high ?? data.high ?? 0),
+          low: Number(data.ohlc?.low ?? data.low ?? 0),
+          open: Number(data.ohlc?.open ?? data.open ?? 0),
+          previousClose: Number(data.ohlc?.close ?? data.previousClose ?? 0),
+          volume: Number(data.volume ?? 0),
+          currency: data.currency || 'INR',
+          lastUpdate: data.last_trade_time ? Number(data.last_trade_time) : Date.now(),
+        };
+
+        return formatted;
+      } catch (error) {
+        const isRateLimit = error.response?.status === 429;
+        const shouldRetry = isRateLimit && attempt < maxRetries;
+
+        if (shouldRetry) {
+          const delayMs = (attempt + 1) * 1000;
+          logger.warn(`Groww: rate limited for ${symbol}; retrying in ${delayMs}ms (attempt ${attempt + 1}/${maxRetries + 1})`);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          continue;
+        }
+
+        if (error.response?.status === 403) {
+          throw createProviderError(
+            this.providerName,
+            `Access Forbidden (403). Please verify that your IP is whitelisted on Groww, and the key is active.`
+          );
+        }
+
+        if (isRateLimit) {
+          throw createProviderError(this.providerName, 'API rate limit exceeded');
+        }
+
+        throw createProviderError(this.providerName, `Failed to fetch ${symbol}: ${error.message}`);
       }
-
-      const data = resp.data?.payload || resp.data;
-
-      const formatted = {
-        ticker: providerSymbol,
-        name: data.name || data.companyName || SUPPORTED_STOCKS[providerSymbol]?.name || providerSymbol,
-        price: Number(data.last_price ?? data.lastPrice ?? data.price ?? 0),
-        change: Number(data.day_change ?? data.change ?? 0),
-        changePct: Number(data.day_change_perc ?? data.changePercent ?? data.changePct ?? 0),
-        high: Number(data.ohlc?.high ?? data.high ?? 0),
-        low: Number(data.ohlc?.low ?? data.low ?? 0),
-        open: Number(data.ohlc?.open ?? data.open ?? 0),
-        previousClose: Number(data.ohlc?.close ?? data.previousClose ?? 0),
-        volume: Number(data.volume ?? 0),
-        currency: data.currency || 'INR',
-        lastUpdate: data.last_trade_time ? Number(data.last_trade_time) : Date.now(),
-      };
-
-      return formatted;
-    } catch (error) {
-      if (error.response?.status === 429) {
-        throw createProviderError(this.providerName, 'API rate limit exceeded');
-      }
-      if (error.response?.status === 403) {
-        throw createProviderError(
-          this.providerName,
-          `Access Forbidden (403). Please verify that your IP is whitelisted on Groww, and the key is active.`
-        );
-      }
-      throw createProviderError(this.providerName, `Failed to fetch ${symbol}: ${error.message}`);
     }
+
+    throw createProviderError(this.providerName, `Failed to fetch ${symbol}: unknown error`);
   }
 
   async search(query) {

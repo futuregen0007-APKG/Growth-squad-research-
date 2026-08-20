@@ -12,6 +12,7 @@ import { FinnhubProvider } from './providers/FinnhubProvider.js';
 import { TwelveDataProvider } from './providers/TwelveDataProvider.js';
 import { FinancialModelingPrepProvider } from './providers/FinancialModelingPrepProvider.js';
 import { YahooFinanceProvider } from './providers/YahooFinanceProvider.js';
+import { GrowwProvider } from './providers/GrowwProvider.js';
 import { initializeRedis, closeRedis } from './utils/redisClient.js';
 import { formatErrorResponse, getHttpStatus } from './utils/errorHandler.js';
 import { logger } from './utils/logger.js';
@@ -80,13 +81,24 @@ let server = null;
 
 const startServer = async () => {
   const PORT = process.env.PORT || 5001;
-  const marketProvider = (process.env.MARKET_DATA_PROVIDER || 'yahoo-finance').toLowerCase();
+  const marketProvider = (process.env.MARKET_DATA_PROVIDER || 'groww').toLowerCase();
 
   await connectMongo();
   await initializeRedis();
 
   let provider;
-  if (marketProvider === 'yahoo' || marketProvider === 'yahoo-finance' || marketProvider === 'yahoo-finance2' || marketProvider === 'yahoofinance') {
+  if (marketProvider === 'groww' || marketProvider.includes('groww')) {
+    const growwApiKey = process.env.GROWW_API_KEY;
+    const growwApiSecret = process.env.GROWW_API_SECRET;
+
+    if (!growwApiKey || !growwApiSecret) {
+      logger.error('Missing GROWW_API_KEY or GROWW_API_SECRET. Set both in the backend .env before starting the server.');
+      process.exit(1);
+    }
+
+    provider = new GrowwProvider(growwApiKey, growwApiSecret);
+    logger.info('Using Groww provider for market data');
+  } else if (marketProvider === 'yahoo' || marketProvider === 'yahoo-finance' || marketProvider === 'yahoo-finance2' || marketProvider === 'yahoofinance') {
     provider = new YahooFinanceProvider();
     logger.info('Using Yahoo Finance provider for market data');
   } else if (marketProvider === 'financialmodelingprep' || marketProvider === 'financial-modeling-prep') {
@@ -106,7 +118,6 @@ const startServer = async () => {
     provider = new TwelveDataProvider(twelveApiKey);
     logger.info('Using Twelve Data provider for market data');
   } else {
-    // If explicitly configured for Finnhub, use it; otherwise default to Yahoo Finance
     if (marketProvider.includes('finnhub')) {
       const finnhubApiKey = process.env.FINNHUB_API_KEY;
       if (!finnhubApiKey) {
@@ -116,8 +127,8 @@ const startServer = async () => {
       provider = new FinnhubProvider(finnhubApiKey);
       logger.info('Using Finnhub provider for market data');
     } else {
-      provider = new YahooFinanceProvider();
-      logger.info('Defaulting to Yahoo Finance provider for market data');
+      provider = new GrowwProvider(process.env.GROWW_API_KEY, process.env.GROWW_API_SECRET);
+      logger.info('Defaulting to Groww provider for market data');
     }
   }
 
