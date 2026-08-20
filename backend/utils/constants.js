@@ -19,7 +19,7 @@
 // ============================================================
 export const CACHE_TTL = {
   // Stock prices update frequently → short cache
-  STOCK_PRICE: parseInt(process.env.CACHE_TTL_STOCK || 300),        // 5 minutes
+  STOCK_PRICE: parseInt(process.env.CACHE_TTL_STOCK || 20),          // ~20 seconds
   
   // Company details are stable → longer cache
   COMPANY_DETAILS: parseInt(process.env.CACHE_TTL_COMPANY || 3600), // 1 hour
@@ -48,12 +48,6 @@ export const API_CONFIG = {
   FINANCIAL_MODELING_PREP: {
     BASE_URL: 'https://financialmodelingprep.com/api/v3',
     TIMEOUT: 15000,  // 15 seconds
-  },
-
-  // Groww provider
-  GROWW: {
-    BASE_URL: process.env.GROWW_BASE_URL || 'https://api.groww.in',
-    TIMEOUT: 15000,
   },
 };
 
