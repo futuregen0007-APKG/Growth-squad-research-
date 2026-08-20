@@ -1,16 +1,13 @@
 import axios from 'axios';
 import { STOCKS, FALLBACK_STOCK_DATA } from '@/data/mockData';
 
-const normalizeApiBaseUrl = (value) => {
-  if (!value) return 'http://localhost:5001';
-  return value.replace(/\/api\/?$/, '').replace(/\/$/, '');
-};
+import API_BASE from '@/config/api';
 
-const API_BASE = normalizeApiBaseUrl(process.env.REACT_APP_API_BASE_URL || 'http://localhost:5001');
+const BASE = API_BASE;
 
 // Create axios instance with timeout
 const api = axios.create({
-  baseURL: `${API_BASE}/api`,
+  baseURL: `${BASE}/api`,
   timeout: 10000,
 });
 

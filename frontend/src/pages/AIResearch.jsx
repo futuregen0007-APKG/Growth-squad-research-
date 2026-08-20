@@ -92,8 +92,8 @@ export default function AIResearch() {
 
     try {
 
-        const backendUrl = process.env.REACT_APP_API_BASE_URL || 'http://localhost:3000';
-        const res = await fetch(`${backendUrl}/api/chat`, {
+        const backendUrl = process.env.REACT_APP_API_BASE || process.env.REACT_APP_API_BASE_URL || 'http://localhost:3000';
+        const res = await fetch(`${backendUrl.replace(/\/$/, '')}/api/chat`, {
 
             method: "POST",
 

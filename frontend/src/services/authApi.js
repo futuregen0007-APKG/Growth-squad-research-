@@ -11,12 +11,9 @@
  * - Logout user
  */
 
-const normalizeApiBaseUrl = (value) => {
-  if (!value) return 'http://localhost:5001';
-  return value.replace(/\/api\/?$/, '').replace(/\/$/, '');
-};
+import API_BASE from '@/config/api';
 
-const API_BASE_URL = normalizeApiBaseUrl(process.env.REACT_APP_API_BASE_URL || 'http://localhost:5001');
+const API_BASE_URL = API_BASE;
 
 const buildApiUrl = (path) => `${API_BASE_URL}/api${path.startsWith('/') ? path : `/${path}`}`;
 

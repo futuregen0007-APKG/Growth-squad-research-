@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
+import API_BASE from '@/config/api';
 
-export default function SectorRotationRRG({ apiPath = 'http://localhost:5001/api/sector-rotation' }) {
+export default function SectorRotationRRG({ apiPath = `${API_BASE}/api/sector-rotation` }) {
   const svgRef = useRef(null);
   const [data, setData] = useState([]);
   const [showRaw, setShowRaw] = useState(false);

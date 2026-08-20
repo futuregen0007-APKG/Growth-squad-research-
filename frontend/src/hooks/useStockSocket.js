@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { io } from 'socket.io-client';
+import API_BASE from '@/config/api';
 
-const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'http://localhost:3000';
+const defaultSocketUrl = (() => {
+  try {
+    if (API_BASE.startsWith('https')) return API_BASE.replace(/^https/, 'wss');
+    if (API_BASE.startsWith('http')) return API_BASE.replace(/^http/, 'ws');
+  } catch (e) {}
+  return 'ws://localhost:3000';
+})();
+
+const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || defaultSocketUrl;
 
 export function useStockSocket(symbol) {
   const [status, setStatus] = useState('Disconnected');
