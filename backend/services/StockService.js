@@ -125,27 +125,29 @@ export class StockService {
         throw createInvalidInputError('Symbols must be a non-empty array');
       }
 
-      // Validate all symbols upfront
       const validatedSymbols = await Promise.all(symbols.map(s => this._validateSymbol(s)));
+      const results = [];
+      const concurrency = 4;
 
-      // Try to get all stocks (may hit cache for some)
-      const stockPromises = validatedSymbols.map(symbol => 
-        this.getStock(symbol).catch(error => {
-          this.logger.warn(`Failed to fetch ${symbol}: ${error.message}`);
-          return null;
-        })
-      );
+      for (let index = 0; index < validatedSymbols.length; index += concurrency) {
+        const batch = validatedSymbols.slice(index, index + concurrency);
+        const batchResults = await Promise.all(
+          batch.map((symbol) =>
+            this.getStock(symbol).catch((error) => {
+              this.logger.warn(`Failed to fetch ${symbol}: ${error.message}`);
+              return null;
+            })
+          )
+        );
 
-      const results = await Promise.all(stockPromises);
-      
-      // Filter out nulls (failed requests)
-      const successfulStocks = results.filter(stock => stock !== null);
+        results.push(...batchResults.filter(Boolean));
+      }
 
-      if (successfulStocks.length === 0) {
+      if (results.length === 0) {
         throw createInvalidInputError('Failed to fetch any stocks');
       }
 
-      return successfulStocks;
+      return results;
     } catch (error) {
       this.logger.error(`Error in getMultipleStocks: ${error.message}`);
       throw error;

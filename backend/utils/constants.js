@@ -50,8 +50,11 @@ export const API_CONFIG = {
     TIMEOUT: 15000,  // 15 seconds
   },
 
-  // Groww (custom/integrated provider)
-  // (Removed Groww provider) legacy Groww config removed - use Yahoo/Finnhub/TwelveData instead
+  // Groww provider
+  GROWW: {
+    BASE_URL: process.env.GROWW_BASE_URL || 'https://api.groww.in',
+    TIMEOUT: 15000,
+  },
 };
 
 // ============================================================
