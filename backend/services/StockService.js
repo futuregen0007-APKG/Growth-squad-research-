@@ -19,7 +19,7 @@
  */
 
 import { getCache, setCache, deleteCache } from '../utils/redisClient.js';
-import { CACHE_TTL, SUPPORTED_STOCKS, FALLBACK_STOCK_DATA } from '../utils/constants.js';
+import { CACHE_TTL, SUPPORTED_STOCKS } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
 import {
   createNotFoundError,
@@ -75,7 +75,7 @@ export class StockService {
   async getStock(symbol) {
     try {
       // Step 1: Validate input
-      const validatedSymbol = this._validateSymbol(symbol);
+      const validatedSymbol = await this._validateSymbol(symbol);
       
       // Step 2: Try cache first
       const cacheKey = `stock:${validatedSymbol}`;
@@ -98,21 +98,7 @@ export class StockService {
 
       return enrichedData;
     } catch (error) {
-      // Log error but maintain error structure
       this.logger.error(`Error in getStock(${symbol}): ${error.message}`);
-      
-      // FALLBACK: Use hardcoded data if API fails
-      if (FALLBACK_STOCK_DATA[symbol]) {
-        this.logger.warn(`Using fallback data for ${symbol} due to API error`);
-        const fallbackData = { ...FALLBACK_STOCK_DATA[symbol], lastUpdate: Date.now() };
-        const enrichedFallback = this._enrichStockData(fallbackData);
-        
-        // Cache fallback data for shorter time (1 minute)
-        await setCache(cacheKey, enrichedFallback, 60);
-        
-        return enrichedFallback;
-      }
-      
       throw error;
     }
   }
@@ -140,21 +126,13 @@ export class StockService {
       }
 
       // Validate all symbols upfront
-      const validatedSymbols = symbols.map(s => this._validateSymbol(s));
+      const validatedSymbols = await Promise.all(symbols.map(s => this._validateSymbol(s)));
 
       // Try to get all stocks (may hit cache for some)
       const stockPromises = validatedSymbols.map(symbol => 
         this.getStock(symbol).catch(error => {
-          // Log but don't fail entire batch - use fallback if available
           this.logger.warn(`Failed to fetch ${symbol}: ${error.message}`);
-          
-          // Return fallback data if available
-          if (FALLBACK_STOCK_DATA[symbol]) {
-            const fallbackData = { ...FALLBACK_STOCK_DATA[symbol], lastUpdate: Date.now() };
-            return this._enrichStockData(fallbackData);
-          }
-          
-          return null; // Indicate failure
+          return null;
         })
       );
 
@@ -262,7 +240,7 @@ export class StockService {
    */
   async getCompanyDetails(symbol) {
     try {
-      const validatedSymbol = this._validateSymbol(symbol);
+      const validatedSymbol = await this._validateSymbol(symbol);
 
       // Try cache
       const cacheKey = `company:${validatedSymbol}`;
@@ -295,7 +273,7 @@ export class StockService {
    */
   async invalidateCache(symbol) {
     try {
-      const validatedSymbol = this._validateSymbol(symbol);
+      const validatedSymbol = await this._validateSymbol(symbol);
       
       // Delete both price and company cache
       await deleteCache(`stock:${validatedSymbol}`);
@@ -331,11 +309,26 @@ export class StockService {
 
     const upperSymbol = symbol.toUpperCase();
 
-    if (!SUPPORTED_STOCKS[upperSymbol]) {
-      throw createNotFoundError('Stock', symbol);
+    // If symbol exists in supported list, return immediately
+    if (SUPPORTED_STOCKS[upperSymbol]) {
+      return upperSymbol;
     }
 
-    return upperSymbol;
+    // Attempt provider-based search by name if provider supports it
+    if (this.provider && typeof this.provider.search === 'function') {
+      // Try treating the input as a company name and resolve to a ticker
+      // Example: 'dhoot technology' -> 'DHOOT' (provider-specific)
+      // Note: provider.search should return { ticker, name } or null
+      // Use a best-effort approach before failing with NotFound
+      return this.provider.search(symbol).then((res) => {
+        if (res && res.ticker) {
+          return res.ticker.toUpperCase();
+        }
+        throw createNotFoundError('Stock', symbol);
+      });
+    }
+
+    throw createNotFoundError('Stock', symbol);
   }
 
   /**

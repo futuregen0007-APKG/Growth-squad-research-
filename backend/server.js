@@ -4,11 +4,14 @@ import cors from 'cors';
 import mongoose from 'mongoose';
 
 import chatRoute from './routes/chat.js';
+import researchRoute from './routes/research.js';
+import sectorRotationRoute from './routes/sectorRotation.js';
 import { createStockRoutes } from './routes/stocks.js';
 import { StockService } from './services/StockService.js';
 import { FinnhubProvider } from './providers/FinnhubProvider.js';
 import { TwelveDataProvider } from './providers/TwelveDataProvider.js';
 import { FinancialModelingPrepProvider } from './providers/FinancialModelingPrepProvider.js';
+import { YahooFinanceProvider } from './providers/YahooFinanceProvider.js';
 import { initializeRedis, closeRedis } from './utils/redisClient.js';
 import { formatErrorResponse, getHttpStatus } from './utils/errorHandler.js';
 import { logger } from './utils/logger.js';
@@ -41,6 +44,27 @@ app.get('/health', (req, res) => {
   res.status(200).json({ success: true, status: 'ok', uptime: process.uptime() });
 });
 
+// Debug: list registered routes
+app.get('/__routes', (req, res) => {
+  try {
+    const routes = [];
+    app._router.stack.forEach((layer) => {
+      if (layer.route && layer.route.path) {
+        routes.push(Object.keys(layer.route.methods).map((m) => `${m.toUpperCase()} ${layer.route.path}`).join(', '));
+      } else if (layer.name === 'router' && layer.handle && layer.handle.stack) {
+        layer.handle.stack.forEach((l) => {
+          if (l.route && l.route.path) {
+            routes.push(Object.keys(l.route.methods).map((m) => `${m.toUpperCase()} ${layer.regexp ? layer.regexp : ''}${l.route.path}`).join(', '));
+          }
+        });
+      }
+    });
+    res.json({ routes });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.use((req, res, next) => {
   console.log('Incoming request', req.method, req.url);
   next();
@@ -56,13 +80,16 @@ let server = null;
 
 const startServer = async () => {
   const port = parseInt(process.env.PORT, 10) || 5001;
-  const marketProvider = (process.env.MARKET_DATA_PROVIDER || 'finnhub').toLowerCase();
+  const marketProvider = (process.env.MARKET_DATA_PROVIDER || 'yahoo-finance').toLowerCase();
 
   await connectMongo();
   await initializeRedis();
 
   let provider;
-  if (marketProvider === 'financialmodelingprep' || marketProvider === 'financial-modeling-prep') {
+  if (marketProvider === 'yahoo' || marketProvider === 'yahoo-finance' || marketProvider === 'yahoo-finance2' || marketProvider === 'yahoofinance') {
+    provider = new YahooFinanceProvider();
+    logger.info('Using Yahoo Finance provider for market data');
+  } else if (marketProvider === 'financialmodelingprep' || marketProvider === 'financial-modeling-prep') {
     const fmpApiKey = process.env.FINANCIAL_MODELING_PREP_API_KEY;
     if (!fmpApiKey) {
       logger.error('Missing FINANCIAL_MODELING_PREP_API_KEY. Set FINANCIAL_MODELING_PREP_API_KEY in .env before starting the server.');
@@ -79,18 +106,28 @@ const startServer = async () => {
     provider = new TwelveDataProvider(twelveApiKey);
     logger.info('Using Twelve Data provider for market data');
   } else {
-    const finnhubApiKey = process.env.FINNHUB_API_KEY;
-    if (!finnhubApiKey) {
-      logger.error('Missing FINNHUB_API_KEY. Set FINNHUB_API_KEY in .env before starting the server.');
-      process.exit(1);
+    // If explicitly configured for Finnhub, use it; otherwise default to Yahoo Finance
+    if (marketProvider.includes('finnhub')) {
+      const finnhubApiKey = process.env.FINNHUB_API_KEY;
+      if (!finnhubApiKey) {
+        logger.error('Missing FINNHUB_API_KEY. Set FINNHUB_API_KEY in .env before starting the server.');
+        process.exit(1);
+      }
+      provider = new FinnhubProvider(finnhubApiKey);
+      logger.info('Using Finnhub provider for market data');
+    } else {
+      provider = new YahooFinanceProvider();
+      logger.info('Defaulting to Yahoo Finance provider for market data');
     }
-    provider = new FinnhubProvider(finnhubApiKey);
-    logger.info('Using Finnhub provider for market data');
   }
 
   const stockService = new StockService(provider);
   const stockRoutes = createStockRoutes(stockService);
   app.use('/api/stocks', stockRoutes);
+  app.use('/api/research', researchRoute);
+  logger.info('Mounting route: /api/sector-rotation');
+  app.use('/api/sector-rotation', sectorRotationRoute);
+  logger.info('Mounted route: /api/sector-rotation');
 
   app.use((err, req, res, next) => {
     const payload = formatErrorResponse(err);

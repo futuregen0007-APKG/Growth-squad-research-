@@ -49,6 +49,9 @@ export const API_CONFIG = {
     BASE_URL: 'https://financialmodelingprep.com/api/v3',
     TIMEOUT: 15000,  // 15 seconds
   },
+
+  // Groww (custom/integrated provider)
+  // (Removed Groww provider) legacy Groww config removed - use Yahoo/Finnhub/TwelveData instead
 };
 
 // ============================================================

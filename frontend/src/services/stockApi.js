@@ -38,9 +38,8 @@ export const fetchAllStocks = async () => {
     const response = await api.get('/stocks');
     return addSeriesToList(response.data.data || []);
   } catch (error) {
-    console.error('Error fetching stocks, using fallback:', error);
-    // Return fallback data from STOCKS array
-    return addSeriesToList(STOCKS);
+    console.error('Error fetching stocks:', error);
+    throw error;
   }
 };
 
@@ -50,17 +49,7 @@ export const fetchStockBySymbol = async (symbol) => {
     const response = await api.get(`/stocks/${symbol}`);
     return addSeries(response.data.data);
   } catch (error) {
-    console.error(`Error fetching stock ${symbol}, using fallback:`, error);
-    // Return fallback data from FALLBACK_STOCK_DATA
-    const fallbackData = FALLBACK_STOCK_DATA[symbol.toUpperCase()];
-    if (fallbackData) {
-      return addSeries(fallbackData);
-    }
-    // If no fallback, try to find in STOCKS array
-    const stockFromList = STOCKS.find(s => s.ticker === symbol.toUpperCase());
-    if (stockFromList) {
-      return addSeries(stockFromList);
-    }
+    console.error(`Error fetching stock ${symbol}:`, error);
     throw error;
   }
 };
@@ -71,15 +60,8 @@ export const fetchMultipleStocks = async (symbols) => {
     const response = await api.get(`/stocks?symbols=${symbols.join(',')}`);
     return response.data.data || [];
   } catch (error) {
-    console.error('Error fetching multiple stocks, using fallback:', error);
-    // Return fallback data for each symbol
-    return symbols.map(symbol => {
-      const fallbackData = FALLBACK_STOCK_DATA[symbol.toUpperCase()];
-      if (fallbackData) return addSeries(fallbackData);
-      const stockFromList = STOCKS.find(s => s.ticker === symbol.toUpperCase());
-      if (stockFromList) return addSeries(stockFromList);
-      return null;
-    }).filter(Boolean);
+    console.error('Error fetching multiple stocks:', error);
+    throw error;
   }
 };
 
@@ -89,20 +71,7 @@ export const fetchCompanyDetails = async (symbol) => {
     const response = await api.get(`/stocks/${symbol}/details`);
     return response.data.data;
   } catch (error) {
-    console.error(`Error fetching company details for ${symbol}, using fallback:`, error);
-    // Return basic fallback data
-    const stockData = FALLBACK_STOCK_DATA[symbol.toUpperCase()] || STOCKS.find(s => s.ticker === symbol.toUpperCase());
-    if (stockData) {
-      return {
-        name: stockData.name,
-        sector: stockData.sector,
-        description: `${stockData.name} is a key player in India's ${stockData.sector} sector.`,
-        founded: '—',
-        hq: 'India',
-        employees: '—',
-        ceo: '—',
-      };
-    }
+    console.error(`Error fetching company details for ${symbol}:`, error);
     throw error;
   }
 };
@@ -114,19 +83,8 @@ export const filterStocks = async (filters) => {
     const response = await api.get(`/stocks/search?${params}`);
     return response.data.data || [];
   } catch (error) {
-    console.error('Error filtering stocks, using fallback:', error);
-    // Return filtered STOCKS array
-    let filtered = [...STOCKS];
-    if (filters.sector) {
-      filtered = filtered.filter(s => s.sector === filters.sector);
-    }
-    if (filters.minPrice) {
-      filtered = filtered.filter(s => s.price >= filters.minPrice);
-    }
-    if (filters.maxPrice) {
-      filtered = filtered.filter(s => s.price <= filters.maxPrice);
-    }
-    return addSeriesToList(filtered);
+    console.error('Error filtering stocks:', error);
+    throw error;
   }
 };
 
@@ -136,14 +94,8 @@ export const fetchMarketStatus = async () => {
     const response = await api.get('/market/status');
     return response.data.data;
   } catch (error) {
-    console.error('Error fetching market status, using fallback:', error);
-    return {
-      isOpen: true,
-      session: "REGULAR",
-      region: "NSE / BSE",
-      closesAt: "15:30 IST",
-      serverTime: new Date().toLocaleTimeString('en-IN', { hour12: false }),
-    };
+    console.error('Error fetching market status:', error);
+    throw error;
   }
 };
 
@@ -169,10 +121,7 @@ export const refreshStockPrice = async (symbol) => {
     const response = await api.post(`/stocks/${symbol}/refresh`);
     return response.data.data;
   } catch (error) {
-    console.error(`Error refreshing stock ${symbol}, using fallback:`, error);
-    // Return fallback data
-    const fallbackData = FALLBACK_STOCK_DATA[symbol.toUpperCase()];
-    if (fallbackData) return addSeries(fallbackData);
+    console.error(`Error refreshing stock ${symbol}:`, error);
     throw error;
   }
 };

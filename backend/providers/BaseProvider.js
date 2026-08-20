@@ -158,6 +158,17 @@ export class BaseProvider {
   }
 
   /**
+   * Optional method: search
+   *
+   * Providers MAY implement this to resolve company names or perform
+   * symbol lookups by free-text queries. Returns either a single match
+   * object like { ticker, name } or null when not available.
+   */
+  async search(query) {
+    throw new Error(`search(${query}) not implemented in ${this.constructor.name}`);
+  }
+
+  /**
    * Helper: formatStockData
    * 
    * Base class provides common formatting logic

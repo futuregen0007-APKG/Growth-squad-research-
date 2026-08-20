@@ -9,6 +9,8 @@ import { Progress } from '@/components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 import { FINANCIAL_GOALS } from '@/data/financialProfileData';
+import { filterStocks, fetchAllStocks } from '@/services/stockApi';
+import { FALLBACK_STOCK_DATA } from '@/data/mockData';
 
 export default function Goals() {
   const navigate = useNavigate();
@@ -123,6 +125,78 @@ export default function Goals() {
     const futureValue = goal.currentAmount * Math.pow(1 + assumedReturn, years) + 
                         monthly * 12 * ((Math.pow(1 + assumedReturn, years) - 1) / assumedReturn);
     return Math.round(futureValue);
+  };
+
+  // Recommendations state
+  const [recDialogOpen, setRecDialogOpen] = useState(false);
+  const [recLoading, setRecLoading] = useState(false);
+  const [recResults, setRecResults] = useState([]);
+  const [recGoal, setRecGoal] = useState(null);
+
+  const mapGoalToFilters = (goal) => {
+    const years = (goal.targetYear || new Date().getFullYear()) - new Date().getFullYear();
+    // Simple heuristic: shorter horizon -> safer (lower price stocks), longer -> growth (sort by change)
+    if (years >= 7) return { sortBy: 'change-desc' };
+    if (years >= 3) return { sortBy: 'change-desc', minPrice: 50 };
+    return { sortBy: 'price-asc', maxPrice: 500 };
+  };
+
+  const openRecommendations = async (goal) => {
+    try {
+      setRecGoal(goal);
+      setRecDialogOpen(true);
+      setRecLoading(true);
+      const filters = mapGoalToFilters(goal);
+      let results = await filterStocks(filters);
+
+      // If API returned empty, try fetching all stocks and fall back to local data
+      if (!results || results.length === 0) {
+        try {
+          const all = await fetchAllStocks();
+          // simple ranking: prefer same sector (if primary goal maps to a sector), then top movers
+          const sector = (goal.type === 'wealth_creation' || goal.type === '1crore') ? null : null;
+          results = all.slice(0, 20).map(s => ({ ticker: s.ticker || s.symbol, name: s.name || s.companyName || s.longName, sector: s.sector || s.industry || '—', price: s.price || s.regularMarketPrice || 0 }));
+        } catch (err) {
+          // fallback to hardcoded mock data
+          results = Object.values(FALLBACK_STOCK_DATA).map(s => ({ ticker: s.ticker, name: s.name, sector: s.sector, price: s.price }));
+        }
+      }
+
+      // Enrich top results with research API (history/present/future + articles)
+      const top = results.slice(0, 10).map(r => r.ticker || r.symbol);
+      try {
+        const resp = await fetch(`/api/research?symbols=${top.join(',')}`);
+        if (resp.ok) {
+          const json = await resp.json();
+          const enriched = json.data || [];
+          // Merge enriched info into results
+          const merged = (results.slice(0, 10)).map(r => {
+            const tick = (r.ticker || r.symbol).toUpperCase();
+            const e = enriched.find(en => en.ticker === tick);
+            return { ...r, research: e };
+          });
+          setRecResults(merged);
+        } else {
+          setRecResults(results.slice(0, 10));
+        }
+      } catch (err) {
+        setRecResults(results.slice(0, 10));
+      }
+    } catch (err) {
+      console.error('Error fetching recommendations', err);
+      toast.error('Failed to fetch recommendations');
+    } finally {
+      setRecLoading(false);
+    }
+  };
+
+  const generateReason = (goal, stock) => {
+    // Heuristic reasons tailored to goal type and horizon
+    const years = (goal?.targetYear || new Date().getFullYear()) - new Date().getFullYear();
+    if (goal?.type === 'emergency') return 'Stable, lower-volatility stock suitable for short-term safety.';
+    if (goal?.type === 'retirement' || years >= 7) return 'Strong long-term potential and market leadership for wealth accumulation.';
+    if (goal?.type === 'house' || goal?.type === 'education') return 'Balanced growth with relatively stable fundamentals for medium-term goals.';
+    return 'Good fit for diversified portfolio and growth objectives.';
   };
 
   const getGoalStatus = (goal) => {
@@ -365,17 +439,26 @@ export default function Goals() {
                   </div>
                 )}
 
-                {!goal.isPrimary && (
+                <div className="space-y-2">
                   <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleSetPrimary(goal.id)}
-                    className="w-full border-gs-border text-gs-text hover:bg-gs-cardHover"
+                    onClick={() => openRecommendations(goal)}
+                    className="w-full bg-gs-accent text-gs-bg"
                   >
-                    <CheckCircle className="w-4 h-4 mr-2" />
-                    Set as Primary Goal
+                    Get Recommendations
                   </Button>
-                )}
+
+                  {!goal.isPrimary && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleSetPrimary(goal.id)}
+                      className="w-full border-gs-border text-gs-text hover:bg-gs-cardHover"
+                    >
+                      <CheckCircle className="w-4 h-4 mr-2" />
+                      Set as Primary Goal
+                    </Button>
+                  )}
+                </div>
               </CardContent>
             </Card>
           );
@@ -455,6 +538,80 @@ export default function Goals() {
               </Button>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Recommendations Dialog */}
+      <Dialog open={recDialogOpen} onOpenChange={setRecDialogOpen}>
+        <DialogContent className="bg-gs-card border-gs-border text-gs-text max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Recommendations for {recGoal?.name}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-4">
+                {recLoading ? (
+              <div className="text-sm text-gs-textDim">Loading recommendations...</div>
+            ) : recResults.length === 0 ? (
+              <div className="text-sm text-gs-textDim">No recommendations found for this goal.</div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {recResults.map((s) => (
+                  <div
+                    key={s.ticker || s.symbol}
+                    className="p-3 rounded-lg border border-gs-border bg-gs-panel hover:shadow-lg"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1 pr-3">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="font-mono font-semibold">{s.ticker || s.symbol}</div>
+                            <div className="text-xs text-gs-textDim">{s.name || s.companyName || s.longName}</div>
+                          </div>
+                          <div className="text-right">
+                            <div className="font-mono">₹{(s.price || s.regularMarketPrice || 0).toFixed(2)}</div>
+                            <div className="text-xs text-gs-textDim">{s.sector || s.industry || '—'}</div>
+                          </div>
+                        </div>
+
+                        <div className="mt-2 text-sm text-gs-textDim">{generateReason(recGoal, s)}</div>
+                        {s.research && (
+                          <div className="mt-3 text-xs text-gs-textDim bg-gs-bg p-2 rounded">
+                            <div className="font-medium text-sm">AI Research</div>
+                            <div className="mt-1">
+                              <div className="text-xs font-semibold">History</div>
+                              <div className="text-xs">{s.research.historySummary || s.research.overview?.Description || ''}</div>
+                            </div>
+                            <div className="mt-1">
+                              <div className="text-xs font-semibold">Present</div>
+                              <div className="text-xs">{s.research.presentSummary || ''}</div>
+                            </div>
+                            <div className="mt-1">
+                              <div className="text-xs font-semibold">Future</div>
+                              <div className="text-xs">{s.research.futureSummary || ''}</div>
+                            </div>
+                            {s.research.news && s.research.news.length > 0 && (
+                              <div className="mt-2 text-xs">
+                                <div className="font-semibold">Articles</div>
+                                <ul className="list-disc pl-5">
+                                  {s.research.news.slice(0,3).map((a, idx) => (
+                                    <li key={idx}><a href={a.url} target="_blank" rel="noreferrer" className="text-gs-accent">{a.title || a.source?.name}</a></li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex flex-col items-end gap-2">
+                        <Button size="sm" onClick={() => navigate(`/stock/${s.ticker || s.symbol}`)} className="bg-gs-gold text-gs-bg">View</Button>
+                        <Button size="sm" variant="outline" onClick={() => toast.success('Added to watchlist (mock)')}>Add</Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
     </div>

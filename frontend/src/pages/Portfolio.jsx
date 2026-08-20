@@ -9,6 +9,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Card, CardContent } from "@/components/ui/card";
+import analyzeRebalance from "@/hooks/useRebalancing";
 
 const COLORS = ['#D4AF37', '#059669', '#DC2626', '#3B82F6', '#8B5CF6', '#EC4899', '#F59E0B', '#10B981'];
 
@@ -214,6 +216,33 @@ export default function Portfolio() {
           </div>
         </div>
       </div>
+
+      {/* Rebalancing Suggestions */}
+      {(() => {
+        const alerts = analyzeRebalance(portfolioData.holdings || []);
+        if (!alerts || alerts.length === 0) return null;
+
+        return (
+          <Card className="bg-gs-card border-gs-border">
+            <CardContent>
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <div className="font-display text-lg font-bold text-gs-text">Rebalancing Suggestions</div>
+                  <div className="text-sm text-gs-textMuted">Signals to reduce concentration and diversify risk</div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {alerts.map(a => (
+                  <div key={a.id} className="p-3 rounded-sm bg-gs-panel border border-gs-border">
+                    <div className="text-sm text-gs-text">{a.message}</div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })()}
 
       {/* Main Content */}
       <div className="grid grid-cols-12 gap-4">

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { TrendingUp, TrendingDown, Sparkles } from "lucide-react";
 import { SECTORS, SECTOR_HEATMAP_DATA } from "@/data/mockData";
 import SectorHeatmap from "@/components/widgets/SectorHeatmap";
+import SectorRotationRRG from "@/components/widgets/SectorRotationRRG";
 import StockTable from "@/components/widgets/StockTable";
 import { fetchAllStocks } from "@/services/stockApi";
 
@@ -67,7 +68,16 @@ export default function SectorIntelligence() {
                 </span>
               </div>
             </div>
-            <SectorHeatmap data={SECTOR_HEATMAP_DATA} height={360} />
+            {/* Replaced the previous SectorHeatmap chart with an embedded Sector Rotation Graph (RRG).
+                If the remote site disallows framing, a clearly labeled link is provided as fallback. */}
+            <div className="w-full" style={{ minHeight: 360 }}>
+                <div className="relative w-full h-full rounded overflow-hidden" style={{ minHeight: 360 }}>
+                  {/* Use our own RRG widget that fetches computed coordinates from the backend */}
+                  <div className="w-full h-full">
+                    <SectorRotationRRG />
+                  </div>
+                </div>
+            </div>
           </div>
         </div>
 
