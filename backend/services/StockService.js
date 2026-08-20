@@ -47,6 +47,7 @@ export class StockService {
     
     this.provider = provider;
     this.logger = logger;
+    this.inFlightRequests = new Map();
   }
 
   /**
@@ -74,29 +75,35 @@ export class StockService {
    */
   async getStock(symbol) {
     try {
-      // Step 1: Validate input
       const validatedSymbol = await this._validateSymbol(symbol);
-      
-      // Step 2: Try cache first
       const cacheKey = `stock:${validatedSymbol}`;
+
+      if (this.inFlightRequests.has(cacheKey)) {
+        this.logger.debug(`Stock service deduplicating request for ${validatedSymbol}`);
+        return await this.inFlightRequests.get(cacheKey);
+      }
+
       const cachedData = await getCache(cacheKey);
-      
       if (cachedData) {
         this.logger.debug(`Stock service cache HIT for ${validatedSymbol}`);
         return cachedData;
       }
 
-      // Step 3: Cache miss - fetch from provider
-      this.logger.debug(`Stock service cache MISS for ${validatedSymbol} - fetching from provider`);
-      const stockData = await this.provider.getStock(validatedSymbol);
+      const requestPromise = (async () => {
+        this.logger.debug(`Stock service cache MISS for ${validatedSymbol} - fetching from provider`);
+        const stockData = await this.provider.getStock(validatedSymbol);
+        const enrichedData = this._enrichStockData(stockData);
+        await setCache(cacheKey, enrichedData, CACHE_TTL.STOCK_PRICE);
+        return enrichedData;
+      })();
 
-      // Step 4: Enrich and transform data
-      const enrichedData = this._enrichStockData(stockData);
+      this.inFlightRequests.set(cacheKey, requestPromise);
 
-      // Step 5: Store in cache
-      await setCache(cacheKey, enrichedData, CACHE_TTL.STOCK_PRICE);
-
-      return enrichedData;
+      try {
+        return await requestPromise;
+      } finally {
+        this.inFlightRequests.delete(cacheKey);
+      }
     } catch (error) {
       this.logger.error(`Error in getStock(${symbol}): ${error.message}`);
       throw error;
@@ -125,29 +132,53 @@ export class StockService {
         throw createInvalidInputError('Symbols must be a non-empty array');
       }
 
-      const validatedSymbols = await Promise.all(symbols.map(s => this._validateSymbol(s)));
-      const results = [];
-      const concurrency = 4;
+      const validatedSymbols = [...new Set((await Promise.all(symbols.map(s => this._validateSymbol(s)))))]
+        .filter(Boolean);
 
-      for (let index = 0; index < validatedSymbols.length; index += concurrency) {
-        const batch = validatedSymbols.slice(index, index + concurrency);
-        const batchResults = await Promise.all(
-          batch.map((symbol) =>
-            this.getStock(symbol).catch((error) => {
-              this.logger.warn(`Failed to fetch ${symbol}: ${error.message}`);
-              return null;
-            })
-          )
-        );
+      const cacheEntries = await Promise.all(
+        validatedSymbols.map(async (symbol) => {
+          const cacheKey = `stock:${symbol}`;
+          const cached = await getCache(cacheKey);
+          return { symbol, cached };
+        })
+      );
 
-        results.push(...batchResults.filter(Boolean));
+      const cachedMap = new Map();
+      const missingSymbols = [];
+
+      for (const entry of cacheEntries) {
+        if (entry.cached) {
+          cachedMap.set(entry.symbol, entry.cached);
+        } else {
+          missingSymbols.push(entry.symbol);
+        }
       }
 
-      if (results.length === 0) {
+      logger.info(`Yahoo Finance: ${validatedSymbols.length} stocks requested`);
+      logger.info(`Yahoo Finance: ${cachedMap.size} stocks served from cache`);
+
+      if (missingSymbols.length > 0) {
+        logger.info(`Yahoo Finance: fetching ${missingSymbols.length} stocks`);
+        const fetchedStocks = await this.provider.getMultipleStocks(missingSymbols);
+
+        for (const stock of fetchedStocks) {
+          const normalizedTicker = String(stock?.ticker || '').toUpperCase();
+          if (!normalizedTicker) continue;
+          const enriched = this._enrichStockData(stock);
+          await setCache(`stock:${normalizedTicker}`, enriched, CACHE_TTL.STOCK_PRICE);
+          cachedMap.set(normalizedTicker, enriched);
+        }
+      }
+
+      const orderedResults = validatedSymbols.map((symbol) => cachedMap.get(symbol));
+      const successfulStocks = orderedResults.filter(Boolean);
+
+      if (successfulStocks.length === 0) {
         throw createInvalidInputError('Failed to fetch any stocks');
       }
 
-      return results;
+      logger.info(`Yahoo Finance: ${successfulStocks.length} stocks returned`);
+      return successfulStocks;
     } catch (error) {
       this.logger.error(`Error in getMultipleStocks: ${error.message}`);
       throw error;

@@ -8,6 +8,9 @@ export class YahooFinanceProvider extends BaseProvider {
     super();
     this.client = new YahooFinance();
     this.providerName = 'Yahoo Finance';
+    this.maxBatchSize = 5;
+    this.maxRetries = 3;
+    this.retryBaseDelay = 1000;
   }
 
   normalizeSymbol(symbol) {
@@ -29,10 +32,44 @@ export class YahooFinanceProvider extends BaseProvider {
     return `${upper}.NS`;
   }
 
-  getCurrentQuote(symbol) {
+  async _quoteWithRetry(symbols) {
+    const query = Array.isArray(symbols) ? symbols : [symbols];
+    const retryableSymbols = query.map((symbol) => this.normalizeSymbol(symbol));
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+      try {
+        const quoteResponse = await this.client.quote(retryableSymbols);
+        const entries = Array.isArray(quoteResponse) ? quoteResponse : Object.values(quoteResponse || {});
+        logger.info(`Yahoo Finance: request successful for ${retryableSymbols.length} symbols`);
+        return entries;
+      } catch (error) {
+        const message = error?.message || '';
+        const isRateLimited = message.includes('429') || message.includes('Too Many Requests') || error?.status === 429 || /status 429/i.test(message);
+
+        if (isRateLimited && attempt < this.maxRetries) {
+          const delayMs = this.retryBaseDelay * (2 ** attempt);
+          logger.warn(`Yahoo Finance: 429 received, retrying in ${delayMs / 1000} second(s)`);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          continue;
+        }
+
+        if (isRateLimited) {
+          logger.warn(`Yahoo Finance: 429 received after max retries for ${retryableSymbols.length} symbols`);
+          return [];
+        }
+
+        throw new Error(message || 'Yahoo Finance quote request failed');
+      }
+    }
+
+    return [];
+  }
+
+  async getCurrentQuote(symbol) {
     const providerSymbol = this.normalizeSymbol(symbol);
     logger.debug(`Yahoo Finance: Fetching quote for ${providerSymbol}`);
-    return this.client.quote(providerSymbol);
+    const quotes = await this._quoteWithRetry([providerSymbol]);
+    return quotes[0] || null;
   }
 
   async getStock(symbol) {
@@ -60,16 +97,49 @@ export class YahooFinanceProvider extends BaseProvider {
   }
 
   async getMultipleStocks(symbols) {
-    const results = await Promise.all(
-      symbols.map((symbol) =>
-        this.getStock(symbol).catch((error) => {
-          logger.warn(`Yahoo Finance: Failed to fetch ${symbol}: ${error.message}`);
-          return null;
-        })
-      )
-    );
+    const uniqueSymbols = [...new Set((symbols || []).map((symbol) => String(symbol || '').trim()).filter(Boolean))];
 
-    return results.filter(Boolean);
+    if (!uniqueSymbols.length) {
+      return [];
+    }
+
+    const normalizedSymbols = uniqueSymbols.map((symbol) => this.normalizeSymbol(symbol));
+    const results = [];
+    const failedSymbols = [];
+
+    for (let index = 0; index < normalizedSymbols.length; index += this.maxBatchSize) {
+      const batch = normalizedSymbols.slice(index, index + this.maxBatchSize);
+      logger.info(`Yahoo Finance: requesting ${batch.length} symbols in one batch`);
+
+      try {
+        const quoteResults = await this._quoteWithRetry(batch);
+        if (!quoteResults.length) {
+          failedSymbols.push(...batch.map((symbol) => symbol.replace(/\.NS$/, '')));
+          continue;
+        }
+
+        for (const quote of quoteResults) {
+          if (!quote || !quote.symbol) {
+            continue;
+          }
+
+          const normalizedTicker = String(quote.symbol || '').replace(/\.NS$/i, '').toUpperCase();
+          const originalSymbol = uniqueSymbols.find((symbol) => this.normalizeSymbol(symbol) === quote.symbol || this.normalizeSymbol(symbol) === String(quote.symbol || '').toUpperCase()) || normalizedTicker;
+          const formatted = this.formatStockData(quote, originalSymbol || normalizedTicker);
+          results.push(formatted);
+        }
+      } catch (error) {
+        logger.warn(`Yahoo Finance: 2 symbols failed - ${error.message}`);
+        failedSymbols.push(...batch.map((symbol) => symbol.replace(/\.NS$/, '')));
+      }
+    }
+
+    logger.info(`Yahoo Finance: ${results.length} symbols returned`);
+    if (failedSymbols.length) {
+      logger.warn(`Yahoo Finance: ${failedSymbols.length} symbols failed`);
+    }
+
+    return results;
   }
 
   async getCompanyDetails(symbol) {
