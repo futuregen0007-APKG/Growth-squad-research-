@@ -27,6 +27,27 @@ import { createCacheError } from './errorHandler.js';
 
 let redisClient = null;
 
+// Simple wrapper exports for convenience (backwards compatible)
+const redisWrapper = {
+  get: async (k) => {
+    try {
+      if (!redisClient) return null;
+      const v = await redisClient.get(k);
+      return v;
+    } catch (e) {
+      return null;
+    }
+  },
+  setEx: async (k, ttl, v) => {
+    try {
+      if (!redisClient) return;
+      await redisClient.setEx(k, ttl, typeof v === 'string' ? v : JSON.stringify(v));
+    } catch (e) {
+      // ignore
+    }
+  },
+};
+
 /**
  * initializeRedis - Connect to Redis server (graceful fallback)
  * 
@@ -212,3 +233,5 @@ export const closeRedis = async () => {
     logger.error(`Error closing Redis: ${error.message}`);
   }
 };
+
+export default redisWrapper;
