@@ -65,11 +65,8 @@ export const initializeRedis = async () => {
       password: process.env.REDIS_PASSWORD || undefined,
       db: parseInt(process.env.REDIS_DB || 0),
       socket: {
-        reconnectStrategy: (retries) => {
-          // Exponential backoff: 100ms, 200ms, 400ms... up to 5 seconds
-          const delay = Math.min(100 * Math.pow(2, retries), 5000);
-          return delay;
-        },
+        connectTimeout: 2000,
+        reconnectStrategy: false,
       },
     });
 
