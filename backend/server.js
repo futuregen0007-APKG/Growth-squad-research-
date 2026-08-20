@@ -79,7 +79,7 @@ app.use('/api/auth', (req, res, next) => {
 let server = null;
 
 const startServer = async () => {
-  const port = parseInt(process.env.PORT, 10) || 5001;
+  const PORT = process.env.PORT || 5001;
   const marketProvider = (process.env.MARKET_DATA_PROVIDER || 'yahoo-finance').toLowerCase();
 
   await connectMongo();
@@ -136,8 +136,8 @@ const startServer = async () => {
     res.status(statusCode).json(payload);
   });
 
-  server = app.listen(port, () => {
-    logger.info(`Server running on http://localhost:${port}`);
+  server = app.listen(PORT, '0.0.0.0', () => {
+    logger.info(`Server running on http://localhost:${PORT}`);
   });
 
   const stockSocket = new StockSocket(server);
