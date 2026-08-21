@@ -3,6 +3,7 @@ import { Sparkles, Send, Cpu, RefreshCcw, FileText, ChevronRight } from "lucide-
 import { Textarea } from "@/components/ui/textarea";
 import { AI_CHAT_SUGGESTIONS, AI_SEED_CONVERSATION, AI_PROMPT_CHIPS } from "@/data/mockData";
 import { toast } from "sonner";
+import API_BASE from "@/config/api";
 
 const formatMarkdown = (text) => {
   const lines = text.split("\n");
@@ -92,7 +93,7 @@ export default function AIResearch() {
 
     try {
 
-        const backendUrl = process.env.REACT_APP_API_BASE || process.env.REACT_APP_API_BASE_URL || 'http://localhost:3000';
+        const backendUrl = API_BASE;
         const res = await fetch(`${backendUrl.replace(/\/$/, '')}/api/chat`, {
 
             method: "POST",

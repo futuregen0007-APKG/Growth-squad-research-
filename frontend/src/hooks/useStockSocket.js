@@ -7,7 +7,7 @@ const defaultSocketUrl = (() => {
     if (API_BASE.startsWith('https')) return API_BASE.replace(/^https/, 'wss');
     if (API_BASE.startsWith('http')) return API_BASE.replace(/^http/, 'ws');
   } catch (e) {}
-  return 'ws://localhost:3000';
+  return 'ws://localhost:5001';
 })();
 
 const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || defaultSocketUrl;

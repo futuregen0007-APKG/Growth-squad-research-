@@ -1,40 +1,51 @@
 import { useState, useEffect, useRef } from 'react';
 import { Search, X, TrendingUp, TrendingDown } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { SUPPORTED_STOCKS } from '@/data/mockData';
+import { searchStocks } from '@/services/stockApi';
 
 const SearchBar = () => {
   const [query, setQuery] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [isOpen, setIsOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [searchError, setSearchError] = useState('');
   const navigate = useNavigate();
   const searchRef = useRef(null);
 
   // Filter stocks based on query
   useEffect(() => {
-    if (query.length < 1) {
+    if (query.trim().length < 1) {
       setSuggestions([]);
       setIsOpen(false);
+      setSearchError('');
       return;
     }
 
-    const filtered = Object.entries(SUPPORTED_STOCKS)
-      .filter(([ticker, data]) => {
-        const searchTerm = query.toLowerCase();
-        return (
-          ticker.toLowerCase().includes(searchTerm) ||
-          data.name.toLowerCase().includes(searchTerm) ||
-          data.sector.toLowerCase().includes(searchTerm)
-        );
+    let active = true;
+    const searchTimer = setTimeout(() => {
+      setIsLoading(true);
+      setSearchError('');
+      searchStocks(query)
+      .then((stocks) => {
+        if (!active) return;
+        setSuggestions(stocks.slice(0, 8));
+        setIsOpen(true);
       })
-      .slice(0, 8)
-      .map(([ticker, data]) => ({
-        ticker,
-        ...data,
-      }));
+      .catch(() => {
+        if (!active) return;
+        setSuggestions([]);
+        setSearchError('Search is temporarily unavailable');
+        setIsOpen(true);
+      })
+      .finally(() => {
+        if (active) setIsLoading(false);
+      });
+    }, 300);
 
-    setSuggestions(filtered);
-    setIsOpen(true);
+    return () => {
+      active = false;
+      clearTimeout(searchTimer);
+    };
   }, [query]);
 
   // Close dropdown when clicking outside
@@ -125,7 +136,9 @@ const SearchBar = () => {
 
       {isOpen && query.length >= 1 && suggestions.length === 0 && (
         <div className="absolute top-full left-0 right-0 mt-2 bg-gs-card border border-gs-border rounded-md shadow-lg z-50 px-4 py-3">
-          <div className="text-sm text-gs-textDim">No results found</div>
+          <div className="text-sm text-gs-textDim">
+            {isLoading ? 'Searching live stocks...' : searchError || 'No results found'}
+          </div>
           <div className="text-xs text-gs-textDim mt-1">
             Try searching for: HAL, HDFCBANK, Nifty-50
           </div>

@@ -2,18 +2,18 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import readline from 'readline';
-import { YahooFinanceProvider } from './providers/YahooFinanceProvider.js';
+import { AngelOneProvider } from './providers/AngelOneProvider.js';
 
 // Load environment variables
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
 
 // Instantiate the Yahoo provider
-const provider = new YahooFinanceProvider();
+const provider = new AngelOneProvider();
 
 async function getStockPrice(query) {
   try {
-    console.log(`🔍 Fetching quote for "${query}" via Yahoo Finance...`);
+    console.log(`Fetching quote for "${query}" via Angel One...`);
     const symbol = query.trim().toUpperCase();
     const quote = await provider.getStock(symbol);
     
@@ -59,6 +59,6 @@ if (args.length > 0) {
     });
   };
   
-  console.log('--- Stock Price Lookup CLI Tool (Yahoo Finance) ---');
+  console.log('--- Stock Price Lookup CLI Tool (Angel One) ---');
   ask();
 }

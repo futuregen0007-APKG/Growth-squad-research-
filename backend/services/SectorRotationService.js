@@ -1,7 +1,14 @@
-import yahoo from 'yahoo-finance2';
 import redisClient from '../utils/redisClient.js';
 import { SECTORS } from '../../frontend/src/data/mockData.js';
 import { INDEX_SYMBOLS } from '../utils/constants.js';
+import { AngelOneProvider } from '../providers/AngelOneProvider.js';
+
+let marketProvider;
+
+function getMarketProvider() {
+  if (!marketProvider) marketProvider = new AngelOneProvider();
+  return marketProvider;
+}
 
 // JdK-style RRG backend implementation
 // Produces for each sector a time-series of points: { t, x: RS-Ratio-1, y: RS-Momentum }
@@ -33,14 +40,8 @@ async function fetchWeeklyCloses(ticker, weeks = WEEKS) {
     const cached = await redisClient.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
-    // Request last weeks of weekly data
-    const periodDays = Math.max(weeks * 7, 90);
-    const hist = await yahoo.historical(ticker, { period: `${periodDays}d`, interval: '1wk' });
-    if (!hist || hist.length === 0) return [];
-
-    // Keep the last `weeks` entries, order oldest -> newest
-    const last = hist.slice(-weeks);
-    const closes = last.map((h) => ({ t: new Date(h.date).getTime(), close: h.close }));
+    const hist = await getMarketProvider().getHistoricalData(ticker, '1W');
+    const closes = hist.slice(-weeks);
     await redisClient.setEx(cacheKey, 300, JSON.stringify(closes));
     return closes;
   } catch (err) {

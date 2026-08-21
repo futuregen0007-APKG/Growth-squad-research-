@@ -1,4 +1,45 @@
-# 📊 Stock Market AI - Complete Backend Implementation
+# Stock Market AI - Backend
+
+## Market data provider
+
+The backend uses Angel One for live NSE and BSE quotes. Set the following values in `backend/.env` before starting:
+
+```env
+MARKET_DATA_PROVIDER=angel-one
+ANGEL_API_KEY=...
+ANGEL_CLIENT_CODE=...
+ANGEL_PIN=...
+ANGEL_TOTP_SECRET=...
+ANGEL_CLIENT_LOCAL_IP=...
+ANGEL_CLIENT_PUBLIC_IP=...
+ANGEL_MAC_ADDRESS=...
+```
+
+Angel One provides live quotes, OHLC data, and historical candles for NSE/BSE instruments. Sector rotation uses Angel One weekly candles and retains the existing synthetic fallback when historical data is unavailable.
+
+Example:
+
+```bash
+curl http://localhost:5001/api/stocks/HAL
+curl "http://localhost:5001/api/stocks?symbols=HAL,BEL"
+curl "http://localhost:5001/api/stocks/index?symbols=NIFTY%2050,SENSEX"
+```
+
+Run from `Growth-squad-research-/backend`:
+
+```bash
+npm install
+npm start
+```
+
+Post-merge checks:
+
+- Confirm `/health` returns `success: true`.
+- Confirm one NSE quote and one BSE quote return live `price` and OHLC fields.
+- Confirm WebSocket subscriptions receive `stockUpdate` events.
+- Confirm unsupported exchanges fail with a clear configuration error.
+
+---
 
 ## 🎯 What Was Built
 

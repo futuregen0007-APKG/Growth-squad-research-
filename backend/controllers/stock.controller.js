@@ -1,8 +1,8 @@
-import { YahooFinanceService } from '../services/yahooFinance.service.js';
 import { HTTP_STATUS } from '../utils/constants.js';
 import { createInvalidInputError } from '../utils/errorHandler.js';
+import { AngelOneService } from '../services/angelOne.service.js';
 
-const yahooService = new YahooFinanceService();
+const angelOneService = new AngelOneService();
 
 export class StockController {
   async getStock(req, res, next) {
@@ -13,7 +13,7 @@ export class StockController {
         throw createInvalidInputError('Symbol path parameter is required');
       }
 
-      const quote = await yahooService.fetchQuote(symbol);
+      const quote = await angelOneService.fetchQuote(symbol);
 
       res.status(HTTP_STATUS.OK).json({
         success: true,

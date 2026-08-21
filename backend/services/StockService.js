@@ -154,11 +154,11 @@ export class StockService {
         }
       }
 
-      logger.info(`Yahoo Finance: ${validatedSymbols.length} stocks requested`);
-      logger.info(`Yahoo Finance: ${cachedMap.size} stocks served from cache`);
+      logger.info(`Market provider: ${validatedSymbols.length} stocks requested`);
+      logger.info(`Market provider: ${cachedMap.size} stocks served from cache`);
 
       if (missingSymbols.length > 0) {
-        logger.info(`Yahoo Finance: fetching ${missingSymbols.length} stocks`);
+        logger.info(`Market provider: fetching ${missingSymbols.length} stocks`);
         const fetchedStocks = await this.provider.getMultipleStocks(missingSymbols);
 
         for (const stock of fetchedStocks) {
@@ -177,7 +177,7 @@ export class StockService {
         throw createInvalidInputError('Failed to fetch any stocks');
       }
 
-      logger.info(`Yahoo Finance: ${successfulStocks.length} stocks returned`);
+      logger.info(`Market provider: ${successfulStocks.length} stocks returned`);
       return successfulStocks;
     } catch (error) {
       this.logger.error(`Error in getMultipleStocks: ${error.message}`);
@@ -256,6 +256,27 @@ export class StockService {
       this.logger.error(`Error in getStocksByFilter: ${error.message}`);
       throw error;
     }
+  }
+
+  async searchStocks(query) {
+    const searchTerm = String(query || '').trim().toLowerCase();
+    if (!searchTerm) {
+      throw createInvalidInputError('Search query is required');
+    }
+
+    const matchingSymbols = Object.entries(SUPPORTED_STOCKS)
+      .filter(([ticker, metadata]) => {
+        return [ticker, metadata.name, metadata.sector]
+          .some((value) => String(value || '').toLowerCase().includes(searchTerm));
+      })
+      .map(([ticker]) => ticker)
+      .slice(0, 20);
+
+    if (!matchingSymbols.length) {
+      return [];
+    }
+
+    return this.getMultipleStocks(matchingSymbols);
   }
 
   /**

@@ -85,6 +85,21 @@ export const filterStocks = async (filters) => {
   }
 };
 
+export const searchStocks = async (query) => {
+  const normalizedQuery = String(query || '').trim();
+  if (!normalizedQuery) return [];
+
+  try {
+    const response = await api.get('/stocks/search', {
+      params: { q: normalizedQuery },
+    });
+    return addSeriesToList(response.data.data || []);
+  } catch (error) {
+    console.error(`Error searching stocks for ${normalizedQuery}:`, error);
+    throw error;
+  }
+};
+
 // Get market status
 export const fetchMarketStatus = async () => {
   try {

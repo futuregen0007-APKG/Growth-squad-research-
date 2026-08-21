@@ -11,7 +11,7 @@ import { StockService } from './services/StockService.js';
 import { FinnhubProvider } from './providers/FinnhubProvider.js';
 import { TwelveDataProvider } from './providers/TwelveDataProvider.js';
 import { FinancialModelingPrepProvider } from './providers/FinancialModelingPrepProvider.js';
-import { YahooFinanceProvider } from './providers/YahooFinanceProvider.js';
+import { AngelOneProvider } from './providers/AngelOneProvider.js';
 import { initializeRedis, closeRedis } from './utils/redisClient.js';
 import { formatErrorResponse, getHttpStatus } from './utils/errorHandler.js';
 import { logger } from './utils/logger.js';
@@ -80,15 +80,15 @@ let server = null;
 
 const startServer = async () => {
   const PORT = process.env.PORT || 5001;
-  const marketProvider = (process.env.MARKET_DATA_PROVIDER || 'yahoo-finance').toLowerCase();
+  const marketProvider = (process.env.MARKET_DATA_PROVIDER || 'angel-one').toLowerCase();
 
   await connectMongo();
   await initializeRedis();
 
   let provider;
-  if (marketProvider === 'yahoo' || marketProvider === 'yahoo-finance' || marketProvider === 'yahoo-finance2' || marketProvider === 'yahoofinance') {
-    provider = new YahooFinanceProvider();
-    logger.info('Using Yahoo Finance provider for market data');
+  if (marketProvider === 'angel-one' || marketProvider === 'angelone' || marketProvider === 'angel') {
+    provider = new AngelOneProvider();
+    logger.info('Using Angel One provider for NSE/BSE market data');
   } else if (marketProvider === 'financialmodelingprep' || marketProvider === 'financial-modeling-prep') {
     const fmpApiKey = process.env.FINANCIAL_MODELING_PREP_API_KEY;
     if (!fmpApiKey) {
@@ -115,8 +115,8 @@ const startServer = async () => {
       provider = new FinnhubProvider(finnhubApiKey);
       logger.info('Using Finnhub provider for market data');
     } else {
-      provider = new YahooFinanceProvider();
-      logger.info('Defaulting to Yahoo Finance provider for market data');
+      provider = new AngelOneProvider();
+      logger.info('Defaulting to Angel One provider for NSE/BSE market data');
     }
   }
 
@@ -139,7 +139,7 @@ const startServer = async () => {
     logger.info(`Server running on http://localhost:${PORT}`);
   });
 
-  const stockSocket = new StockSocket(server);
+  const stockSocket = new StockSocket(server, provider);
   stockSocket.start();
 
   const shutdown = async (signal) => {

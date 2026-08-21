@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { Search, TrendingUp, TrendingDown, Filter, Grid, List, Star } from 'lucide-react';
-import { SUPPORTED_STOCKS, FALLBACK_STOCK_DATA } from '@/data/mockData';
+import { SUPPORTED_STOCKS } from '@/data/mockData';
+import { searchStocks } from '@/services/stockApi';
 import ChangeBadge from '@/components/widgets/ChangeBadge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,6 +15,8 @@ const SearchResults = () => {
   const [viewMode, setViewMode] = useState('grid');
   const [sortBy, setSortBy] = useState('relevance');
   const [sectorFilter, setSectorFilter] = useState('all');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     if (!query) {
@@ -21,23 +24,28 @@ const SearchResults = () => {
       return;
     }
 
-    const searchTerm = query.toLowerCase();
-    const filtered = Object.entries(SUPPORTED_STOCKS)
-      .filter(([ticker, data]) => {
-        return (
-          ticker.toLowerCase().includes(searchTerm) ||
-          data.name.toLowerCase().includes(searchTerm) ||
-          data.sector.toLowerCase().includes(searchTerm)
-        );
+    let active = true;
+    setLoading(true);
+    setError('');
+    searchStocks(query)
+      .then((filtered) => {
+        if (!active) return;
+        setResults(filtered);
       })
-      .map(([ticker, data]) => ({
-        ticker,
-        ...data,
-        ...FALLBACK_STOCK_DATA[ticker],
-      }));
+      .catch(() => {
+        if (!active) return;
+        setResults([]);
+        setError('Unable to search live stock data. Check that the backend is running.');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
 
-    // Sort results
-    let sorted = [...filtered];
+    return () => { active = false; };
+  }, [query]);
+
+  const displayedResults = useMemo(() => {
+    let sorted = [...results];
     if (sortBy === 'price-desc') {
       sorted.sort((a, b) => b.price - a.price);
     } else if (sortBy === 'price-asc') {
@@ -53,8 +61,8 @@ const SearchResults = () => {
       sorted = sorted.filter(stock => stock.sector === sectorFilter);
     }
 
-    setResults(sorted);
-  }, [query, sortBy, sectorFilter]);
+    return sorted;
+  }, [results, sortBy, sectorFilter]);
 
   const sectors = [...new Set(Object.values(SUPPORTED_STOCKS).map(s => s.sector))];
 
@@ -156,7 +164,7 @@ const SearchResults = () => {
             {query ? `"${query}"` : 'All Stocks'}
           </h1>
           <p className="text-sm text-gs-textDim mt-1">
-            {results.length} result{results.length !== 1 ? 's' : ''} found
+            {displayedResults.length} result{displayedResults.length !== 1 ? 's' : ''} found
           </p>
         </div>
 
@@ -213,7 +221,11 @@ const SearchResults = () => {
         </div>
 
         {/* Results */}
-        {results.length === 0 ? (
+        {loading ? (
+          <div className="text-center py-12 text-gs-textDim">Searching live stock data...</div>
+        ) : error ? (
+          <div className="text-center py-12 text-gs-neg">{error}</div>
+        ) : displayedResults.length === 0 ? (
           <div className="text-center py-12">
             <Search className="w-12 h-12 text-gs-textDim mx-auto mb-4" />
             <h3 className="text-lg font-semibold text-gs-text mb-2">No results found</h3>
@@ -234,13 +246,13 @@ const SearchResults = () => {
           </div>
         ) : viewMode === 'grid' ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {results.map(stock => (
+            {displayedResults.map(stock => (
               <StockCard key={stock.ticker} stock={stock} />
             ))}
           </div>
         ) : (
           <div className="space-y-2">
-            {results.map(stock => (
+            {displayedResults.map(stock => (
               <StockListItem key={stock.ticker} stock={stock} />
             ))}
           </div>

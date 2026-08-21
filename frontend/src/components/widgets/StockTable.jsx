@@ -2,9 +2,12 @@ import { useNavigate } from "react-router-dom";
 import { Star, X } from "lucide-react";
 import Sparkline from "./Sparkline";
 import ChangeBadge from "./ChangeBadge";
+import { useLiveStocks } from "@/hooks/useLiveStocks";
 
 export default function StockTable({ rows, showSector = true, dense = false, title, onRemoveStock, showRemove = false }) {
   const navigate = useNavigate();
+  const liveQuotes = useLiveStocks(rows.map((row) => row.ticker || row.symbol));
+
   return (
     <div className="gs-card overflow-hidden" data-testid="stock-table">
       {title && (
@@ -30,9 +33,13 @@ export default function StockTable({ rows, showSector = true, dense = false, tit
             </tr>
           </thead>
           <tbody>
-            {rows.map((s) => {
+            {rows.map((stock) => {
+              const ticker = stock.ticker || stock.symbol;
+              const liveQuote = liveQuotes[ticker];
+              const s = liveQuote
+                ? { ...stock, ...liveQuote, changePct: liveQuote.percentage }
+                : stock;
               const isPos = s.changePct >= 0;
-              const ticker = s.ticker || s.symbol;
               return (
                 <tr
                   key={ticker}
