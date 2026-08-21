@@ -116,7 +116,65 @@ export const WEBSOCKET = {
 // ============================================================
 // This maps frontend tickers to market data providers
 // Useful for validation and rate limiting
+const WORKBOOK_STOCKS = [
+  ['AXISBANK', 'Axis Bank', 'Banking'], ['INDUSINDBK', 'IndusInd Bank', 'Banking'], ['BANKBARODA', 'Bank of Baroda', 'Banking'],
+  ['PNB', 'Punjab National Bank', 'Banking'], ['CANBK', 'Canara Bank', 'Banking'], ['IDFCFIRSTB', 'IDFC First Bank', 'Banking'],
+  ['FEDERALBNK', 'Federal Bank', 'Banking'], ['BANDHANBNK', 'Bandhan Bank', 'Banking'], ['AUBANK', 'AU Small Finance Bank', 'Banking'],
+  ['RBLBANK', 'RBL Bank', 'Banking'], ['YESBANK', 'Yes Bank', 'Banking'], ['BAJFINANCE', 'Bajaj Finance', 'Financial Services'],
+  ['BAJAJFINSV', 'Bajaj Finserv', 'Financial Services'], ['SHRIRAMFIN', 'Shriram Finance', 'Financial Services'], ['MUTHOOTFIN', 'Muthoot Finance', 'Financial Services'],
+  ['CHOLAFIN', 'Cholamandalam Investment', 'Financial Services'], ['PFC', 'Power Finance Corporation', 'Financial Services'], ['REC', 'REC Limited', 'Financial Services'],
+  ['IRFC', 'Indian Railway Finance Corporation', 'Financial Services'], ['HUDCO', 'HUDCO', 'Financial Services'], ['LICHSGFIN', 'LIC Housing Finance', 'Financial Services'],
+  ['MANAPPURAM', 'Manappuram Finance', 'Financial Services'], ['LTF', 'L&T Finance', 'Financial Services'], ['SBICARD', 'SBI Cards', 'Financial Services'],
+  ['HDFCLIFE', 'HDFC Life', 'Insurance'], ['SBILIFE', 'SBI Life', 'Insurance'], ['ICICIPRULI', 'ICICI Prudential Life', 'Insurance'],
+  ['ICICIGI', 'ICICI Lombard General Insurance', 'Insurance'], ['MAXFIN', 'Max Financial Services', 'Financial Services'], ['MFSL', 'Max Financial Services', 'Financial Services'],
+  ['CAMS', 'CAMS', 'Financial Services'], ['TCS', 'TCS', 'IT'], ['INFY', 'Infosys', 'IT'], ['HCLTECH', 'HCL Technologies', 'IT'],
+  ['WIPRO', 'Wipro', 'IT'], ['TECHM', 'Tech Mahindra', 'IT'], ['LTIM', 'LTIMindtree', 'IT'], ['MPHASIS', 'Mphasis', 'IT'],
+  ['COFORGE', 'Coforge', 'IT'], ['PERSISTENT', 'Persistent Systems', 'IT'], ['KPITTECH', 'KPIT Technologies', 'IT'], ['LTTS', 'L&T Technology Services', 'IT'],
+  ['CYIENT', 'Cyient', 'IT'], ['OFSS', 'Oracle Financial Services Software', 'IT'], ['TATAELXSI', 'Tata Elxsi', 'IT'], ['SONATSOFTW', 'Sonata Software', 'IT'],
+  ['MARUTI', 'Maruti Suzuki', 'Auto'], ['M&M', 'Mahindra & Mahindra', 'Auto'], ['TATAMOTORS', 'Tata Motors', 'Auto'], ['HEROMOTOCO', 'Hero MotoCorp', 'Auto'],
+  ['EICHERMOT', 'Eicher Motors', 'Auto'], ['TVSMOTOR', 'TVS Motor', 'Auto'], ['BAJAJ-AUTO', 'Bajaj Auto', 'Auto'], ['ASHOKLEY', 'Ashok Leyland', 'Auto'],
+  ['BOSCHLTD', 'Bosch', 'Auto Ancillary'], ['MOTHERSON', 'Samvardhana Motherson', 'Auto Ancillary'], ['BHARATFORG', 'Bharat Forge', 'Auto Ancillary'],
+  ['EXIDEIND', 'Exide Industries', 'Auto Ancillary'], ['AMARAJABAT', 'Amara Raja Energy', 'Auto Ancillary'], ['UNO MINDA', 'Uno Minda', 'Auto Ancillary'],
+  ['SONACOMS', 'Sona BLW Precision Forgings', 'Auto Ancillary'], ['TIINDIA', 'Tube Investments of India', 'Auto Ancillary'], ['ENDURANCE', 'Endurance Technologies', 'Auto Ancillary'],
+  ['CEAT', 'CEAT', 'Auto Ancillary'], ['RELIANCE', 'Reliance Industries', 'Energy'], ['ONGC', 'ONGC', 'Energy'], ['IOC', 'Indian Oil Corporation', 'Energy'],
+  ['BPCL', 'Bharat Petroleum', 'Energy'], ['HPCL', 'Hindustan Petroleum', 'Energy'], ['GAIL', 'GAIL', 'Energy'], ['OIL', 'Oil India', 'Energy'],
+  ['PETRONET', 'Petronet LNG', 'Energy'], ['IGL', 'Indraprastha Gas', 'Energy'], ['GUJGASLTD', 'Gujarat Gas', 'Energy'], ['ADANIENT', 'Adani Enterprises', 'Diversified'],
+  ['POWERGRID', 'Power Grid Corporation', 'Power'], ['JSWENERGY', 'JSW Energy', 'Power'], ['TORNTPOWER', 'Torrent Power', 'Power'], ['NHPC', 'NHPC', 'Power'],
+  ['SJVN', 'SJVN', 'Power'], ['NLCINDIA', 'NLC India', 'Power'], ['CESC', 'CESC', 'Power'], ['INOXWIND', 'Inox Wind', 'Renewable Energy'],
+  ['WAAREEENER', 'Waaree Energies', 'Renewable Energy'], ['KPIGREEN', 'KPI Green Energy', 'Renewable Energy'], ['BHEL', 'Bharat Heavy Electricals', 'Capital Goods'],
+  ['THERMAX', 'Thermax', 'Capital Goods'], ['CGPOWER', 'CG Power and Industrial Solutions', 'Capital Goods'], ['GRSE', 'Garden Reach Shipbuilders', 'Defence'],
+  ['COCHINSHIP', 'Cochin Shipyard', 'Defence'], ['BEML', 'BEML', 'Defence'], ['SOLARINDS', 'Solar Industries India', 'Defence'], ['MIDHANI', 'Mishra Dhatu Nigam', 'Defence'],
+  ['ADANIPORTS', 'Adani Ports', 'Infrastructure'], ['IRCON', 'Ircon International', 'Railways'], ['RITES', 'RITES', 'Railways'], ['KEC', 'KEC International', 'Infrastructure'],
+  ['KAYNES', 'Kaynes Technology', 'Electronics'], ['POLYCAB', 'Polycab India', 'Electricals'], ['KEI', 'KEI Industries', 'Electricals'], ['HAVELLS', 'Havells India', 'Electricals'],
+  ['AIAENG', 'AIA Engineering', 'Capital Goods'], ['KALPATPOWR', 'Kalpataru Projects', 'Infrastructure'], ['JYOTISTRUC', 'Jyoti Structures', 'Infrastructure'],
+  ['AUROPHARMA', 'Aurobindo Pharma', 'Pharma'], ['LUPIN', 'Lupin', 'Pharma'], ['TORNTPHARM', 'Torrent Pharmaceuticals', 'Pharma'], ['ZYDUSLIFE', 'Zydus Lifesciences', 'Pharma'],
+  ['BIOCON', 'Biocon', 'Pharma'], ['GLENMARK', 'Glenmark Pharmaceuticals', 'Pharma'], ['ALKEM', 'Alkem Laboratories', 'Pharma'], ['LAURUSLABS', 'Laurus Labs', 'Pharma'],
+  ['ABBOTINDIA', 'Abbott India', 'Pharma'], ['MAXHEALTH', 'Max Healthcare', 'Healthcare'], ['APOLLOHOSP', 'Apollo Hospitals', 'Healthcare'], ['FORTIS', 'Fortis Healthcare', 'Healthcare'],
+  ['MEDANTA', 'Global Health', 'Healthcare'], ['POLYMED', 'Poly Medicure', 'Healthcare'], ['SYNGENE', 'Syngene International', 'Pharma'], ['HINDUNILVR', 'Hindustan Unilever', 'FMCG'],
+  ['ITC', 'ITC', 'FMCG'], ['NESTLEIND', 'Nestle India', 'FMCG'], ['BRITANNIA', 'Britannia Industries', 'FMCG'], ['DABUR', 'Dabur India', 'FMCG'],
+  ['MARICO', 'Marico', 'FMCG'], ['GODREJCP', 'Godrej Consumer Products', 'FMCG'], ['TATACONSUM', 'Tata Consumer Products', 'FMCG'], ['COLPAL', 'Colgate-Palmolive India', 'FMCG'],
+  ['VBL', 'Varun Beverages', 'FMCG'], ['JUBLFOOD', 'Jubilant FoodWorks', 'Consumer'], ['DMART', 'Avenue Supermarts', 'Consumer'], ['TRENT', 'Trent', 'Consumer'],
+  ['NYKAA', 'FSN E-Commerce Ventures', 'Consumer'], ['KALYANKJIL', 'Kalyan Jewellers', 'Consumer'], ['TITAN', 'Titan Company', 'Consumer'], ['BATAINDIA', 'Bata India', 'Consumer'],
+  ['PIDILITIND', 'Pidilite Industries', 'Chemicals'], ['SRF', 'SRF', 'Chemicals'], ['PIIND', 'PI Industries', 'Chemicals'], ['AARTIIND', 'Aarti Industries', 'Chemicals'],
+  ['DEEPAKNTR', 'Deepak Nitrite', 'Chemicals'], ['NAVINFLUOR', 'Navin Fluorine', 'Chemicals'], ['ATUL', 'Atul', 'Chemicals'], ['CLEAN', 'Clean Science & Technology', 'Chemicals'],
+  ['FLUOROCHEM', 'Gujarat Fluorochemicals', 'Chemicals'], ['TATACHEM', 'Tata Chemicals', 'Chemicals'], ['UPL', 'UPL', 'Chemicals'], ['COROMANDEL', 'Coromandel International', 'Chemicals'],
+  ['SUMITOMOIND', 'Sumitomo Chemical India', 'Chemicals'], ['VINATIORGA', 'Vinati Organics', 'Chemicals'], ['TATASTEEL', 'Tata Steel', 'Metals'], ['JSWSTEEL', 'JSW Steel', 'Metals'],
+  ['HINDALCO', 'Hindalco Industries', 'Metals'], ['VEDL', 'Vedanta', 'Metals'], ['COALINDIA', 'Coal India', 'Mining'], ['NMDC', 'NMDC', 'Mining'],
+  ['HINDZINC', 'Hindustan Zinc', 'Metals'], ['NATIONALUM', 'National Aluminium', 'Metals'], ['JINDALSTEL', 'Jindal Steel & Power', 'Metals'], ['SAIL', 'Steel Authority of India', 'Metals'],
+  ['MOIL', 'MOIL', 'Mining'], ['APLAPOLLO', 'APL Apollo Tubes', 'Metals'], ['DLF', 'DLF', 'Realty'], ['GODREJPROP', 'Godrej Properties', 'Realty'],
+  ['LODHA', 'Lodha Developers', 'Realty'], ['PRESTIGE', 'Prestige Estates', 'Realty'], ['SOBHA', 'Sobha', 'Realty'], ['OBEROIRLTY', 'Oberoi Realty', 'Realty'],
+  ['BRIGADE', 'Brigade Enterprises', 'Realty'], ['PHOENIXLTD', 'Phoenix Mills', 'Realty'], ['ANANTRAJ', 'Anant Raj', 'Realty'], ['SUNTECK', 'Sunteck Realty', 'Realty'],
+  ['BHARTIARTL', 'Bharti Airtel', 'Telecom'], ['INDUSTOWER', 'Indus Towers', 'Telecom'], ['IDEA', 'Vodafone Idea', 'Telecom'], ['ZOMATO', 'Eternal (Zomato)', 'Internet'],
+  ['PBFINTECH', 'PB Fintech', 'Internet'], ['INFOEDGE', 'Info Edge', 'Internet'], ['PVRINOX', 'PVR INOX', 'Media'], ['NAZARA', 'Nazara Technologies', 'Internet'],
+  ['CONCOR', 'Container Corporation of India', 'Logistics'], ['DELHIVERY', 'Delhivery', 'Logistics'], ['BLUEDART', 'Blue Dart Express', 'Logistics'], ['TCI', 'Transport Corporation of India', 'Logistics'],
+  ['VRLLOG', 'VRL Logistics', 'Logistics'], ['JWL', 'Jupiter Wagons', 'Railways'], ['TEXRAIL', 'Texmaco Rail & Engineering', 'Railways'],
+].reduce((stocks, [ticker, name, sector]) => {
+  stocks[ticker] = { name, sector, currency: 'INR' };
+  return stocks;
+}, {});
+
 export const SUPPORTED_STOCKS = {
+  ...WORKBOOK_STOCKS,
   // Defence
   'HAL': { name: 'Hindustan Aeronautics', sector: 'Defence', currency: 'INR' },
   'BEL': { name: 'Bharat Electronics', sector: 'Defence', currency: 'INR' },
@@ -159,9 +217,9 @@ export const SUPPORTED_STOCKS = {
 };
 
 export const INDEX_SYMBOLS = {
-  'NIFTYIT': '^CNXIT',
-  'SENSEX': '^BSESN',
-  'NIFTY 50': '^NSEI',
+  'NIFTYIT': 'NIFTYIT',
+  'SENSEX': 'SENSEX',
+  'NIFTY 50': 'NIFTY 50',
 };
 
 export const WATCHLISTS = [

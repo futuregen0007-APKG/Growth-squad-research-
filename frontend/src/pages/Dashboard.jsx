@@ -27,6 +27,7 @@ import {
   INDICES,
 } from "@/data/mockData";
 import { fetchAllStocks, fetchIndexQuotes } from "@/services/stockApi";
+import API_BASE from "@/config/api";
 
 const ChartTooltip = ({ active, payload }) => {
   if (!active || !payload?.length) return null;
@@ -114,7 +115,7 @@ export default function Dashboard() {
           <div>
             <h3 className="font-semibold text-gs-text">Error Loading Market Data</h3>
             <p className="text-sm text-gs-textMuted mt-1">{error}</p>
-            <p className="text-xs text-gs-textDim mt-2">Make sure your backend is running on http://localhost:3000</p>
+            <p className="text-xs text-gs-textDim mt-2">Make sure your backend is running on {API_BASE}</p>
           </div>
         </div>
       </div>

@@ -44,7 +44,6 @@
 
 import { logger } from '../utils/logger.js';
 import { HTTP_STATUS, INDEX_SYMBOLS } from '../utils/constants.js';
-import { YahooFinanceService } from '../services/yahooFinance.service.js';
 import {
   AppError,
   createNotFoundError,
@@ -287,24 +286,20 @@ export class StockController {
         throw createInvalidInputError('At least one index symbol is required');
       }
 
-      const yahooService = new YahooFinanceService();
-
       const quotes = await Promise.all(
         requestedSymbols.map(async (symbol) => {
           const normalizedSymbol = symbol.toUpperCase();
-          const providerSymbol = INDEX_SYMBOLS[normalizedSymbol];
-
-          if (!providerSymbol) {
+          if (!INDEX_SYMBOLS[normalizedSymbol]) {
             throw createInvalidInputError(`Unsupported index symbol: ${symbol}`);
           }
 
-          const quote = await yahooService.fetchQuote(providerSymbol);
+          const quote = await this.stockService.provider.getStock(normalizedSymbol);
           return {
             symbol: normalizedSymbol,
-            providerSymbol,
+            providerSymbol: quote.ticker,
             price: quote.price,
             change: quote.change,
-            changePct: quote.percentage,
+            changePct: quote.changePct,
             open: quote.open,
             high: quote.high,
             low: quote.low,
@@ -411,6 +406,26 @@ export class StockController {
         count: stocks.length,
         filters: filters,
         message: `Found ${stocks.length} stocks matching filters`,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async searchStocks(req, res, next) {
+    try {
+      const query = String(req.query.q || '').trim();
+      if (!query) {
+        throw createInvalidInputError('q query parameter is required');
+      }
+
+      const stocks = await this.stockService.searchStocks(query);
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        data: stocks,
+        count: stocks.length,
+        query,
+        message: stocks.length ? `Search results for ${query}` : `No stocks found for ${query}`,
       });
     } catch (error) {
       next(error);

@@ -1,18 +1,26 @@
 import { Server } from 'socket.io';
 import { logger } from '../utils/logger.js';
-import { YahooFinanceService } from '../services/yahooFinance.service.js';
 
 export class StockSocket {
-  constructor(httpServer) {
+  constructor(httpServer, marketProvider) {
+    if (!marketProvider) {
+      throw new Error('Market provider is required');
+    }
+
     this.io = new Server(httpServer, {
       cors: {
         origin: process.env.FRONTEND_URL || 'http://localhost:3000',
         methods: ['GET', 'POST'],
       },
     });
-    this.yahooService = new YahooFinanceService();
-    this.pollIntervalMs = parseInt(process.env.PRICE_UPDATE_INTERVAL, 10) || 5000;
-    this.pollers = new Map();
+    this.marketProvider = marketProvider;
+    this.pollIntervalMs = Math.max(
+      1000,
+      parseInt(process.env.PRICE_UPDATE_INTERVAL, 10) || 1000,
+    );
+    this.subscribedSymbols = new Set();
+    this.poller = null;
+    this.pollInFlight = false;
   }
 
   start() {
@@ -27,8 +35,9 @@ export class StockSocket {
         }
 
         socket.join(normalizedSymbol);
+        this.subscribedSymbols.add(normalizedSymbol);
         socket.emit('subscribed', { symbol: normalizedSymbol });
-        this._ensurePolling(normalizedSymbol);
+        this._ensurePolling();
       });
 
       socket.on('unsubscribe', ({ symbol }) => {
@@ -40,24 +49,54 @@ export class StockSocket {
 
       socket.on('disconnect', () => {
         logger.info(`Socket disconnected: ${socket.id}`);
-        this._cleanupAllPolling();
+        for (const symbol of [...this.subscribedSymbols]) {
+          this._cleanupPolling(symbol);
+        }
       });
     });
   }
 
-  _ensurePolling(symbol) {
-    if (this.pollers.has(symbol)) {
+  _ensurePolling() {
+    if (this.poller) {
       return;
     }
 
-    const poller = setInterval(async () => {
-      try {
-        const quote = await this.yahooService.fetchQuote(symbol);
-        this.io.to(symbol).emit('stockUpdate', {
-          symbol: quote.symbol,
+    this.poller = setInterval(() => this._pollSubscribedStocks(), this.pollIntervalMs);
+    this._pollSubscribedStocks();
+  }
+
+  _cleanupPolling(symbol) {
+    const room = this.io.sockets.adapter.rooms.get(symbol);
+    if (room && room.size > 1) {
+      return;
+    }
+
+    this.subscribedSymbols.delete(symbol);
+    if (this.subscribedSymbols.size === 0 && this.poller) {
+      clearInterval(this.poller);
+      this.poller = null;
+    }
+  }
+
+  _cleanupAllPolling() {
+    for (const symbol of this.subscribedSymbols) {
+      this._cleanupPolling(symbol);
+    }
+  }
+
+  async _pollSubscribedStocks() {
+    const symbols = [...this.subscribedSymbols];
+    if (!symbols.length || this.pollInFlight) return;
+
+    this.pollInFlight = true;
+    try {
+      const quotes = await this.marketProvider.getMultipleStocks(symbols);
+      for (const quote of quotes) {
+        this.io.to(quote.ticker).emit('stockUpdate', {
+          symbol: quote.ticker,
           price: quote.price,
           change: quote.change,
-          percentage: quote.percentage,
+          percentage: quote.changePct,
           timestamp: quote.timestamp,
           open: quote.open,
           high: quote.high,
@@ -66,34 +105,11 @@ export class StockSocket {
           volume: quote.volume,
           companyName: quote.companyName,
         });
-      } catch (error) {
-        logger.warn(`Socket polling failed for ${symbol}: ${error.message}`);
-        this.io.to(symbol).emit('stockUpdateError', {
-          symbol,
-          message: error.message,
-        });
       }
-    }, this.pollIntervalMs);
-
-    this.pollers.set(symbol, poller);
-  }
-
-  _cleanupPolling(symbol) {
-    const room = this.io.sockets.adapter.rooms.get(symbol);
-    if (room && room.size > 0) {
-      return;
-    }
-
-    const poller = this.pollers.get(symbol);
-    if (poller) {
-      clearInterval(poller);
-      this.pollers.delete(symbol);
-    }
-  }
-
-  _cleanupAllPolling() {
-    for (const symbol of this.pollers.keys()) {
-      this._cleanupPolling(symbol);
+    } catch (error) {
+      logger.warn(`Socket polling failed for ${symbols.length} symbols: ${error.message}`);
+    } finally {
+      this.pollInFlight = false;
     }
   }
 }

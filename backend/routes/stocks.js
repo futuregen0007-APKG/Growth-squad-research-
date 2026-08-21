@@ -141,6 +141,9 @@ export function createStockRoutes(stockService) {
    * - Sort by performance
    */
   router.get('/search', (req, res, next) => {
+    if (req.query.q) {
+      return controller.searchStocks(req, res, next);
+    }
     return controller.getFilteredStocks(req, res, next);
   });
 
