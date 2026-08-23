@@ -18,13 +18,18 @@ const INDEX_ALIASES = {
   BANKNIFTY: { exchange: 'NSE', symbolToken: '99926009', tradingSymbol: 'BANKNIFTY' },
   'NIFTY BANK': { exchange: 'NSE', symbolToken: '99926009', tradingSymbol: 'BANKNIFTY' },
   SENSEX: { exchange: 'BSE', symbolToken: '99919000', tradingSymbol: 'SENSEX' },
+  ZOMATO: { exchange: 'NSE', symbolToken: '5097', tradingSymbol: 'ETERNAL-EQ' },
+  ETERNAL: { exchange: 'NSE', symbolToken: '5097', tradingSymbol: 'ETERNAL-EQ' },
+  MRF: { exchange: 'NSE', symbolToken: '2277', tradingSymbol: 'MRF-EQ' },
 };
 
 const SYMBOL_ALIASES = {
   GMRINFRA: 'GMRAIRPORT',
   CEAT: 'CEATLTD',
   KALPATPOWR: 'KALPATARU',
+  ZOMATO: 'ETERNAL',
 };
+
 
 export class AngelOneProvider extends BaseProvider {
   constructor({

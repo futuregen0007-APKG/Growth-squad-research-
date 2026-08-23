@@ -136,7 +136,7 @@ const WORKBOOK_STOCKS = [
   ['BOSCHLTD', 'Bosch', 'Auto Ancillary'], ['MOTHERSON', 'Samvardhana Motherson', 'Auto Ancillary'], ['BHARATFORG', 'Bharat Forge', 'Auto Ancillary'],
   ['EXIDEIND', 'Exide Industries', 'Auto Ancillary'], ['AMARAJABAT', 'Amara Raja Energy', 'Auto Ancillary'], ['UNO MINDA', 'Uno Minda', 'Auto Ancillary'],
   ['SONACOMS', 'Sona BLW Precision Forgings', 'Auto Ancillary'], ['TIINDIA', 'Tube Investments of India', 'Auto Ancillary'], ['ENDURANCE', 'Endurance Technologies', 'Auto Ancillary'],
-  ['CEAT', 'CEAT', 'Auto Ancillary'], ['RELIANCE', 'Reliance Industries', 'Energy'], ['ONGC', 'ONGC', 'Energy'], ['IOC', 'Indian Oil Corporation', 'Energy'],
+  ['CEAT', 'CEAT', 'Auto Ancillary'], ['MRF', 'MRF Limited', 'Auto Ancillary'], ['RELIANCE', 'Reliance Industries', 'Energy'], ['ONGC', 'ONGC', 'Energy'], ['IOC', 'Indian Oil Corporation', 'Energy'],
   ['BPCL', 'Bharat Petroleum', 'Energy'], ['HPCL', 'Hindustan Petroleum', 'Energy'], ['GAIL', 'GAIL', 'Energy'], ['OIL', 'Oil India', 'Energy'],
   ['PETRONET', 'Petronet LNG', 'Energy'], ['IGL', 'Indraprastha Gas', 'Energy'], ['GUJGASLTD', 'Gujarat Gas', 'Energy'], ['ADANIENT', 'Adani Enterprises', 'Diversified'],
   ['POWERGRID', 'Power Grid Corporation', 'Power'], ['JSWENERGY', 'JSW Energy', 'Power'], ['TORNTPOWER', 'Torrent Power', 'Power'], ['NHPC', 'NHPC', 'Power'],
@@ -214,7 +214,11 @@ export const SUPPORTED_STOCKS = {
   'DRREDDY': { name: "Dr. Reddy's Laboratories", sector: 'Healthcare', currency: 'INR' },
   'DIVISLAB': { name: "Divi's Laboratories", sector: 'Healthcare', currency: 'INR' },
   'CIPLA': { name: 'Cipla Ltd', sector: 'Healthcare', currency: 'INR' },
+  'NEWGEN': { name: 'Newgen Software Technologies', sector: 'IT / Software', currency: 'INR' }
 };
+
+// Featured symbols for Earnings Intelligence
+export const FEATURED_SYMBOLS = ['TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'BHEL', 'NEWGEN'];
 
 export const INDEX_SYMBOLS = {
   'NIFTYIT': 'NIFTYIT',
@@ -271,6 +275,9 @@ export const FALLBACK_STOCK_DATA = {
   'NCC': { ticker: 'NCC', name: 'NCC Limited', sector: 'Infrastructure', price: 142.80, changePct: 1.89, change: 2.65, high: 145.00, low: 140.00, open: 141.00, volume: 5800000, marketCap: '₹22K Cr', pe: 18.9, currency: 'INR' },
   'SUNPHARMA': { ticker: 'SUNPHARMA', name: 'Sun Pharmaceuticals', sector: 'Healthcare', price: 1685.40, changePct: 1.45, change: 24.10, high: 1700.00, low: 1665.00, open: 1670.00, volume: 4500000, marketCap: '₹4.12L Cr', pe: 28.5, currency: 'INR' },
   'DRREDDY': { ticker: 'DRREDDY', name: "Dr. Reddy's Laboratories", sector: 'Healthcare', price: 5850.75, changePct: -0.89, change: -52.30, high: 5920.00, low: 5820.00, open: 5880.00, volume: 850000, marketCap: '₹3.85L Cr', pe: 22.4, currency: 'INR' },
-  'DIVISLAB': { ticker: 'DIVISLAB', name: "Divi's Laboratories", sector: 'Healthcare', price: 5420.30, changePct: 2.12, change: 113.20, high: 5480.00, low: 5350.00, open: 5380.00, volume: 680000, marketCap: '₹3.25L Cr', pe: 35.8, currency: 'INR' },
   'CIPLA': { ticker: 'CIPLA', name: 'Cipla Ltd', sector: 'Healthcare', price: 1425.60, changePct: 1.34, change: 18.90, high: 1440.00, low: 1410.00, open: 1415.00, volume: 2800000, marketCap: '₹1.15L Cr', pe: 24.5, currency: 'INR' },
+  'MRF': { ticker: 'MRF', name: 'MRF Limited', sector: 'Auto Ancillary', price: 132450.00, changePct: 0.85, change: 1115.00, high: 133500.00, low: 131800.00, open: 132000.00, volume: 25000, marketCap: '₹56K Cr', pe: 28.2, currency: 'INR' },
+  'ZOMATO': { ticker: 'ZOMATO', name: 'Eternal (Zomato)', sector: 'Internet', price: 264.50, changePct: 2.15, change: 5.55, high: 268.00, low: 258.00, open: 260.00, volume: 35000000, marketCap: '₹2.35L Cr', pe: 68.5, currency: 'INR' },
 };
+
+

@@ -4,7 +4,7 @@ import { useStockSocket } from '@/hooks/useStockSocket';
 import AnimatedPrice from './widgets/AnimatedPrice';
 
 export default function LiveStockPrice({ symbol, companyName, initialData }) {
-  const { status, quote } = useStockSocket(symbol);
+  const { status, quote, marketOpen } = useStockSocket(symbol);
   const data = quote || initialData || {};
 
   const formattedPrice = useMemo(
@@ -28,7 +28,7 @@ export default function LiveStockPrice({ symbol, companyName, initialData }) {
           />
         </div>
         <div className="text-right text-xs uppercase tracking-[0.2em] text-gs-textDim">
-          LIVE
+          {marketOpen ? 'LIVE' : 'MARKET CLOSED'}
           <div className="mt-2 flex items-center justify-end gap-2">
             <CircleDot className={`h-3 w-3 ${status === 'Connected' ? 'text-gs-pos' : 'text-gs-neg'}`} />
             {status === 'Connected' ? 'Connected' : 'Disconnected'}

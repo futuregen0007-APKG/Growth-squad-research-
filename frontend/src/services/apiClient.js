@@ -20,6 +20,21 @@ const API_BASE_URL = API_BASE;
 let isRefreshing = false;
 let refreshSubscribers = [];
 
+const parseApiResponse = async (response, endpoint) => {
+  const contentType = response.headers.get('content-type') || '';
+  const body = await response.text();
+  let data = null;
+  if (contentType.includes('application/json')) {
+    try { data = body ? JSON.parse(body) : {}; } catch { throw new Error(`API returned invalid JSON (${response.status}) for ${endpoint}`); }
+  } else {
+    const error = new Error(`API returned non-JSON response (${response.status}) for ${endpoint}`);
+    error.statusCode = response.status;
+    error.responseText = body.slice(0, 300);
+    throw error;
+  }
+  return data;
+};
+
 /**
  * Subscribe to token refresh event
  * Queues requests while token is being refreshed
@@ -69,7 +84,7 @@ const refreshToken = async () => {
       throw new Error('Token refresh failed');
     }
 
-    const data = await response.json();
+    const data = await parseApiResponse(response, '/api/auth/refresh-token');
     const newAccessToken = data.data.tokens.accessToken;
 
     // Store new token
@@ -151,7 +166,7 @@ const apiClient = {
           subscribeTokenRefresh((newToken) => {
             headers['Authorization'] = `Bearer ${newToken}`;
             fetch(`${API_BASE_URL}${endpoint}`, { ...options, headers })
-              .then((res) => res.json())
+              .then((res) => parseApiResponse(res, endpoint))
               .then(resolve)
               .catch(reject);
           });
@@ -163,7 +178,7 @@ const apiClient = {
      * Parse response
      * All API responses are JSON
      */
-    const data = await response.json();
+    const data = await parseApiResponse(response, endpoint);
 
     /**
      * Handle error responses

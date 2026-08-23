@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Newspaper,
   Clock,
@@ -6,7 +6,8 @@ import {
   TrendingUp,
   Search,
 } from "lucide-react";
-import { NEWS_FEED, STOCKS } from "@/data/mockData";
+import { STOCKS } from "@/data/mockData";
+import { fetchNews } from "@/services/newsApi";
 import {
   Tabs,
   TabsList,
@@ -36,27 +37,42 @@ export default function News() {
   const [searchQuery, setSearchQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [stockFilter, setStockFilter] = useState("all");
+  const [newsFeed, setNewsFeed] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+
+  const loadNews = async () => {
+    setLoading(true);
+    setLoadError(false);
+    try {
+      setNewsFeed(await fetchNews(STOCKS.map((stock) => stock.ticker)));
+    } catch (error) {
+      console.error('Unable to load news:', error);
+      setLoadError(true);
+      setNewsFeed([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadNews(); }, []);
 
   // Filter news based on search and filters
   const filteredNews = useMemo(() => {
-    return NEWS_FEED.filter((news) => {
-      const matchesSearch =
-        searchQuery === "" ||
-        news.headline.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        news.source.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        news.tickers.some((t) =>
-          t.toLowerCase().includes(searchQuery.toLowerCase())
-        );
+    return newsFeed.filter((news) => {
+      const tickers = news.symbol ? [news.symbol] : [];
+      const headline = news.title || '';
+      const matchesSearch = searchQuery === "" || headline.toLowerCase().includes(searchQuery.toLowerCase()) || news.source.toLowerCase().includes(searchQuery.toLowerCase()) || tickers.some((t) => t.toLowerCase().includes(searchQuery.toLowerCase()));
 
       const matchesCategory =
-        categoryFilter === "all" || news.category === categoryFilter;
+        categoryFilter === "all" || String(news.category || '').toLowerCase() === categoryFilter;
 
       const matchesStock =
-        stockFilter === "all" || news.tickers.includes(stockFilter);
+        stockFilter === "all" || tickers.includes(stockFilter);
 
       return matchesSearch && matchesCategory && matchesStock;
     });
-  }, [searchQuery, categoryFilter, stockFilter]);
+  }, [newsFeed, searchQuery, categoryFilter, stockFilter]);
 
   // Group filtered news by category
   const newsByCategory = useMemo(() => {
@@ -158,7 +174,16 @@ export default function News() {
         </div>
       </div>
 
+      {loading && <div className="gs-card p-8 text-center text-sm text-gs-textDim">Loading news...</div>}
+      {loadError && !loading && (
+        <div className="gs-card p-8 text-center">
+          <p className="text-sm text-gs-textMuted">Unable to load news.</p>
+          <button onClick={loadNews} className="mt-3 text-sm text-gs-gold hover:text-gs-text">Retry</button>
+        </div>
+      )}
+
       {/* News Content */}
+      {!loading && !loadError && (
       <Tabs defaultValue="all" className="w-full">
         <TabsList className="bg-gs-panel border border-gs-border rounded-sm h-auto p-1 flex-wrap">
           {CATEGORIES.map((cat) => (
@@ -182,7 +207,7 @@ export default function News() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {newsByCategory[cat].map((news) => (
                   <NewsCard
-                    key={news.id}
+                    key={news.url}
                     news={news}
                   />
                 ))}
@@ -203,13 +228,24 @@ export default function News() {
           </TabsContent>
         ))}
       </Tabs>
+      )}
     </div>
   );
 }
 
 function NewsCard({ news }) {
+  const articleUrl = news.url;
+  const published = news.publishedAt ? new Date(news.publishedAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'Date unavailable';
+  const openArticle = () => {
+    if (articleUrl) window.open(articleUrl, '_blank', 'noopener,noreferrer');
+  };
+
   return (
-    <div className="gs-card p-4 hover:bg-gs-cardHover transition-colors cursor-pointer group">
+    <article className="gs-card overflow-hidden hover:bg-gs-cardHover transition-colors group cursor-pointer" onClick={openArticle} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openArticle(); } }} role={articleUrl ? 'link' : undefined} tabIndex={articleUrl ? 0 : undefined}>
+      <div className="h-40 bg-gs-panel">
+        {news.imageUrl ? <img src={news.imageUrl} alt="" className="w-full h-full object-cover" onError={(event) => { event.currentTarget.style.display = 'none'; }} /> : <div className="h-full grid place-items-center text-[10px] uppercase tracking-wider text-gs-textDim">Image unavailable</div>}
+      </div>
+      <div className="p-4">
       {/* Category + Time */}
       <div className="flex items-start justify-between mb-2">
         <Badge
@@ -221,18 +257,18 @@ function NewsCard({ news }) {
 
         <div className="flex items-center gap-1 text-[10px] text-gs-textDim">
           <Clock className="w-3 h-3" />
-          {news.timestamp}
+          {published}
         </div>
       </div>
 
       {/* Headline */}
       <h3 className="font-display font-bold text-gs-text text-sm mb-2 line-clamp-2 group-hover:text-gs-gold transition-colors">
-        {news.headline}
+        {news.title}
       </h3>
 
       {/* Summary */}
       <p className="text-[12px] text-gs-textMuted mb-3 line-clamp-2">
-        {news.summary || news.headline}
+        {news.description || 'No excerpt available.'}
       </p>
 
       {/* Source + Tickers */}
@@ -241,26 +277,9 @@ function NewsCard({ news }) {
           {news.source}
         </span>
 
-        {news.tickers.length > 0 && (
+        {news.symbol && (
           <div className="flex gap-1">
-            {news.tickers.slice(0, 2).map((ticker) => (
-              <Badge
-                key={ticker}
-                variant="secondary"
-                className="text-[10px] font-mono bg-gs-panel border-gs-border text-gs-textMuted"
-              >
-                {ticker}
-              </Badge>
-            ))}
-
-            {news.tickers.length > 2 && (
-              <Badge
-                variant="secondary"
-                className="text-[10px] bg-gs-panel border-gs-border text-gs-textDim"
-              >
-                +{news.tickers.length - 2}
-              </Badge>
-            )}
+            <Badge variant="secondary" className="text-[10px] font-mono bg-gs-panel border-gs-border text-gs-textMuted">{news.symbol}</Badge>
           </div>
         )}
       </div>
@@ -272,8 +291,9 @@ function NewsCard({ news }) {
           <span>{news.sentiment || "Neutral"}</span>
         </div>
 
-        <ExternalLink className="w-3.5 h-3.5 text-gs-textDim group-hover:text-gs-gold transition-colors" />
+        {articleUrl ? <ExternalLink className="w-3.5 h-3.5 text-gs-textDim group-hover:text-gs-gold transition-colors" aria-label={`Open ${news.title}`} /> : <span className="text-[10px] text-gs-textDim">Article unavailable</span>}
       </div>
-    </div>
+      </div>
+    </article>
   );
 }

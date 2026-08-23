@@ -16,7 +16,13 @@ import { initializeRedis, closeRedis } from './utils/redisClient.js';
 import { formatErrorResponse, getHttpStatus } from './utils/errorHandler.js';
 import { logger } from './utils/logger.js';
 import { StockSocket } from './socket/stock.socket.js';
+import { LivePriceService } from './services/live-price.service.js';
+import { AngelWebSocketService } from './services/angel-websocket.service.js';
 import authRoutes from './routes/auth.js';
+import newsRoute from './routes/news.js';
+import { createGoalRoutes } from './routes/goals.js';
+import earningsIntelligenceRoute from './routes/earningsIntelligence.js';
+import { seedHistoricalIntelligence } from './scripts/seedHistoricalIntelligence.js';
 
 dotenv.config();
 
@@ -83,6 +89,7 @@ const startServer = async () => {
   const marketProvider = (process.env.MARKET_DATA_PROVIDER || 'angel-one').toLowerCase();
 
   await connectMongo();
+  await seedHistoricalIntelligence().catch(err => logger.warn('Seed error: ' + err.message));
   await initializeRedis();
 
   let provider;
@@ -124,9 +131,17 @@ const startServer = async () => {
   const stockRoutes = createStockRoutes(stockService);
   app.use('/api/stocks', stockRoutes);
   app.use('/api/research', researchRoute);
+  app.use('/api/news', newsRoute);
+  app.use('/api/goals', createGoalRoutes(stockService));
+  app.use('/api/earnings-intelligence', earningsIntelligenceRoute);
+  app.use('/earnings-intelligence', earningsIntelligenceRoute);
   logger.info('Mounting route: /api/sector-rotation');
   app.use('/api/sector-rotation', sectorRotationRoute);
   logger.info('Mounted route: /api/sector-rotation');
+
+  app.use((req, res) => {
+    res.status(404).json({ success: false, error: 'Route not found', endpoint: req.originalUrl });
+  });
 
   app.use((err, req, res, next) => {
     const payload = formatErrorResponse(err);
@@ -136,16 +151,22 @@ const startServer = async () => {
   });
 
   server = app.listen(PORT, '0.0.0.0', () => {
+    logger.info(`Backend API running at http://localhost:${PORT}`);
     logger.info(`Server running on http://localhost:${PORT}`);
   });
 
-  const stockSocket = new StockSocket(server, provider);
+  const livePriceService = provider instanceof AngelOneProvider ? new LivePriceService() : null;
+  const angelWebSocketService = livePriceService
+    ? new AngelWebSocketService(provider, livePriceService)
+    : null;
+  const stockSocket = new StockSocket(server, provider, livePriceService, angelWebSocketService);
   stockSocket.start();
 
   const shutdown = async (signal) => {
     logger.info(`Received ${signal}. Shutting down gracefully...`);
     try {
       await closeRedis();
+      await stockSocket.stop();
       if (server) {
         server.close(() => {
           logger.info('HTTP server closed');

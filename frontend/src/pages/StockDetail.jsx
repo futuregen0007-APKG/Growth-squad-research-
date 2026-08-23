@@ -1,4 +1,4 @@
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, useNavigate, Link, useLocation } from "react-router-dom";
 import { useState, useEffect } from "react";
 import {
   ArrowLeft,
@@ -32,7 +32,7 @@ import {
   Line,
   Legend,
 } from "recharts";
-import { NEWS_FEED, getCompanyResearch, STOCKS } from "@/data/mockData";
+import { getCompanyResearch, STOCKS } from "@/data/mockData";
 import ChangeBadge from "@/components/widgets/ChangeBadge";
 import RatingPanel from "@/components/widgets/RatingPanel";
 import SWOTGrid from "@/components/widgets/SWOTGrid";
@@ -41,6 +41,7 @@ import LiveStockPrice from "@/components/LiveStockPrice";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { fetchStockBySymbol, fetchCompanyDetails } from "@/services/stockApi";
 import CandlestickChart from "@/components/charts/CandlestickChart";
+import { fetchStockNews } from "@/services/newsApi";
 
 const ChartTooltip = ({ active, payload }) => {
   if (!active || !payload?.length) return null;
@@ -102,10 +103,16 @@ const ValuationRow = ({ name, value, sectorAvg, hint }) => {
 export default function StockDetail() {
   const { ticker } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const goalContext = location.state?.goal;
+  const goalRecommendation = location.state?.goalRecommendation;
   const [stock, setStock] = useState(null);
   const [details, setDetails] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [news, setNews] = useState([]);
+  const [newsLoading, setNewsLoading] = useState(true);
+  const [newsError, setNewsError] = useState(false);
   const [chartType, setChartType] = useState('area'); // 'area' or 'candlestick'
 
   useEffect(() => {
@@ -129,6 +136,21 @@ export default function StockDetail() {
       }
     };
     if (ticker) loadStock();
+  }, [ticker]);
+
+  useEffect(() => {
+    if (!ticker) return undefined;
+    let active = true;
+    setNewsLoading(true);
+    setNewsError(false);
+    fetchStockNews(ticker)
+      .then((articles) => { if (active) setNews(articles); })
+      .catch((newsLoadError) => {
+        console.error('Error loading stock news:', newsLoadError);
+        if (active) { setNews([]); setNewsError(true); }
+      })
+      .finally(() => { if (active) setNewsLoading(false); });
+    return () => { active = false; };
   }, [ticker]);
 
   if (error || !stock) {
@@ -204,6 +226,79 @@ export default function StockDetail() {
           </div>
         </div>
       </div>
+
+      {goalRecommendation && goalContext && (
+        <div className="gs-card p-5 border-l-2 border-l-gs-gold space-y-4" data-testid="goal-stock-suggestion">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <div className="flex items-center gap-2 text-gs-gold">
+                <Sparkles className="w-4 h-4" />
+                <span className="gs-label text-gs-gold">Goal suggestion</span>
+              </div>
+              <h2 className="font-display text-xl font-bold text-gs-text mt-2">{goalContext.name}: why {stock.ticker} fits</h2>
+              <p className="text-sm text-gs-textMuted mt-1">This view combines the stock research with the selected goal's horizon, contribution, and risk requirements.</p>
+            </div>
+            <div className="text-right shrink-0">
+              <div className="gs-label">Goal fit</div>
+              <div className="font-display text-2xl font-bold text-gs-gold">{goalRecommendation.goalFitScore ?? 0}<span className="text-sm text-gs-textDim">/100</span></div>
+              <div className="text-[10px] uppercase text-gs-textDim">{goalRecommendation.recommendation || 'CONSIDER'}</div>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+            <div className="lg:col-span-2 space-y-3">
+              <div className="bg-gs-panel border border-gs-border p-3">
+                <div className="gs-label mb-1">Why this stock</div>
+                <p className="text-sm text-gs-textMuted leading-relaxed">{goalRecommendation.whyRecommended || 'Selected for its fit with this goal.'}</p>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                {[['History', goalRecommendation.history], ['Present', goalRecommendation.present], ['Future', goalRecommendation.future]].map(([label, text]) => (
+                  <div key={label} className="bg-gs-panel border border-gs-border p-3">
+                    <div className="gs-label mb-1">{label}</div>
+                    {typeof text === 'string' ? (
+                      <p className="text-xs text-gs-textMuted leading-relaxed">{text}</p>
+                    ) : label === 'Present' ? (
+                      <div className="space-y-1 text-xs text-gs-textMuted">
+                        <div>Price: ₹{Number(text?.price || stock.price || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
+                        <div>Day change: {text?.dayChangePct ?? stock.changePct ?? 'Data unavailable'}%</div>
+                        <div>Day high / low: {text?.high ?? 'Data unavailable'} / {text?.low ?? 'Data unavailable'}</div>
+                        <div className="text-[10px] text-gs-textDim">Source: {text?.source || 'Data unavailable'}</div>
+                      </div>
+                    ) : (
+                      <div className="space-y-2 text-xs text-gs-textMuted">
+                        <p>{text?.label || 'Evidence-based outlook only; no future return is guaranteed.'}</p>
+                        {Array.isArray(text?.growthDrivers) && text.growthDrivers.length > 0 && (
+                          <ul className="list-disc pl-4 space-y-1">
+                            {text.growthDrivers.map((driver, index) => <li key={`${driver}-${index}`}>{driver}</li>)}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="bg-gs-panel border border-gs-border p-3 space-y-3">
+              <div>
+                <div className="gs-label">Investment plan</div>
+                <div className="font-mono text-lg text-gs-text mt-1">₹{Number(goalRecommendation.investmentPlan?.monthly || 0).toLocaleString('en-IN')} / month</div>
+                <div className="text-xs text-gs-textDim mt-1">₹{Number(goalRecommendation.investmentPlan?.annual || 0).toLocaleString('en-IN')} annually</div>
+              </div>
+              <div>
+                <div className="gs-label">Projection</div>
+                <div className="text-sm text-gs-text mt-1">₹{Number(goalRecommendation.projection?.projectedAmount || 0).toLocaleString('en-IN')}</div>
+                <div className="text-xs text-gs-textDim">Funding gap: ₹{Number(goalRecommendation.projection?.fundingGap || 0).toLocaleString('en-IN')}</div>
+              </div>
+              <div>
+                <div className="gs-label">Risks</div>
+                <ul className="list-disc pl-4 mt-1 space-y-1 text-xs text-gs-textMuted">
+                  {(goalRecommendation.risks || []).map((risk, index) => <li key={`${risk}-${index}`}>{risk}</li>)}
+                </ul>
+              </div>
+            </div>
+          </div>
+          <div className="text-[11px] text-gs-textDim border-t border-gs-border pt-3">Returns are market-dependent and not guaranteed. This is informational analysis, not personalized financial advice.</div>
+        </div>
+      )}
 
       <LiveStockPrice
         symbol={stock.ticker}
@@ -754,25 +849,23 @@ export default function StockDetail() {
       {/* News */}
       <div className="gs-card p-5" data-testid="related-news">
         <h3 className="font-display font-bold text-gs-text mb-3">Related News</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {NEWS_FEED.slice(0, 4).map((n) => (
-            <div
-              key={n.id}
-              className="gs-card p-3.5 bg-gs-bg/40 hover:bg-gs-cardHover transition-colors cursor-pointer"
-            >
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="font-mono text-[10px] uppercase tracking-wider text-gs-textDim">
-                  {n.source}
-                </span>
-                <span className="font-mono text-[10px] text-gs-textDim">{n.timestamp}</span>
+        {newsLoading && <div className="text-sm text-gs-textDim">Loading news...</div>}
+        {newsError && !newsLoading && <div className="text-sm text-gs-textMuted">Unable to load news. Retry from the News page.</div>}
+        {!newsLoading && !newsError && !news.length && <div className="text-sm text-gs-textMuted">No relevant news available.</div>}
+        {!newsLoading && !newsError && news.length > 0 && <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {news.slice(0, 4).map((article) => (
+            <a key={article.url} href={article.url} target="_blank" rel="noopener noreferrer" className="gs-card overflow-hidden bg-gs-bg/40 hover:bg-gs-cardHover transition-colors group">
+              <div className="h-28 bg-gs-panel">{article.imageUrl ? <img src={article.imageUrl} alt="" className="w-full h-full object-cover" onError={(event) => { event.currentTarget.style.display = 'none'; }} /> : <div className="h-full grid place-items-center text-[10px] uppercase tracking-wider text-gs-textDim">Image unavailable</div>}</div>
+              <div className="p-3.5">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-gs-textDim">{article.source}</span>
+                  <span className="font-mono text-[10px] text-gs-textDim">{article.publishedAt ? new Date(article.publishedAt).toLocaleDateString('en-IN') : 'Date unavailable'}</span>
+                </div>
+                <p className="text-[12.5px] text-gs-text leading-snug flex items-start gap-1.5">{article.title}<ExternalLink className="w-3 h-3 text-gs-textDim group-hover:text-gs-gold shrink-0 mt-0.5" /></p>
               </div>
-              <p className="text-[12.5px] text-gs-text leading-snug flex items-start gap-1.5">
-                {n.headline}
-                <ExternalLink className="w-3 h-3 text-gs-textDim shrink-0 mt-0.5" />
-              </p>
-            </div>
+            </a>
           ))}
-        </div>
+        </div>}
       </div>
     </div>
   );

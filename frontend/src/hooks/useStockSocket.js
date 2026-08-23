@@ -15,6 +15,7 @@ const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || defaultSocketUrl;
 export function useStockSocket(symbol) {
   const [status, setStatus] = useState('Disconnected');
   const [quote, setQuote] = useState(null);
+  const [marketOpen, setMarketOpen] = useState(true);
   const socketRef = useRef(null);
   const normalizedSymbol = useMemo(() => symbol?.toUpperCase?.() || '', [symbol]);
 
@@ -40,6 +41,7 @@ export function useStockSocket(symbol) {
         setQuote(data);
       }
     });
+    socket.on('marketStatus', (data) => setMarketOpen(Boolean(data?.isOpen)));
 
     socket.connect();
     socket.emit('subscribe', { symbol: normalizedSymbol });
@@ -49,8 +51,9 @@ export function useStockSocket(symbol) {
       socket.disconnect();
       setStatus('Disconnected');
       setQuote(null);
+      setMarketOpen(true);
     };
   }, [normalizedSymbol]);
 
-  return { status, quote };
+  return { status, quote, marketOpen };
 }

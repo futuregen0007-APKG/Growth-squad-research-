@@ -9,6 +9,7 @@ import { Progress } from '@/components/ui/progress';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 
 export default function SIPPlanner() {
+  const [calculatorMode, setCalculatorMode] = useState('sip');
   const [mode, setMode] = useState('target'); // 'target' or 'investment'
   const [targetAmount, setTargetAmount] = useState('');
   const [timeYears, setTimeYears] = useState('');
@@ -16,6 +17,10 @@ export default function SIPPlanner() {
   const [monthlyInvestment, setMonthlyInvestment] = useState('');
   const [initialInvestment, setInitialInvestment] = useState('');
   const [stepUp, setStepUp] = useState('0');
+  const [swpCorpus, setSwpCorpus] = useState('');
+  const [swpWithdrawal, setSwpWithdrawal] = useState('');
+  const [swpYears, setSwpYears] = useState('');
+  const [swpReturn, setSwpReturn] = useState('8');
 
   const calculations = useMemo(() => {
     if (mode === 'target') {
@@ -98,6 +103,33 @@ export default function SIPPlanner() {
     }
   }, [mode, targetAmount, timeYears, expectedReturn, monthlyInvestment, initialInvestment, stepUp]);
 
+  const swpCalculations = useMemo(() => {
+    const corpus = parseFloat(swpCorpus) || 0;
+    const withdrawal = parseFloat(swpWithdrawal) || 0;
+    const years = parseFloat(swpYears) || 0;
+    const annualReturn = parseFloat(swpReturn) / 100 || 0;
+    if (corpus <= 0 || withdrawal <= 0 || years <= 0) return null;
+
+    const months = Math.round(years * 12);
+    const monthlyRate = annualReturn / 12;
+    const growthFactor = Math.pow(1 + monthlyRate, months);
+    const withdrawalGrowth = monthlyRate === 0
+      ? withdrawal * months
+      : withdrawal * ((growthFactor - 1) / monthlyRate);
+    const endingCorpus = Math.max(0, corpus * growthFactor - withdrawalGrowth);
+    const totalWithdrawn = withdrawal * months;
+    const wealthGained = endingCorpus + totalWithdrawn - corpus;
+
+    return {
+      endingCorpus,
+      totalWithdrawn,
+      wealthGained,
+      years,
+      withdrawal,
+      depletionRisk: endingCorpus <= 0,
+    };
+  }, [swpCorpus, swpWithdrawal, swpYears, swpReturn]);
+
   const formatCurrency = (value) => {
     return '₹' + Math.round(value).toLocaleString('en-IN');
   };
@@ -116,7 +148,14 @@ export default function SIPPlanner() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <Tabs value={calculatorMode} onValueChange={setCalculatorMode} className="w-full">
+        <TabsList className="bg-gs-panel border border-gs-border rounded-sm w-full max-w-md">
+          <TabsTrigger value="sip" className="flex-1 rounded-sm data-[state=active]:bg-gs-card">SIP Calculator</TabsTrigger>
+          <TabsTrigger value="swp" className="flex-1 rounded-sm data-[state=active]:bg-gs-card">SWP Calculator</TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      {calculatorMode === 'sip' ? <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Calculator */}
         <Card className="bg-gs-card border-gs-border">
           <CardHeader>
@@ -377,7 +416,61 @@ export default function SIPPlanner() {
             </Card>
           </div>
         )}
-      </div>
+      </div> : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <Card className="bg-gs-card border-gs-border">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2"><Calculator className="w-5 h-5 text-gs-gold" /> SWP Calculator</CardTitle>
+              <CardDescription>Plan regular withdrawals from your invested corpus.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <label className="text-sm text-gs-textMuted mb-2 block">Initial Corpus (₹)</label>
+                <Input type="number" min="0" value={swpCorpus} onChange={(e) => setSwpCorpus(e.target.value)} placeholder="1000000" className="bg-gs-bg border-gs-border" />
+              </div>
+              <div>
+                <label className="text-sm text-gs-textMuted mb-2 block">Monthly Withdrawal (₹)</label>
+                <Input type="number" min="0" value={swpWithdrawal} onChange={(e) => setSwpWithdrawal(e.target.value)} placeholder="10000" className="bg-gs-bg border-gs-border" />
+              </div>
+              <div>
+                <label className="text-sm text-gs-textMuted mb-2 block">Withdrawal Period (Years)</label>
+                <Input type="number" min="1" value={swpYears} onChange={(e) => setSwpYears(e.target.value)} placeholder="10" className="bg-gs-bg border-gs-border" />
+              </div>
+              <div>
+                <label className="text-sm text-gs-textMuted mb-2 block">Expected Return (% p.a.)</label>
+                <Select value={swpReturn} onValueChange={setSwpReturn}>
+                  <SelectTrigger className="bg-gs-bg border-gs-border"><SelectValue /></SelectTrigger>
+                  <SelectContent className="bg-gs-card border-gs-border">
+                    <SelectItem value="6">6% (Conservative)</SelectItem>
+                    <SelectItem value="8">8% (Moderate)</SelectItem>
+                    <SelectItem value="10">10% (Growth)</SelectItem>
+                    <SelectItem value="12">12% (Aggressive)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <p className="text-xs text-gs-textDim">Illustrative scenario only. Actual returns and withdrawal outcomes will vary with market performance.</p>
+            </CardContent>
+          </Card>
+
+          {swpCalculations ? (
+            <div className="space-y-4">
+              <Card className="bg-gs-card border-gs-border">
+                <CardHeader><CardTitle className="text-sm text-gs-textMuted">SWP Projection</CardTitle></CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="text-center py-3"><div className="text-sm text-gs-textMuted mb-2">Estimated Ending Corpus</div><div className={`font-display text-3xl font-bold ${swpCalculations.depletionRisk ? 'text-gs-neg' : 'text-gs-gold'}`}>{formatCurrency(swpCalculations.endingCorpus)}</div><div className={`text-xs mt-2 ${swpCalculations.depletionRisk ? 'text-gs-neg' : 'text-gs-textDim'}`}>{swpCalculations.depletionRisk ? 'Corpus may be depleted under this scenario' : 'Corpus remains after the withdrawal period'}</div></div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Card className="bg-gs-panel border-gs-border"><CardContent className="pt-4"><div className="text-xs text-gs-textMuted">Total Withdrawn</div><div className="font-display text-lg font-bold text-gs-text mt-1">{formatCurrency(swpCalculations.totalWithdrawn)}</div></CardContent></Card>
+                    <Card className="bg-gs-panel border-gs-border"><CardContent className="pt-4"><div className="text-xs text-gs-textMuted">Estimated Gain / Loss</div><div className={`font-display text-lg font-bold mt-1 ${swpCalculations.wealthGained >= 0 ? 'text-gs-pos' : 'text-gs-neg'}`}>{formatCurrency(swpCalculations.wealthGained)}</div></CardContent></Card>
+                  </div>
+                  <div className="flex justify-between text-xs text-gs-textDim"><span>Monthly withdrawal</span><span>{formatCurrency(swpCalculations.withdrawal)}</span></div>
+                  <div className="flex justify-between text-xs text-gs-textDim"><span>Period</span><span>{swpCalculations.years} years</span></div>
+                </CardContent>
+              </Card>
+              <Card className="bg-gs-card border-gs-border"><CardContent className="pt-5 text-sm text-gs-textMuted"><div className="flex items-center gap-2 mb-2 text-gs-text"><Info className="w-4 h-4 text-gs-gold" /> How SWP works</div>Your monthly withdrawal is deducted while the remaining corpus compounds at the selected illustrative rate. Taxes, fees, inflation, and changing market returns are not included.</CardContent></Card>
+            </div>
+          ) : <Card className="bg-gs-card border-gs-border"><CardContent className="flex items-center justify-center min-h-64 text-sm text-gs-textDim">Enter your corpus, withdrawal, and period to see the projection.</CardContent></Card>}
+        </div>
+      )}
 
       {/* Info Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

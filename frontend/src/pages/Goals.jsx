@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Target, Plus, Trash2, TrendingUp, Calendar, DollarSign, PieChart, ArrowRight, Edit, CheckCircle } from 'lucide-react';
+import { Target, Plus, Trash2, TrendingUp, Calendar, DollarSign, PieChart, ArrowRight, Edit, CheckCircle, Sparkles, ShieldAlert, RefreshCw, Zap, TrendingDown, ArrowUpRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -9,8 +9,9 @@ import { Progress } from '@/components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 import { FINANCIAL_GOALS } from '@/data/financialProfileData';
-import { filterStocks, fetchAllStocks } from '@/services/stockApi';
-import { FALLBACK_STOCK_DATA } from '@/data/mockData';
+import { getSectorAllocation } from '@/services/recommendationEngine';
+import API_BASE from '@/config/api';
+import { ResponsiveContainer, LineChart, Line, Tooltip } from 'recharts';
 
 export default function Goals() {
   const navigate = useNavigate();
@@ -127,76 +128,112 @@ export default function Goals() {
     return Math.round(futureValue);
   };
 
-  // Recommendations state
+  // Recommendations & Intelligence state
   const [recDialogOpen, setRecDialogOpen] = useState(false);
   const [recLoading, setRecLoading] = useState(false);
+  const [rebalancingLoading, setRebalancingLoading] = useState(false);
   const [recResults, setRecResults] = useState([]);
   const [recGoal, setRecGoal] = useState(null);
+  const [recAllocation, setRecAllocation] = useState([]);
+  const [recProfile, setRecProfile] = useState({});
+  const [recRebalance, setRecRebalance] = useState(null);
+  const [recUniverseStats, setRecUniverseStats] = useState(null);
+  const [selectedDetail, setSelectedDetail] = useState(null);
+  const [detailDialogOpen, setDetailDialogOpen] = useState(false);
+  const [recConfig, setRecConfig] = useState({ riskProfile: 'moderate', sector: '', horizonYears: 5, monthlyContribution: 0 });
 
-  const mapGoalToFilters = (goal) => {
-    const years = (goal.targetYear || new Date().getFullYear()) - new Date().getFullYear();
-    // Simple heuristic: shorter horizon -> safer (lower price stocks), longer -> growth (sort by change)
-    if (years >= 7) return { sortBy: 'change-desc' };
-    if (years >= 3) return { sortBy: 'change-desc', minPrice: 50 };
-    return { sortBy: 'price-asc', maxPrice: 500 };
-  };
+  const runRecommendationAnalysis = async (goal, config) => {
+    setRecLoading(true);
+    const profile = JSON.parse(localStorage.getItem('financialProfile') || '{}');
+    const analysisGoal = {
+      ...goal,
+      riskProfile: config.riskProfile,
+      sector: config.sector,
+      horizonYears: Number(config.horizonYears),
+      monthlyContribution: Number(config.monthlyContribution),
+      enableAiAnalysis: true,
+    };
+    setRecGoal(analysisGoal);
+    setRecProfile({ ...profile, riskProfile: config.riskProfile });
 
-  const openRecommendations = async (goal) => {
     try {
-      setRecGoal(goal);
-      setRecDialogOpen(true);
-      setRecLoading(true);
-      const filters = mapGoalToFilters(goal);
-      let results = await filterStocks(filters);
-
-      // If API returned empty, try fetching all stocks and fall back to local data
-      if (!results || results.length === 0) {
-        try {
-          const all = await fetchAllStocks();
-          // simple ranking: prefer same sector (if primary goal maps to a sector), then top movers
-          const sector = (goal.type === 'wealth_creation' || goal.type === '1crore') ? null : null;
-          results = all.slice(0, 20).map(s => ({ ticker: s.ticker || s.symbol, name: s.name || s.companyName || s.longName, sector: s.sector || s.industry || '—', price: s.price || s.regularMarketPrice || 0 }));
-        } catch (err) {
-          // fallback to hardcoded mock data
-          results = Object.values(FALLBACK_STOCK_DATA).map(s => ({ ticker: s.ticker, name: s.name, sector: s.sector, price: s.price }));
-        }
-      }
-
-      // Enrich top results with research API (history/present/future + articles)
-      const top = results.slice(0, 10).map(r => r.ticker || r.symbol);
-      try {
-        const resp = await fetch(`/api/research?symbols=${top.join(',')}`);
-        if (resp.ok) {
-          const json = await resp.json();
-          const enriched = json.data || [];
-          // Merge enriched info into results
-          const merged = (results.slice(0, 10)).map(r => {
-            const tick = (r.ticker || r.symbol).toUpperCase();
-            const e = enriched.find(en => en.ticker === tick);
-            return { ...r, research: e };
-          });
-          setRecResults(merged);
-        } else {
-          setRecResults(results.slice(0, 10));
-        }
-      } catch (err) {
-        setRecResults(results.slice(0, 10));
-      }
+      const params = new URLSearchParams({
+        goal: JSON.stringify(analysisGoal),
+        profile: JSON.stringify({ ...profile, riskProfile: config.riskProfile }),
+      });
+      const response = await fetch(`${API_BASE}/api/goals/${encodeURIComponent(goal.id)}/recommendations?${params.toString()}`);
+      if (!response.ok) throw new Error('Goal recommendation failed');
+      const payload = await response.json();
+      const recommendations = payload?.data?.recommendations || [];
+      setRecResults(recommendations);
+      setRecAllocation(getSectorAllocation(recommendations));
+      setRecRebalance(payload?.data?.rebalanceAnalysis || null);
+      setRecUniverseStats(payload?.data?.universeStats || null);
     } catch (err) {
       console.error('Error fetching recommendations', err);
-      toast.error('Failed to fetch recommendations');
+      setRecResults([]);
+      setRecAllocation([]);
+      setRecRebalance(null);
+      setRecUniverseStats(null);
+      toast.error('Goal analysis is unavailable. No stock recommendations were generated.');
     } finally {
       setRecLoading(false);
     }
   };
 
-  const generateReason = (goal, stock) => {
-    // Heuristic reasons tailored to goal type and horizon
-    const years = (goal?.targetYear || new Date().getFullYear()) - new Date().getFullYear();
-    if (goal?.type === 'emergency') return 'Stable, lower-volatility stock suitable for short-term safety.';
-    if (goal?.type === 'retirement' || years >= 7) return 'Strong long-term potential and market leadership for wealth accumulation.';
-    if (goal?.type === 'house' || goal?.type === 'education') return 'Balanced growth with relatively stable fundamentals for medium-term goals.';
-    return 'Good fit for diversified portfolio and growth objectives.';
+  const handleTriggerRebalance = async () => {
+    if (!recGoal) return;
+    setRebalancingLoading(true);
+    try {
+      const profile = JSON.parse(localStorage.getItem('financialProfile') || '{}');
+      const response = await fetch(`${API_BASE}/api/goals/${encodeURIComponent(recGoal.id)}/rebalance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ goal: recGoal, profile }),
+      });
+      if (!response.ok) throw new Error('Rebalancing request failed');
+      const payload = await response.json();
+      if (payload.data?.rebalancedRecommendations) {
+        setRecResults(payload.data.rebalancedRecommendations);
+        setRecAllocation(getSectorAllocation(payload.data.rebalancedRecommendations));
+        setRecRebalance(payload.data.rebalanceAnalysis);
+        toast.success('Portfolio Rebalanced!', {
+          description: `Allocations shifted to match ${payload.data.glidepath || 'target'} glidepath tier.`,
+        });
+      }
+    } catch (error) {
+      console.error('Rebalance error', error);
+      toast.error('Failed to trigger automated rebalance.');
+    } finally {
+      setRebalancingLoading(false);
+    }
+  };
+
+  const openRecommendations = async (goal) => {
+    const profile = JSON.parse(localStorage.getItem('financialProfile') || '{}');
+    const config = {
+      riskProfile: profile.riskProfile || profile.riskAppetite || goal.riskProfile || 'moderate',
+      sector: goal.sector || '',
+      horizonYears: Math.max(1, Number(goal.targetYear) - new Date().getFullYear()),
+      monthlyContribution: Number(goal.monthlyContribution) || 0,
+    };
+    setRecConfig(config);
+    setRecDialogOpen(true);
+    setSelectedDetail(null);
+    await runRecommendationAnalysis(goal, config);
+  };
+
+  const updateRecommendationConfig = async (key, value) => {
+    const nextConfig = { ...recConfig, [key]: value };
+    setRecConfig(nextConfig);
+    if (recGoal) await runRecommendationAnalysis(recGoal, nextConfig);
+  };
+
+  const openDetailedRecommendation = async (symbol) => {
+    if (!recGoal || !symbol) return;
+    const recommendation = recResults.find((item) => String(item.symbol || item.ticker).toUpperCase() === String(symbol).toUpperCase());
+    setSelectedDetail({ goal: recGoal, stock: recommendation || null, ...recommendation });
+    setDetailDialogOpen(true);
   };
 
   const getGoalStatus = (goal) => {
@@ -543,75 +580,249 @@ export default function Goals() {
 
       {/* Recommendations Dialog */}
       <Dialog open={recDialogOpen} onOpenChange={setRecDialogOpen}>
-        <DialogContent className="bg-gs-card border-gs-border text-gs-text max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>Recommendations for {recGoal?.name}</DialogTitle>
+        <DialogContent className="bg-gs-card border-gs-border text-gs-text w-[94vw] max-w-[1200px] h-[90vh] max-h-[850px] p-0 gap-0 overflow-hidden flex flex-col">
+          <DialogHeader className="shrink-0 border-b border-gs-border px-6 py-4 pr-12 bg-gs-card">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <DialogTitle className="text-xl">Recommendations for {recGoal?.name}</DialogTitle>
+                <p className="text-xs text-gs-textDim leading-relaxed max-w-3xl mt-1">
+                  Quantitative multi-factor scoring (horizon, volatility, P/E, ROE) weighted with real-time AI news sentiment.
+                </p>
+              </div>
+              {recUniverseStats?.dynamicScreenerActive && (
+                <div className="flex items-center gap-1.5 text-[11px] font-mono text-gs-gold bg-gs-gold/10 border border-gs-gold/30 px-2.5 py-1 rounded-sm">
+                  <Zap className="w-3.5 h-3.5 text-gs-gold" />
+                  <span>Screener Active: {recUniverseStats.screenedCount || 150}+ stocks (MCap ≥ {recUniverseStats.marketCapThreshold || '₹1,000 Cr+'})</span>
+                </div>
+              )}
+            </div>
           </DialogHeader>
-          <div className="space-y-4 mt-4">
-                {recLoading ? (
-              <div className="text-sm text-gs-textDim">Loading recommendations...</div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            {/* Rebalance & Glidepath Alert Banner */}
+            {recRebalance && (
+              <div className={`p-4 border rounded-lg ${recRebalance.recommendedAction === 'REBALANCE_RECOMMENDED' ? 'bg-amber-950/20 border-amber-500/40' : 'bg-gs-panel border-gs-border'}`}>
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-gs-gold">Goal Glidepath Tier</span>
+                      <span className="text-xs font-medium text-gs-text px-2 py-0.5 bg-gs-bg border border-gs-border rounded">{recRebalance.glidepathTier} ({recRebalance.yearsRemaining}y remaining)</span>
+                      {recRebalance.recommendedAction === 'REBALANCE_RECOMMENDED' && (
+                        <span className="text-[11px] font-medium text-amber-400 bg-amber-950/60 border border-amber-700/60 px-2 py-0.5 rounded flex items-center gap-1">
+                          <ShieldAlert className="w-3 h-3" /> Rebalance Recommended ({recRebalance.driftPercentage}% drift)
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-gs-textMuted mt-1">
+                      Target Sector Mix: <span className="text-gs-text font-mono">Growth {recRebalance.targetMix?.growth}% · Core {recRebalance.targetMix?.core}% · Defensive {recRebalance.targetMix?.defensive}%</span>
+                      {recRebalance.currentMix && (
+                        <span className="ml-2 text-gs-textDim">(Current: Growth {recRebalance.currentMix.growth}% · Core {recRebalance.currentMix.core}% · Defensive {recRebalance.currentMix.defensive}%)</span>
+                      )}
+                    </div>
+                    {recRebalance.reasons?.length > 0 && (
+                      <ul className="text-xs text-gs-textDim list-disc pl-4 mt-1 space-y-0.5">
+                        {recRebalance.reasons.map((r, i) => <li key={i}>{r}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                  {recRebalance.recommendedAction === 'REBALANCE_RECOMMENDED' && (
+                    <Button
+                      size="sm"
+                      onClick={handleTriggerRebalance}
+                      disabled={rebalancingLoading}
+                      className="bg-amber-500 hover:bg-amber-600 text-black font-semibold flex items-center gap-1.5 shrink-0"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${rebalancingLoading ? 'animate-spin' : ''}`} />
+                      {rebalancingLoading ? 'Rebalancing...' : 'Rebalance Portfolio'}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Analysis Controls */}
+            <div className="bg-gs-panel border border-gs-border p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <div className="gs-label">Analysis controls</div>
+                  <p className="text-xs text-gs-textDim mt-1">Changing any value reruns goal analysis, stock selection, and AI sentiment scoring.</p>
+                </div>
+                {recLoading && <span className="text-xs text-gs-gold flex items-center gap-1"><RefreshCw className="w-3 h-3 animate-spin" /> Re-analyzing universe...</span>}
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div>
+                  <label className="text-xs text-gs-textMuted mb-1 block">Risk level</label>
+                  <Select value={recConfig.riskProfile} onValueChange={(value) => updateRecommendationConfig('riskProfile', value)}>
+                    <SelectTrigger className="bg-gs-bg border-gs-border h-9"><SelectValue /></SelectTrigger>
+                    <SelectContent className="bg-gs-card border-gs-border">
+                      <SelectItem value="conservative">Low</SelectItem>
+                      <SelectItem value="moderate">Moderate</SelectItem>
+                      <SelectItem value="aggressive">High</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <label className="text-xs text-gs-textMuted mb-1 block">Sector</label>
+                  <Select value={recConfig.sector || 'all'} onValueChange={(value) => updateRecommendationConfig('sector', value === 'all' ? '' : value)}>
+                    <SelectTrigger className="bg-gs-bg border-gs-border h-9"><SelectValue placeholder="All sectors" /></SelectTrigger>
+                    <SelectContent className="bg-gs-card border-gs-border">
+                      <SelectItem value="all">All sectors</SelectItem>
+                      {['Banking', 'Defence', 'IT', 'Healthcare', 'Energy', 'Infrastructure', 'Auto', 'FMCG', 'Financial Services', 'Manufacturing', 'Consumer', 'Power'].map((sector) => <SelectItem key={sector} value={sector}>{sector}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <label className="text-xs text-gs-textMuted mb-1 block">Horizon (years)</label>
+                  <Input type="number" min="1" max="50" value={recConfig.horizonYears} onChange={(event) => setRecConfig({ ...recConfig, horizonYears: event.target.value })} onBlur={(event) => updateRecommendationConfig('horizonYears', Math.max(1, Number(event.target.value) || 1))} className="bg-gs-bg border-gs-border h-9" />
+                </div>
+                <div>
+                  <label className="text-xs text-gs-textMuted mb-1 block">Monthly contribution (₹)</label>
+                  <Input type="number" min="0" value={recConfig.monthlyContribution} onChange={(event) => setRecConfig({ ...recConfig, monthlyContribution: event.target.value })} onBlur={(event) => updateRecommendationConfig('monthlyContribution', Math.max(0, Number(event.target.value) || 0))} className="bg-gs-bg border-gs-border h-9" />
+                </div>
+              </div>
+            </div>
+
+            {!recLoading && recResults.length > 0 && (
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs text-gs-textDim">
+                <div className="bg-gs-panel border border-gs-border p-2"><div className="gs-label">Risk Profile</div><div className="text-gs-text mt-1 uppercase">{String(recConfig.riskProfile || recProfile.riskAppetite || 'moderate').replace('_', ' ')}</div></div>
+                <div className="bg-gs-panel border border-gs-border p-2"><div className="gs-label">Horizon</div><div className="text-gs-text mt-1">{recConfig.horizonYears} years</div></div>
+                <div className="bg-gs-panel border border-gs-border p-2"><div className="gs-label">Target</div><div className="text-gs-text mt-1">₹{Number(recGoal?.targetAmount || 0).toLocaleString('en-IN')}</div></div>
+                <div className="bg-gs-panel border border-gs-border p-2"><div className="gs-label">Monthly</div><div className="text-gs-text mt-1">₹{Number(recConfig.monthlyContribution || 0).toLocaleString('en-IN')}</div></div>
+                <div className="bg-gs-panel border border-gs-border p-2"><div className="gs-label">Recommended</div><div className="text-gs-text mt-1">{recResults.length} stocks</div></div>
+              </div>
+            )}
+
+            {!recLoading && recAllocation.length > 0 && (
+              <div className="flex flex-wrap gap-2 text-[11px] font-mono">
+                {recAllocation.map((item) => <span key={item.sector} className="px-2 py-1 bg-gs-panel border border-gs-border text-gs-textDim">{item.sector} {item.percentage}%</span>)}
+              </div>
+            )}
+
+            {recLoading ? (
+              <div className="text-sm text-gs-textDim py-8 text-center">Loading screened recommendations & live news sentiment...</div>
             ) : recResults.length === 0 ? (
-              <div className="text-sm text-gs-textDim">No recommendations found for this goal.</div>
+              <div className="text-sm text-gs-textDim py-8 text-center">No recommendations found for this goal criteria.</div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 items-stretch">
                 {recResults.map((s) => (
                   <div
                     key={s.ticker || s.symbol}
-                    className="p-3 rounded-lg border border-gs-border bg-gs-panel hover:shadow-lg"
+                    className="p-3.5 rounded-lg border border-gs-border bg-gs-panel hover:border-gs-gold/50 hover:shadow-lg flex flex-col min-w-0 transition-all"
                   >
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1 pr-3">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <div className="font-mono font-semibold">{s.ticker || s.symbol}</div>
-                            <div className="text-xs text-gs-textDim">{s.name || s.companyName || s.longName}</div>
-                          </div>
-                          <div className="text-right">
-                            <div className="font-mono">₹{(s.price || s.regularMarketPrice || 0).toFixed(2)}</div>
-                            <div className="text-xs text-gs-textDim">{s.sector || s.industry || '—'}</div>
-                          </div>
+                    <div className="flex items-start justify-between gap-3 min-h-[52px]">
+                      <div className="min-w-0">
+                        <div className="font-mono font-semibold truncate">{s.ticker || s.symbol}</div>
+                        <div className="text-xs text-gs-textDim truncate">{s.name || s.companyName || s.longName}</div>
+                        <div className="text-[11px] text-gs-textDim mt-1">{s.sector || s.industry || '—'} · {s.risk || 'N/A'} risk</div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="font-mono">₹{Number(s.price || s.regularMarketPrice || 0).toFixed(2)}</div>
+                        <div className="text-lg font-mono text-gs-gold mt-1">{s.goalFitScore ?? s.score ?? 0}<span className="text-[10px] text-gs-textDim">/100</span></div>
+                      </div>
+                    </div>
+
+                    {/* AI Sentiment & Status Row */}
+                    <div className="mt-3 flex items-center justify-between border-t border-gs-border pt-2">
+                      <span className="text-[10px] uppercase tracking-wider text-gs-textDim">{s.recommendation || 'CONSIDER'}</span>
+                      {s.sentimentBadge === 'BULLISH' ? (
+                        <span className="text-emerald-400 font-mono text-[10px] bg-emerald-950/60 border border-emerald-800/60 px-2 py-0.5 rounded flex items-center gap-1">
+                          <TrendingUp className="w-3 h-3" /> Bullish ({s.sentimentScore > 0 ? `+${s.sentimentScore}` : s.sentimentScore})
+                        </span>
+                      ) : s.sentimentBadge === 'BEARISH' ? (
+                        <span className="text-rose-400 font-mono text-[10px] bg-rose-950/60 border border-rose-800/60 px-2 py-0.5 rounded flex items-center gap-1">
+                          <TrendingDown className="w-3 h-3" /> Bearish ({s.sentimentScore})
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 font-mono text-[10px] bg-slate-900 border border-slate-800 px-2 py-0.5 rounded">
+                          Neutral Sentiment
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Why & Catalyst Drivers */}
+                    <div className="mt-3 text-xs text-gs-textDim flex-1">
+                      <div className="font-semibold text-gs-text">Why Recommended</div>
+                      <ul className="list-disc pl-4 mt-1 space-y-1 line-clamp-3">
+                        {(Array.isArray(s.reasons) ? s.reasons : [s.whyRecommended || 'Selected for its fit with this goal.']).map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}
+                      </ul>
+                      {s.sentimentDrivers?.length > 0 && (
+                        <div className="mt-2.5 p-2 bg-gs-bg/60 border border-gs-border rounded text-[11px]">
+                          <span className="font-medium text-gs-text block mb-1">AI News Catalysts:</span>
+                          <ul className="list-disc pl-3 text-gs-textDim space-y-0.5 line-clamp-2">
+                            {s.sentimentDrivers.map((d, idx) => <li key={idx}>{d}</li>)}
+                          </ul>
                         </div>
+                      )}
+                      <div className="font-semibold text-gs-text mt-3">Risks</div>
+                      <ul className="list-disc pl-4 mt-1 space-y-1 line-clamp-2">
+                        {(Array.isArray(s.risks) ? s.risks : ['Market returns and stock prices can change; review this choice as the goal timeline changes.']).map((risk, index) => <li key={`${risk}-${index}`}>{risk}</li>)}
+                      </ul>
+                    </div>
 
-                        <div className="mt-2 text-sm text-gs-textDim">{generateReason(recGoal, s)}</div>
-                        {s.research && (
-                          <div className="mt-3 text-xs text-gs-textDim bg-gs-bg p-2 rounded">
-                            <div className="font-medium text-sm">AI Research</div>
-                            <div className="mt-1">
-                              <div className="text-xs font-semibold">History</div>
-                              <div className="text-xs">{s.research.historySummary || s.research.overview?.Description || ''}</div>
-                            </div>
-                            <div className="mt-1">
-                              <div className="text-xs font-semibold">Present</div>
-                              <div className="text-xs">{s.research.presentSummary || ''}</div>
-                            </div>
-                            <div className="mt-1">
-                              <div className="text-xs font-semibold">Future</div>
-                              <div className="text-xs">{s.research.futureSummary || ''}</div>
-                            </div>
-                            {s.research.news && s.research.news.length > 0 && (
-                              <div className="mt-2 text-xs">
-                                <div className="font-semibold">Articles</div>
-                                <ul className="list-disc pl-5">
-                                  {s.research.news.slice(0,3).map((a, idx) => (
-                                    <li key={idx}><a href={a.url} target="_blank" rel="noreferrer" className="text-gs-accent">{a.title || a.source?.name}</a></li>
-                                  ))}
-                                </ul>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="flex flex-col items-end gap-2">
-                        <Button size="sm" onClick={() => navigate(`/stock/${s.ticker || s.symbol}`)} className="bg-gs-gold text-gs-bg">View</Button>
-                        <Button size="sm" variant="outline" onClick={() => toast.success('Added to watchlist (mock)')}>Add</Button>
-                      </div>
+                    <div className="flex gap-2 mt-4 pt-3 border-t border-gs-border">
+                      <Button size="sm" onClick={() => openDetailedRecommendation(s.ticker || s.symbol)} className="flex-1 bg-gs-gold text-gs-bg">View Analysis</Button>
+                      <Button size="sm" variant="outline" onClick={() => toast.success('Added to watchlist (mock)')}>Add</Button>
                     </div>
                   </div>
                 ))}
               </div>
             )}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Detailed Stock View Dialog */}
+      <Dialog open={detailDialogOpen} onOpenChange={setDetailDialogOpen}>
+        <DialogContent className="bg-gs-card border-gs-border text-gs-text max-w-5xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{selectedDetail?.symbol} suggestion for {selectedDetail?.goal?.name}</DialogTitle>
+          </DialogHeader>
+          {selectedDetail && (
+            <div className="space-y-4 mt-2">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                {[
+                  ['Goal', selectedDetail.goal?.name],
+                  ['Target', `₹${Number(selectedDetail.goal?.targetAmount || 0).toLocaleString('en-IN')}`],
+                  ['Horizon', `${selectedDetail.goal?.horizonYears || selectedDetail.goal?.requestedHorizonYears || 0} years`],
+                  ['Risk / Sector', `${selectedDetail.goal?.riskProfile || 'moderate'} / ${selectedDetail.goal?.sector || selectedDetail.goal?.selectedSector || 'All'}`],
+                ].map(([label, value]) => <div key={label} className="bg-gs-panel border border-gs-border p-3"><div className="gs-label">{label}</div><div className="text-gs-text mt-1 capitalize">{value}</div></div>)}
+              </div>
+              <div className="flex items-end justify-between gap-3 border-b border-gs-border pb-3">
+                <div><div className="gs-label">Goal fit score</div><div className="font-display text-3xl font-bold text-gs-gold">{selectedDetail.goalFitScore ?? 0}<span className="text-sm text-gs-textDim">/100</span></div></div>
+                <div className="text-right"><div className="gs-label">Risk score</div><div className="font-mono text-xl text-gs-text">{selectedDetail.riskScore ?? 'N/A'}<span className="text-xs text-gs-textDim">/100</span></div></div>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                {Object.entries(selectedDetail.components || {}).map(([key, value]) => <div key={key} className="bg-gs-panel border border-gs-border p-2"><div className="text-gs-textDim capitalize">{key.replace(/([A-Z])/g, ' $1')}</div><div className="font-mono text-gs-text mt-1">{value == null ? 'Unavailable' : `${value}/100`}</div></div>)}
+              </div>
+
+              {/* AI Real-Time Sentiment Panel */}
+              <div className="bg-gs-panel border border-gs-border p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="gs-label flex items-center gap-1.5"><Sparkles className="w-3.5 h-3.5 text-gs-gold" /> AI Real-Time News Sentiment Analysis</div>
+                  <span className={`text-xs font-mono px-2 py-0.5 rounded ${selectedDetail.sentimentBadge === 'BULLISH' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : selectedDetail.sentimentBadge === 'BEARISH' ? 'bg-rose-950 text-rose-400 border border-rose-800' : 'bg-slate-900 text-slate-300 border border-slate-800'}`}>
+                    {selectedDetail.sentimentBadge || 'NEUTRAL'} ({selectedDetail.sentimentScore != null ? (selectedDetail.sentimentScore > 0 ? `+${selectedDetail.sentimentScore}` : selectedDetail.sentimentScore) : '0.00'})
+                  </span>
+                </div>
+                {selectedDetail.sentimentDrivers?.length > 0 && (
+                  <div className="mt-2 text-xs text-gs-textMuted">
+                    <span className="font-medium text-gs-text">Verified Catalysts:</span>
+                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                      {selectedDetail.sentimentDrivers.map((item, idx) => <li key={idx}>{item}</li>)}
+                    </ul>
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-gs-panel border border-gs-border p-4"><div className="gs-label mb-1">Why this stock for your goal?</div><p className="text-sm text-gs-textMuted leading-relaxed">{selectedDetail.whyRecommended}</p></div>
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                <div className="bg-gs-panel border border-gs-border p-4 lg:col-span-2 space-y-3"><div className="gs-label">Historical performance</div><div className="grid grid-cols-3 gap-2 text-xs"><div><div className="text-gs-textDim">1Y return</div><div className="font-mono text-gs-text">{selectedDetail.historical?.oneYearReturn == null ? 'Unavailable' : `${selectedDetail.historical.oneYearReturn}%`}</div></div><div><div className="text-gs-textDim">Volatility</div><div className="font-mono text-gs-text">{selectedDetail.historical?.volatility == null ? 'Unavailable' : `${selectedDetail.historical.volatility}%`}</div></div><div><div className="text-gs-textDim">Max drawdown</div><div className="font-mono text-gs-text">{selectedDetail.historical?.maxDrawdown == null ? 'Unavailable' : `${selectedDetail.historical.maxDrawdown}%`}</div></div></div>{selectedDetail.historical?.series?.length > 1 && <div className="h-32"><ResponsiveContainer width="100%" height="100%"><LineChart data={selectedDetail.historical.series}><Line type="monotone" dataKey="close" stroke="#D4AF37" strokeWidth={1.5} dot={false} isAnimationActive={false} /><Tooltip /></LineChart></ResponsiveContainer></div>}<p className="text-xs text-gs-textMuted leading-relaxed">{selectedDetail.history}</p><div className="text-[10px] text-gs-textDim">Source: {selectedDetail.historical?.source || 'Unavailable from configured provider'}</div></div>
+                <div className="bg-gs-panel border border-gs-border p-4 space-y-3"><div className="gs-label">Current / present</div><div className="font-mono text-xl text-gs-text">₹{Number(selectedDetail.present?.price || selectedDetail.price || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div><div className="text-xs text-gs-textMuted">Day change: {selectedDetail.present?.dayChangePct ?? selectedDetail.changePct ?? 0}%</div><div className="text-xs text-gs-textDim">P/E: {selectedDetail.fundamentals?.pe ?? 'Unavailable'}</div><div className="text-xs text-gs-textDim">Source: {selectedDetail.present?.source || 'Unavailable'}</div></div>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3"><div className="bg-gs-panel border border-gs-border p-4"><div className="gs-label">Future outlook</div><ul className="list-disc pl-4 mt-2 space-y-1 text-xs text-gs-textMuted">{(selectedDetail.future?.growthDrivers || []).length ? selectedDetail.future.growthDrivers.map((driver, index) => <li key={`${driver}-${index}`}>{driver}</li>) : <li>No sourced forward-looking driver was returned.</li>}</ul><div className="text-[10px] text-gs-textDim mt-3">{selectedDetail.future?.label}</div></div><div className="bg-gs-panel border border-gs-border p-4"><div className="gs-label">Risks</div><ul className="list-disc pl-4 mt-2 space-y-1 text-xs text-gs-textMuted">{(selectedDetail.risks || []).map((risk, index) => <li key={`${risk}-${index}`}>{risk}</li>)}</ul></div></div>
+              <div className="bg-gs-panel border border-gs-border p-4"><div className="flex items-center justify-between gap-3"><div className="gs-label">Recent company news</div><span className="text-[10px] text-gs-textDim">Original publisher links</span></div>{selectedDetail.news?.length ? <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3">{selectedDetail.news.map((article, index) => <a key={`${article.url || article.title}-${index}`} href={article.url} target="_blank" rel="noopener noreferrer" className="border border-gs-border p-3 hover:border-gs-gold/50 transition-colors"><div className="text-xs text-gs-text line-clamp-2">{article.title}</div><div className="text-[10px] text-gs-textDim mt-2">{article.source || 'Publisher'}{article.publishedAt ? ` · ${new Date(article.publishedAt).toLocaleDateString('en-IN')}` : ''}</div><div className="text-[10px] text-gs-gold mt-2">Read original article ↗</div></a>)}</div> : <div className="text-xs text-gs-textDim mt-3">No relevant company-specific news was returned by the configured news provider.</div>}</div>
+              <div className="bg-gs-panel border border-gs-border p-4"><div className="gs-label">Investment plan and deterministic projection</div><div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3 text-sm"><div><div className="text-gs-textDim">Monthly</div><div className="font-mono text-gs-text">₹{Number(selectedDetail.investmentPlan?.monthly || selectedDetail.goal?.monthlyContribution || 0).toLocaleString('en-IN')}</div></div><div><div className="text-gs-textDim">Weekly</div><div className="font-mono text-gs-text">₹{Number(selectedDetail.investmentPlan?.weekly || 0).toLocaleString('en-IN')}</div></div><div><div className="text-gs-textDim">Annual</div><div className="font-mono text-gs-text">₹{Number(selectedDetail.investmentPlan?.annual || 0).toLocaleString('en-IN')}</div></div><div><div className="text-gs-textDim">Base scenario</div><div className="font-mono text-gs-text">₹{Number(selectedDetail.projection?.projectedAmount || 0).toLocaleString('en-IN')}</div></div></div><div className="text-[10px] text-gs-textDim mt-3">Illustrative scenario only. Returns are not guaranteed.</div></div>
+              <div className="flex items-center justify-between gap-3 flex-wrap"><div className="text-xs text-gs-textDim">News links open the original publisher article.</div><Button onClick={() => { setDetailDialogOpen(false); navigate(`/stock/${encodeURIComponent(selectedDetail.symbol)}`, { state: { goal: selectedDetail.goal, profile: recProfile, goalRecommendation: selectedDetail } }); }} className="bg-gs-gold text-gs-bg">Open full Stock Detail</Button></div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

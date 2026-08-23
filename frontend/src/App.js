@@ -47,6 +47,8 @@ function App() {
             <Route path="/news" element={<News />} />
             <Route path="/sectors" element={<SectorIntelligence />} />
             <Route path="/earnings" element={<EarningsIntelligence />} />
+            <Route path="/earnings/:symbol" element={<EarningsIntelligence />} />
+            <Route path="/earnings-intelligence/:symbol" element={<EarningsIntelligence />} />
             <Route path="/ai-research" element={<AIResearch />} />
             <Route path="/stock/:ticker" element={<StockDetail />} />
             <Route path="/search" element={<SearchResults />} />
