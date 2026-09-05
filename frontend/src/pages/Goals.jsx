@@ -14,9 +14,32 @@ import { getWatchlists, addWatchlistSymbol } from '@/services/watchlistApi';
 import API_BASE from '@/config/api';
 import { ResponsiveContainer, LineChart, Line, Tooltip } from 'recharts';
 
+const getPlanConfig = (goal, overrides = {}) => {
+  const profile = JSON.parse(localStorage.getItem('financialProfile') || '{}');
+  return {
+    riskProfile: overrides.riskProfile || profile.riskProfile || profile.riskAppetite || goal.riskProfile || 'moderate',
+    horizonYears: Math.max(1, Number(overrides.horizonYears ?? goal.horizonYears ?? Number(goal.targetYear) - new Date().getFullYear())),
+    monthlyContribution: Math.max(0, Number(overrides.monthlyContribution ?? goal.monthlyContribution ?? 0)),
+  };
+};
+
+const fetchAllocationPlan = async (goal, config = getPlanConfig(goal)) => {
+  const params = new URLSearchParams({
+    goal: JSON.stringify(goal),
+    riskLevel: config.riskProfile,
+    horizonYears: String(config.horizonYears),
+    monthlyContribution: String(config.monthlyContribution),
+  });
+  const response = await fetch(`${API_BASE}/api/goals/${encodeURIComponent(goal.id)}/allocation-plan?${params.toString()}`);
+  if (!response.ok) throw new Error('Allocation plan unavailable');
+  const payload = await response.json();
+  return payload?.data || null;
+};
+
 export default function Goals() {
   const navigate = useNavigate();
   const [goals, setGoals] = useState([]);
+  const [allocationPlans, setAllocationPlans] = useState({});
   const [watchlistCache, setWatchlistCache] = useState(null);
   const [watchlistBusy, setWatchlistBusy] = useState({});
   const [watchlistAdded, setWatchlistAdded] = useState({});
@@ -35,6 +58,20 @@ export default function Goals() {
   useEffect(() => {
     loadGoals();
   }, []);
+
+  useEffect(() => {
+    if (!goals.length) return;
+    let cancelled = false;
+    Promise.all(goals.map(async (goal) => {
+      try {
+        const plan = await fetchAllocationPlan(goal);
+        if (!cancelled && plan) setAllocationPlans((current) => ({ ...current, [goal.id]: plan }));
+      } catch (error) {
+        // The card remains usable; the modal can retry the deterministic plan.
+      }
+    }));
+    return () => { cancelled = true; };
+  }, [goals]);
 
   const loadGoals = () => {
     const savedGoals = localStorage.getItem('financialGoals');
@@ -122,16 +159,6 @@ export default function Goals() {
     });
   };
 
-  const calculateProjectedValue = (goal) => {
-    const years = goal.targetYear - new Date().getFullYear();
-    if (years <= 0) return goal.currentAmount;
-    const monthly = parseInt(goal.monthlyContribution) || 0;
-    const assumedReturn = 0.12; // 12% assumed return
-    const futureValue = goal.currentAmount * Math.pow(1 + assumedReturn, years) + 
-                        monthly * 12 * ((Math.pow(1 + assumedReturn, years) - 1) / assumedReturn);
-    return Math.round(futureValue);
-  };
-
   // Recommendations & Intelligence state
   const [recDialogOpen, setRecDialogOpen] = useState(false);
   const [recLoading, setRecLoading] = useState(false);
@@ -142,44 +169,62 @@ export default function Goals() {
   const [recProfile, setRecProfile] = useState({});
   const [recRebalance, setRecRebalance] = useState(null);
   const [recUniverseStats, setRecUniverseStats] = useState(null);
+  const [recPlan, setRecPlan] = useState(null);
+  const [recPlanLoading, setRecPlanLoading] = useState(false);
+  const [recPlanError, setRecPlanError] = useState(null);
   const [selectedDetail, setSelectedDetail] = useState(null);
   const [detailDialogOpen, setDetailDialogOpen] = useState(false);
   const [recConfig, setRecConfig] = useState({ riskProfile: 'moderate', sector: '', horizonYears: 5, monthlyContribution: 0 });
 
-  const runRecommendationAnalysis = async (goal, config) => {
-    setRecLoading(true);
-    const profile = JSON.parse(localStorage.getItem('financialProfile') || '{}');
+  const refreshAllocationPlan = async (goal, config) => {
+    setRecPlanLoading(true);
+    setRecPlanError(null);
     const analysisGoal = {
       ...goal,
       riskProfile: config.riskProfile,
-      sector: config.sector,
       horizonYears: Number(config.horizonYears),
       monthlyContribution: Number(config.monthlyContribution),
-      enableAiAnalysis: true,
     };
     setRecGoal(analysisGoal);
-    setRecProfile({ ...profile, riskProfile: config.riskProfile });
-
     try {
-      const params = new URLSearchParams({
-        goal: JSON.stringify(analysisGoal),
-        profile: JSON.stringify({ ...profile, riskProfile: config.riskProfile }),
-      });
-      const response = await fetch(`${API_BASE}/api/goals/${encodeURIComponent(goal.id)}/recommendations?${params.toString()}`);
-      if (!response.ok) throw new Error('Goal recommendation failed');
+      const plan = await fetchAllocationPlan(analysisGoal, config);
+      setRecPlan(plan);
+    } catch (err) {
+      setRecPlan(null);
+      setRecPlanError('Allocation planning is unavailable.');
+    } finally {
+      setRecPlanLoading(false);
+    }
+  };
+
+  const loadEligibleStocks = async () => {
+    if (!recGoal) return;
+    setRecLoading(true);
+    const profile = JSON.parse(localStorage.getItem('financialProfile') || '{}');
+    const params = new URLSearchParams({
+      goal: JSON.stringify({ ...recGoal, sector: recConfig.sector, enableAiAnalysis: true }),
+      profile: JSON.stringify({ ...profile, riskProfile: recConfig.riskProfile }),
+    });
+    try {
+      const response = await fetch(`${API_BASE}/api/goals/${encodeURIComponent(recGoal.id)}/recommendations?${params.toString()}`);
+      if (!response.ok) throw new Error('Eligible stock screening failed');
       const payload = await response.json();
       const recommendations = payload?.data?.recommendations || [];
       setRecResults(recommendations);
       setRecAllocation(getSectorAllocation(recommendations));
       setRecRebalance(payload?.data?.rebalanceAnalysis || null);
       setRecUniverseStats(payload?.data?.universeStats || null);
-    } catch (err) {
-      console.error('Error fetching recommendations', err);
+      setRecPlan((currentPlan) => currentPlan ? {
+        ...currentPlan,
+        productBuckets: {
+          ...currentPlan.productBuckets,
+          stocks: { ...currentPlan.productBuckets.stocks, status: recommendations.length ? 'VERIFIED_ELIGIBLE_STOCKS' : 'AWAITING_FUNDAMENTALS', items: recommendations },
+        },
+      } : currentPlan);
+    } catch (error) {
       setRecResults([]);
       setRecAllocation([]);
-      setRecRebalance(null);
-      setRecUniverseStats(null);
-      toast.error('Goal analysis is unavailable. No stock recommendations were generated.');
+      toast.error('Verified stock screening is unavailable. Allocation remains available.');
     } finally {
       setRecLoading(false);
     }
@@ -224,13 +269,17 @@ export default function Goals() {
     setRecConfig(config);
     setRecDialogOpen(true);
     setSelectedDetail(null);
-    await runRecommendationAnalysis(goal, config);
+    setRecResults([]);
+    setRecAllocation([]);
+    setRecRebalance(null);
+    setRecUniverseStats(null);
+    await refreshAllocationPlan(goal, config);
   };
 
   const updateRecommendationConfig = async (key, value) => {
     const nextConfig = { ...recConfig, [key]: value };
     setRecConfig(nextConfig);
-    if (recGoal) await runRecommendationAnalysis(recGoal, nextConfig);
+    if (recGoal) await refreshAllocationPlan(recGoal, nextConfig);
   };
 
   const openDetailedRecommendation = async (symbol) => {
@@ -275,12 +324,12 @@ export default function Goals() {
     }
   };
 
-  const getGoalStatus = (goal) => {
-    const projected = calculateProjectedValue(goal);
-    const target = parseInt(goal.targetAmount);
-    if (projected >= target) return { status: 'on-track', color: 'text-gs-pos', label: 'On Track' };
-    if ((projected / target) >= 0.8) return { status: 'slightly-behind', color: 'text-yellow-500', label: 'Slightly Behind' };
-    return { status: 'behind', color: 'text-gs-neg', label: 'Behind Schedule' };
+  const getGoalStatus = (plan) => {
+    const status = plan?.feasibility?.status;
+    if (status === 'AHEAD') return { color: 'text-gs-pos', label: 'Ahead' };
+    if (status === 'ON_TRACK') return { color: 'text-gs-pos', label: 'On Track' };
+    if (status === 'BEHIND') return { color: 'text-gs-neg', label: 'Behind Schedule' };
+    return { color: 'text-gs-textDim', label: 'Plan unavailable' };
   };
 
   return (
@@ -430,8 +479,9 @@ export default function Goals() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {goals.map(goal => {
           const progress = (parseInt(goal.currentAmount) / parseInt(goal.targetAmount)) * 100;
-          const projected = calculateProjectedValue(goal);
-          const status = getGoalStatus(goal);
+          const plan = allocationPlans[goal.id];
+          const projected = plan?.feasibility?.projectedValue;
+          const status = getGoalStatus(plan);
           const yearsRemaining = goal.targetYear - new Date().getFullYear();
           
           return (
@@ -502,11 +552,12 @@ export default function Goals() {
                     <span className={`text-sm font-medium ${status.color}`}>{status.label}</span>
                   </div>
                   <div className="font-display text-lg font-bold text-gs-text">
-                    ₹{projected.toLocaleString('en-IN')}
+                    {projected == null ? 'Plan unavailable' : `₹${projected.toLocaleString('en-IN')}`}
                   </div>
                   <div className="text-xs text-gs-textDim mt-1">
-                    Assuming 12% annual returns
+                    {plan ? `Planning estimate: ${plan.assumptions.expectedAnnualReturnPct}% expected annual return · ${plan.methodologyVersion}` : 'Planning estimate is loading'}
                   </div>
+                  <div className="text-xs text-gs-textDim mt-1">Planning estimate, not guaranteed return</div>
                 </div>
 
                 {yearsRemaining > 0 && (
@@ -518,9 +569,9 @@ export default function Goals() {
                 <div className="space-y-2">
                   <Button
                     onClick={() => openRecommendations(goal)}
-                    className="w-full bg-gs-accent text-gs-bg"
+                    className="w-full bg-gs-gold text-gs-bg hover:bg-gs-gold/90 font-semibold"
                   >
-                    Get Recommendations
+                    Plan for {goal.name}
                   </Button>
 
                   {!goal.isPrimary && (
@@ -623,9 +674,9 @@ export default function Goals() {
           <DialogHeader className="shrink-0 border-b border-gs-border px-6 py-4 pr-12 bg-gs-card">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div>
-                <DialogTitle className="text-xl">Recommendations for {recGoal?.name}</DialogTitle>
+                <DialogTitle className="text-xl">Plan for {recGoal?.name}</DialogTitle>
                 <p className="text-xs text-gs-textDim leading-relaxed max-w-3xl mt-1">
-                  Quantitative multi-factor scoring (horizon, volatility, P/E, ROE) weighted with real-time AI news sentiment.
+                  Deterministic goal feasibility, allocation and glidepath planning. Verified stock screening is optional.
                 </p>
               </div>
               {recUniverseStats?.dynamicScreenerActive && (
@@ -643,7 +694,7 @@ export default function Goals() {
                 <div className="flex items-start justify-between gap-3 flex-wrap">
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold uppercase tracking-wider text-gs-gold">Goal Glidepath Tier</span>
+                      <span className="text-xs font-semibold uppercase tracking-wider text-gs-gold">Rebalancing Guidance</span>
                       <span className="text-xs font-medium text-gs-text px-2 py-0.5 bg-gs-bg border border-gs-border rounded">{recRebalance.glidepathTier} ({recRebalance.yearsRemaining}y remaining)</span>
                       {recRebalance.recommendedAction === 'REBALANCE_RECOMMENDED' && (
                         <span className="text-[11px] font-medium text-amber-400 bg-amber-950/60 border border-amber-700/60 px-2 py-0.5 rounded flex items-center gap-1">
@@ -683,7 +734,7 @@ export default function Goals() {
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div>
                   <div className="gs-label">Analysis controls</div>
-                  <p className="text-xs text-gs-textDim mt-1">Changing any value reruns goal analysis, stock selection, and AI sentiment scoring.</p>
+                  <p className="text-xs text-gs-textDim mt-1">Changing risk, horizon or contribution recalculates the deterministic plan only.</p>
                 </div>
                 {recLoading && <span className="text-xs text-gs-gold flex items-center gap-1"><RefreshCw className="w-3 h-3 animate-spin" /> Re-analyzing universe...</span>}
               </div>
@@ -720,6 +771,59 @@ export default function Goals() {
               </div>
             </div>
 
+            {recPlanLoading && <div className="text-sm text-gs-textDim py-4 text-center">Loading deterministic allocation plan...</div>}
+            {recPlanError && <div className="text-sm text-amber-300 bg-amber-950/20 border border-amber-800/50 p-3">{recPlanError}</div>}
+            {recPlan && (
+              <>
+                <div className="bg-gs-panel border border-gs-border p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div>
+                      <div className="gs-label">Goal Feasibility</div>
+                      <div className="text-lg font-semibold text-gs-text mt-1">{String(recPlan.feasibility?.status || 'INSUFFICIENT_INPUT').replace('_', ' ')}</div>
+                    </div>
+                    <div className="text-xs text-gs-textDim">Planning estimate, not guaranteed return</div>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
+                    {[
+                      ['Projected value', recPlan.feasibility?.projectedValue],
+                      ['Required monthly', recPlan.feasibility?.requiredMonthlyContribution],
+                      ['Current monthly', recPlan.feasibility?.currentMonthlyContribution],
+                      ['Shortfall / surplus', recPlan.feasibility?.monthlyShortfallSurplus],
+                      ['Funding ratio', recPlan.feasibility?.fundingRatio == null ? null : `${(recPlan.feasibility.fundingRatio * 100).toFixed(1)}%`],
+                    ].map(([label, value]) => <div key={label} className="bg-gs-bg border border-gs-border p-2"><div className="text-gs-textDim">{label}</div><div className="font-mono text-gs-text mt-1">{value == null ? 'Unavailable' : typeof value === 'number' ? `₹${value.toLocaleString('en-IN')}` : value}</div></div>)}
+                  </div>
+                  <div className="text-xs text-gs-textDim">Expected annual return: <span className="text-gs-text font-mono">{recPlan.assumptions?.expectedAnnualReturnPct ?? 'Unavailable'}%</span> · Methodology: <span className="text-gs-text font-mono">{recPlan.methodologyVersion || 'Unavailable'}</span></div>
+                </div>
+
+                <div className="bg-gs-panel border border-gs-border p-4 space-y-3">
+                  <div className="gs-label">Asset Allocation and Monthly Split</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 text-xs">
+                    {[
+                      ['Mutual Funds', 'equityMutualFundsPct', 'equityMutualFundsAmount'],
+                      ['Direct Stocks', 'directEquityPct', 'directEquityAmount'],
+                      ['Debt', 'debtPct', 'debtAmount'],
+                      ['Gold', 'goldPct', 'goldAmount'],
+                      ['Liquid', 'liquidPct', 'liquidAmount'],
+                    ].map(([label, pctKey, amountKey]) => <div key={label} className="bg-gs-bg border border-gs-border p-3"><div className="text-gs-textDim">{label}</div><div className="font-mono text-gs-text text-lg mt-1">{recPlan.allocation?.[pctKey] ?? 0}%</div><div className="text-gs-textMuted mt-1">₹{Number(recPlan.monthlySplit?.[amountKey] || 0).toLocaleString('en-IN')} / month</div></div>)}
+                  </div>
+                </div>
+
+                <div className="bg-gs-panel border border-gs-border p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-2"><div className="gs-label">Glidepath</div><div className="text-xs text-gs-textDim">Equity reduces as the goal approaches</div></div>
+                  <div className="overflow-x-auto"><table className="w-full text-xs text-left"><thead className="text-gs-textDim border-b border-gs-border"><tr><th className="py-2 pr-3">Year</th><th className="py-2 pr-3">Remaining</th><th className="py-2 pr-3">MF equity</th><th className="py-2 pr-3">Direct equity</th><th className="py-2 pr-3">Debt</th><th className="py-2 pr-3">Gold</th><th className="py-2">Liquid</th></tr></thead><tbody>{(recPlan.glidepath || []).map((row) => <tr key={row.year} className="border-b border-gs-border/60"><td className="py-2 pr-3">{row.year}</td><td className="py-2 pr-3">{row.yearsRemaining}y</td><td className="py-2 pr-3">{row.equityMutualFundsPct}%</td><td className="py-2 pr-3">{row.directEquityPct}%</td><td className="py-2 pr-3">{row.debtPct}%</td><td className="py-2 pr-3">{row.goldPct}%</td><td className="py-2">{row.liquidPct}%</td></tr>)}</tbody></table></div>
+                </div>
+
+                <div className="bg-gs-panel border border-gs-border p-4 space-y-3">
+                  <div className="gs-label">Product Recommendations</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 text-xs">
+                    {Object.entries(recPlan.productBuckets || {}).map(([key, bucket]) => <div key={key} className="bg-gs-bg border border-gs-border p-3"><div className="text-gs-text capitalize">{key === 'stocks' ? 'Direct Stocks' : key}</div><div className="text-gs-textDim mt-1">{bucket.status === 'VERIFIED_ELIGIBLE_STOCKS' ? `${bucket.items.length} verified eligible stocks` : 'Awaiting verified product data'}</div></div>)}
+                  </div>
+                  <div className="flex items-center justify-between gap-3 flex-wrap"><p className="text-[11px] text-gs-textDim">Stock screening is separate and may use provider data.</p><Button onClick={loadEligibleStocks} disabled={recLoading} className="bg-gs-gold text-gs-bg hover:bg-gs-gold/90">{recLoading ? 'Screening stocks...' : 'Load Eligible Stocks'}</Button></div>
+                  <p className="text-[11px] text-gs-textDim leading-relaxed">This allocation is an educational planning estimate based on the information provided. Returns are not guaranteed. Review product documents and consult a SEBI-registered investment adviser before investing.</p>
+                </div>
+              </>
+            )}
+
             {!recLoading && recResults.length > 0 && (
               <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs text-gs-textDim">
                 <div className="bg-gs-panel border border-gs-border p-2"><div className="gs-label">Risk Profile</div><div className="text-gs-text mt-1 uppercase">{String(recConfig.riskProfile || recProfile.riskAppetite || 'moderate').replace('_', ' ')}</div></div>
@@ -732,6 +836,7 @@ export default function Goals() {
 
             {!recLoading && recAllocation.length > 0 && (
               <div className="flex flex-wrap gap-2 text-[11px] font-mono">
+                <span className="w-full text-xs text-gs-textDim">Direct Equity Details: existing verified equity-style split</span>
                 {recAllocation.map((item) => <span key={item.sector} className="px-2 py-1 bg-gs-panel border border-gs-border text-gs-textDim">{item.sector} {item.percentage}%</span>)}
               </div>
             )}
@@ -739,7 +844,7 @@ export default function Goals() {
             {recLoading ? (
               <div className="text-sm text-gs-textDim py-8 text-center">Loading screened recommendations & live news sentiment...</div>
             ) : recResults.length === 0 ? (
-              <div className="text-sm text-gs-textDim py-8 text-center">No recommendations found for this goal criteria.</div>
+              <div className="text-sm text-gs-textDim py-8 text-center">Historical data is available, but verified fundamental coverage is insufficient. No eligible direct stocks are shown.</div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 items-stretch">
                 {recResults.map((s) => (

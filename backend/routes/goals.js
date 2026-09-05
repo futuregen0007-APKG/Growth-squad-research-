@@ -2,6 +2,7 @@ import express from 'express';
 import { buildGoalRecommendation, buildGoalProfile } from '../services/GoalRecommendationService.js';
 import { DynamicUniverseService } from '../services/DynamicUniverseService.js';
 import { RebalanceService } from '../services/RebalanceService.js';
+import { buildGoalAssetAllocation } from '../services/GoalAssetAllocationService.js';
 
 export const createGoalRoutes = (stockService) => {
   const router = express.Router();
@@ -26,6 +27,27 @@ export const createGoalRoutes = (stockService) => {
     return stocksToUse;
   };
 
+  router.get('/:goalId/allocation-plan', async (req, res, next) => {
+    try {
+      const { goal, profile } = parseGoalPayload(req);
+      const goalId = req.params.goalId || goal.id || 'goal';
+      const riskLevel = req.query.riskLevel || goal.riskLevel || goal.riskProfile || profile.riskLevel || profile.riskProfile || 'MODERATE';
+      const horizonYears = req.query.horizonYears ?? goal.horizonYears ?? (Number(goal.targetYear) - new Date().getFullYear());
+      const monthlyContribution = req.query.monthlyContribution ?? goal.monthlyContribution ?? goal.monthlySavings;
+      const allocationPlan = buildGoalAssetAllocation({
+        targetAmount: goal.targetAmount ?? goal.target,
+        currentAmount: goal.currentAmount ?? goal.current ?? 0,
+        monthlyContribution: monthlyContribution ?? 0,
+        horizonYears,
+        riskLevel,
+        goalType: goal.type || goal.goalType,
+      });
+      res.status(200).json({ success: true, data: allocationPlan, goalId });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get('/:goalId/recommendations', async (req, res, next) => {
     try {
       const { goal, profile } = parseGoalPayload(req);
@@ -48,11 +70,22 @@ export const createGoalRoutes = (stockService) => {
       }));
 
       const recommendation = await buildGoalRecommendation(goalPayload, stocks, profile, { researchData });
+      const allocationPlan = buildGoalAssetAllocation({
+        targetAmount: goalPayload.targetAmount,
+        currentAmount: goalPayload.currentAmount,
+        monthlyContribution: goalPayload.monthlyContribution,
+        horizonYears: goalPayload.horizonYears || goalPayload.targetYear - new Date().getFullYear(),
+        riskLevel: goalPayload.riskProfile || profile.riskProfile,
+        goalType: goalPayload.type || goalPayload.goalType,
+      });
+      allocationPlan.productBuckets.stocks.items = recommendation.recommendations || [];
+      allocationPlan.productBuckets.stocks.status = allocationPlan.productBuckets.stocks.items.length ? 'VERIFIED_ELIGIBLE_STOCKS' : 'AWAITING_FUNDAMENTALS';
 
       res.status(200).json({
         success: true,
         data: {
           ...recommendation,
+          allocationPlan,
           universeStats: {
             screenedCount: stocks.length,
             marketCapThreshold: '₹1,000 Cr+',

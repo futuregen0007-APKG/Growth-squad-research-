@@ -4,6 +4,56 @@ import assert from 'node:assert/strict';
 import { buildGoalRecommendation, buildGoalProfile } from '../services/GoalRecommendationService.js';
 import { DynamicUniverseService } from '../services/DynamicUniverseService.js';
 import { RebalanceService } from '../services/RebalanceService.js';
+import { buildGoalAssetAllocation, futureValue, requiredMonthlyContribution } from '../services/GoalAssetAllocationService.js';
+
+const allocationTotal = (allocation) => Object.values(allocation).reduce((sum, value) => sum + value, 0);
+
+test('goal allocation is deterministic, complete, and keeps product slots empty without provider data', () => {
+  const input = { targetAmount: 5000000, currentAmount: 500000, monthlyContribution: 15000, horizonYears: 7, riskLevel: 'MODERATE', goalType: 'house' };
+  const first = buildGoalAssetAllocation(input);
+  const second = buildGoalAssetAllocation(input);
+  assert.deepEqual(first, second);
+  assert.equal(allocationTotal(first.allocation), 100);
+  assert.equal(first.monthlySplit.total, 15000);
+  assert.equal(first.assumptions.expectedAnnualReturnPct, 9);
+  assert.equal(first.methodologyVersion, 'goal-allocation-v1');
+  assert.equal(first.productBuckets.mutualFunds.items.length, 0);
+  assert.equal(first.productBuckets.stocks.items.length, 0);
+  first.glidepath.forEach((row) => assert.equal(allocationTotal({
+    equityMutualFundsPct: row.equityMutualFundsPct,
+    directEquityPct: row.directEquityPct,
+    debtPct: row.debtPct,
+    goldPct: row.goldPct,
+    liquidPct: row.liquidPct,
+  }), 100));
+});
+
+test('risk ordering, horizon adjustment, and glidepath reduce equity near the goal', () => {
+  const make = (riskLevel, horizonYears) => buildGoalAssetAllocation({ targetAmount: 1000000, currentAmount: 0, monthlyContribution: 10000, horizonYears, riskLevel });
+  const conservative = make('CONSERVATIVE', 7).allocation;
+  const moderate = make('MODERATE', 7).allocation;
+  const aggressive = make('AGGRESSIVE', 7).allocation;
+  assert.ok(conservative.equityMutualFundsPct + conservative.directEquityPct < moderate.equityMutualFundsPct + moderate.directEquityPct);
+  assert.ok(moderate.equityMutualFundsPct + moderate.directEquityPct < aggressive.equityMutualFundsPct + aggressive.directEquityPct);
+  const short = make('AGGRESSIVE', 2).allocation;
+  const long = make('AGGRESSIVE', 12).allocation;
+  assert.ok(short.equityMutualFundsPct + short.directEquityPct < aggressive.equityMutualFundsPct + aggressive.directEquityPct);
+  assert.ok(long.equityMutualFundsPct + long.directEquityPct > aggressive.equityMutualFundsPct + aggressive.directEquityPct);
+  const glidepath = make('MODERATE', 7).glidepath;
+  assert.ok(glidepath[0].directEquityPct > glidepath.at(-1).directEquityPct);
+  assert.ok(glidepath[0].equityMutualFundsPct > glidepath.at(-1).equityMutualFundsPct);
+});
+
+test('zero-rate future value and required contribution are safe', () => {
+  assert.equal(futureValue({ currentAmount: 1000, monthlyContribution: 200, annualRate: 0, months: 12 }), 3400);
+  assert.equal(requiredMonthlyContribution({ targetAmount: 3400, currentAmount: 1000, annualRate: 0, months: 12 }), 200);
+});
+
+test('invalid allocation inputs do not receive favorable defaults', () => {
+  assert.equal(buildGoalAssetAllocation({ targetAmount: 0, currentAmount: 0, monthlyContribution: 0, horizonYears: 0, riskLevel: 'MODERATE' }).feasibility.status, 'INSUFFICIENT_INPUT');
+  assert.equal(buildGoalAssetAllocation({ targetAmount: 1000, currentAmount: -1, monthlyContribution: 0, horizonYears: 5, riskLevel: 'MODERATE' }).feasibility.status, 'INSUFFICIENT_INPUT');
+  assert.equal(buildGoalAssetAllocation({ targetAmount: 1000, currentAmount: 0, monthlyContribution: 0, horizonYears: 5, riskLevel: 'UNKNOWN' }).feasibility.status, 'INSUFFICIENT_INPUT');
+});
 
 const sampleStocks = [
   { ticker: 'HDFCBANK', name: 'HDFC Bank', sector: 'Banking', price: 1700, changePct: 1.5, pe: 18, roe: 17, marketCap: '₹12L Cr', volatility: 0.13 },
