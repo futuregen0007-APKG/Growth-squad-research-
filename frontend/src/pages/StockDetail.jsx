@@ -39,9 +39,31 @@ import SWOTGrid from "@/components/widgets/SWOTGrid";
 import RiskFlagsList from "@/components/widgets/RiskFlagsList";
 import LiveStockPrice from "@/components/LiveStockPrice";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { fetchStockBySymbol, fetchCompanyDetails } from "@/services/stockApi";
+import { fetchStockBySymbol, fetchCompanyDetails, fetchHistoricalData } from "@/services/stockApi";
 import CandlestickChart from "@/components/charts/CandlestickChart";
 import { fetchStockNews } from "@/services/newsApi";
+
+const CHART_RANGES = ["1D", "5D", "1M", "6M", "1Y", "5Y"];
+const INTRADAY_RANGES = new Set(["1D", "5D"]);
+
+// Real Angel One candles -> recharts-ready points. Intraday ranges label by
+// time-of-day; daily-candle ranges label by date. Labels are always
+// formatted in IST (the exchange's timezone) regardless of the viewer's
+// browser locale/timezone — otherwise a candle timestamped e.g. midnight
+// IST can render as the wrong calendar day for a non-IST viewer.
+const formatCandlesForChart = (candles, range) => {
+  const intraday = INTRADAY_RANGES.has(range);
+  return (candles || []).map((candle) => ({
+    x: intraday
+      ? new Date(candle.timestamp).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" })
+      : new Date(candle.timestamp).toLocaleDateString("en-IN", { day: "2-digit", month: "short", timeZone: "Asia/Kolkata" }),
+    v: candle.close,
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close,
+  }));
+};
 
 const ChartTooltip = ({ active, payload }) => {
   if (!active || !payload?.length) return null;
@@ -114,6 +136,28 @@ export default function StockDetail() {
   const [newsLoading, setNewsLoading] = useState(true);
   const [newsError, setNewsError] = useState(false);
   const [chartType, setChartType] = useState('area'); // 'area' or 'candlestick'
+  const [chartRange, setChartRange] = useState('1Y');
+  const [history, setHistory] = useState({ candles: [], loading: true, error: null, meta: null });
+  const [historyRetryToken, setHistoryRetryToken] = useState(0);
+
+  // Independent of stock/details/research — the chart must render (or show
+  // its own error/empty state) even when company research is unavailable.
+  useEffect(() => {
+    if (!ticker) return undefined;
+    let active = true;
+    setHistory((prev) => ({ ...prev, loading: true, error: null }));
+    fetchHistoricalData(ticker.toUpperCase(), chartRange)
+      .then((result) => {
+        if (!active) return;
+        setHistory({ candles: result?.candles || [], loading: false, error: null, meta: result });
+      })
+      .catch((historyError) => {
+        if (!active) return;
+        console.error('Error loading historical data:', historyError);
+        setHistory({ candles: [], loading: false, error: historyError, meta: null });
+      });
+    return () => { active = false; };
+  }, [ticker, chartRange, historyRetryToken]);
 
   useEffect(() => {
     const loadStock = async () => {
@@ -175,6 +219,140 @@ export default function StockDetail() {
 
   const research = getCompanyResearch(stock);
   const isPos = (stock.changePct || 0) >= 0;
+  const chartData = formatCandlesForChart(history.candles, chartRange);
+
+  // Self-contained: sources real Angel One candles via its own fetch above,
+  // independent of company research data.
+  const priceChartCard = (
+    <div className="gs-card p-5">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div className="gs-label">Price · {chartRange}</div>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center bg-gs-panel border border-gs-border rounded-sm">
+            <button
+              onClick={() => setChartType('area')}
+              className={`p-1.5 rounded-sm ${chartType === 'area' ? 'bg-gs-card text-gs-gold' : 'text-gs-textDim hover:text-gs-text'}`}
+              title="Area Chart"
+            >
+              <LineChartIcon className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => setChartType('candlestick')}
+              className={`p-1.5 rounded-sm ${chartType === 'candlestick' ? 'bg-gs-card text-gs-gold' : 'text-gs-textDim hover:text-gs-text'}`}
+              title="Candlestick Chart"
+            >
+              <BarChart3 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <div className="flex items-center gap-1">
+            {CHART_RANGES.map((r) => (
+              <button
+                key={r}
+                onClick={() => setChartRange(r)}
+                className={`font-mono text-[11px] px-2 py-1 rounded-sm border ${
+                  r === chartRange
+                    ? "bg-gs-card text-gs-gold border-gs-gold/40"
+                    : "bg-transparent text-gs-textDim border-gs-border hover:text-gs-text hover:border-gs-textDim/50"
+                }`}
+                data-testid={`chart-range-${r}`}
+              >
+                {r}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div style={{ height: 280 }} data-testid="price-chart">
+        {history.loading ? (
+          <div className="h-full grid place-items-center text-sm text-gs-textDim" data-testid="chart-loading">
+            Loading {chartRange} price history…
+          </div>
+        ) : history.error ? (
+          <div className="h-full grid place-items-center text-center px-4" data-testid="chart-error">
+            <div>
+              <div className="text-sm text-gs-textMuted">Historical data is currently unavailable.</div>
+              <button
+                onClick={() => setHistoryRetryToken((n) => n + 1)}
+                className="mt-2 text-[11px] font-mono uppercase tracking-wider text-gs-gold hover:underline"
+                data-testid="chart-retry"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        ) : chartData.length === 0 ? (
+          <div className="h-full grid place-items-center text-sm text-gs-textMuted" data-testid="chart-empty">
+            No historical data available for {chartRange}.
+          </div>
+        ) : chartType === 'area' ? (
+          <ResponsiveContainer>
+            <AreaChart data={chartData} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="stockGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={isPos ? "#059669" : "#DC2626"} stopOpacity={0.3} />
+                  <stop offset="100%" stopColor={isPos ? "#059669" : "#DC2626"} stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke="#1E222A" strokeDasharray="2 4" />
+              <XAxis
+                dataKey="x"
+                stroke="#475569"
+                tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }}
+                tickLine={false}
+                axisLine={{ stroke: "#1E222A" }}
+              />
+              <YAxis
+                stroke="#475569"
+                tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }}
+                tickLine={false}
+                axisLine={{ stroke: "#1E222A" }}
+                domain={["dataMin - 5", "dataMax + 5"]}
+                width={60}
+              />
+              <Tooltip content={<ChartTooltip />} cursor={{ stroke: "#D4AF37", strokeDasharray: "3 3" }} />
+              <Area
+                type="monotone"
+                dataKey="v"
+                stroke={isPos ? "#059669" : "#DC2626"}
+                strokeWidth={1.8}
+                fill="url(#stockGrad)"
+                isAnimationActive={false}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        ) : (
+          <CandlestickChart data={chartData} isPositive={isPos} />
+        )}
+      </div>
+      {history.meta && (
+        <div className="mt-2 text-[10px] text-gs-textDim font-mono">
+          Source: {history.meta.source} · {history.meta.count} candles · as of {new Date(history.meta.asOf).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}
+          {history.meta.fromCache ? ' · cached' : ''}
+        </div>
+      )}
+      {history.meta?.metrics && (
+        <div className="mt-3 pt-3 border-t border-gs-border grid grid-cols-1 sm:grid-cols-3 gap-3" data-testid="deterministic-metrics">
+          {[
+            { label: '1Y Return', metric: history.meta.metrics.oneYearReturn, format: (v) => `${v >= 0 ? '+' : ''}${v}%` },
+            { label: 'Annualized Volatility', metric: history.meta.metrics.volatility, format: (v) => `${v}%` },
+            { label: 'Maximum Drawdown', metric: history.meta.metrics.maxDrawdown, format: (v) => `${v}%` },
+          ].map(({ label, metric, format }) => (
+            <div key={label} data-testid={`metric-${label.replace(/\s+/g, '-').toLowerCase()}`}>
+              <div className="gs-label">{label}</div>
+              {metric?.available ? (
+                <div className="font-mono text-sm text-gs-text mt-1 tabular-nums">{format(metric.value)}</div>
+              ) : (
+                <>
+                  <div className="font-mono text-sm text-gs-textDim mt-1">N/A</div>
+                  <div className="text-[10px] text-gs-textDim mt-0.5">{metric?.missingReason || 'Unavailable'}</div>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 
   const peers = STOCKS.filter(
     (s) => s.sector === stock.sector && s.ticker !== stock.ticker,
@@ -322,87 +500,7 @@ export default function StockDetail() {
       {/* Main Grid: Chart + Tabs (left) | Overview + Sector Pos + Valuation (right) */}
       <div className="grid grid-cols-12 gap-4">
         <div className="col-span-12 lg:col-span-8 space-y-4">
-          {/* Price chart */}
-          <div className="gs-card p-5">
-            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-              <div className="gs-label">Price · Intraday</div>
-              <div className="flex items-center gap-2">
-                {/* Chart type toggle */}
-                <div className="flex items-center bg-gs-panel border border-gs-border rounded-sm">
-                  <button
-                    onClick={() => setChartType('area')}
-                    className={`p-1.5 rounded-sm ${chartType === 'area' ? 'bg-gs-card text-gs-gold' : 'text-gs-textDim hover:text-gs-text'}`}
-                    title="Area Chart"
-                  >
-                    <LineChartIcon className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => setChartType('candlestick')}
-                    className={`p-1.5 rounded-sm ${chartType === 'candlestick' ? 'bg-gs-card text-gs-gold' : 'text-gs-textDim hover:text-gs-text'}`}
-                    title="Candlestick Chart"
-                  >
-                    <BarChart3 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-                {/* Timeframe buttons */}
-                <div className="flex items-center gap-1">
-                  {["1D", "5D", "1M", "6M", "1Y", "5Y"].map((r, i) => (
-                    <button
-                      key={r}
-                      className={`font-mono text-[11px] px-2 py-1 rounded-sm border ${
-                        i === 0
-                          ? "bg-gs-card text-gs-gold border-gs-gold/40"
-                          : "bg-transparent text-gs-textDim border-gs-border hover:text-gs-text hover:border-gs-textDim/50"
-                      }`}
-                    >
-                      {r}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <div style={{ height: 280 }}>
-              {chartType === 'area' ? (
-                <ResponsiveContainer>
-                  <AreaChart data={stock.series} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="stockGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor={isPos ? "#059669" : "#DC2626"} stopOpacity={0.3} />
-                        <stop offset="100%" stopColor={isPos ? "#059669" : "#DC2626"} stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid stroke="#1E222A" strokeDasharray="2 4" />
-                    <XAxis
-                      dataKey="x"
-                      stroke="#475569"
-                      tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }}
-                      tickLine={false}
-                      axisLine={{ stroke: "#1E222A" }}
-                    />
-                    <YAxis
-                      stroke="#475569"
-                      tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }}
-                      tickLine={false}
-                      axisLine={{ stroke: "#1E222A" }}
-                      domain={["dataMin - 5", "dataMax + 5"]}
-                      width={60}
-                    />
-                    <Tooltip content={<ChartTooltip />} cursor={{ stroke: "#D4AF37", strokeDasharray: "3 3" }} />
-                    <Area
-                      type="monotone"
-                      dataKey="v"
-                      stroke={isPos ? "#059669" : "#DC2626"}
-                      strokeWidth={1.8}
-                      fill="url(#stockGrad)"
-                      isAnimationActive={false}
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              ) : (
-                <CandlestickChart data={stock.series} isPositive={isPos} />
-              )}
-            </div>
-          </div>
+          {priceChartCard}
 
           {/* Financial Tabs */}
           <Tabs defaultValue="financials">

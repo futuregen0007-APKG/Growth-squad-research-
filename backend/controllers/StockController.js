@@ -493,6 +493,40 @@ export class StockController {
   }
 
   /**
+   * getHistoricalData - Handler for GET /api/stocks/:symbol/history
+   *
+   * QUERY PARAMETERS:
+   * - range: '1D' | '5D' | '1M' | '3M' | '6M' | '1Y' | '5Y' (default '1Y')
+   * - interval: optional SmartAPI interval override (e.g. 'ONE_DAY')
+   *
+   * HTTP STATUS:
+   * - 200: success (candles may legitimately be an empty array)
+   * - 400: invalid range/interval
+   * - 503: provider unavailable/rate-limited/failed
+   *
+   * EXAMPLE:
+   * GET /api/stocks/BATAINDIA/history?range=1Y
+   */
+  async getHistoricalData(req, res, next) {
+    try {
+      const { symbol } = req.params;
+      const { range, interval } = req.query;
+
+      logger.debug(`[Controller] getHistoricalData requested for: ${symbol} range=${range} interval=${interval}`);
+
+      const result = await this.stockService.getHistoricalCandles(symbol, { range, interval });
+
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        data: result,
+        message: `Historical candles for ${symbol}`,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * refreshStockPrice - Handler for POST /api/stocks/:symbol/refresh
    * 
    * Manually trigger a price refresh (bypass cache).

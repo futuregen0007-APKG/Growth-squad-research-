@@ -293,6 +293,38 @@ export function createStockRoutes(stockService) {
   });
 
   /**
+   * GET /api/stocks/:symbol/history?range=1Y&interval=ONE_DAY
+   * ===========================================================
+   * Real historical OHLCV candles for the stock detail price chart.
+   *
+   * QUERY PARAMETERS:
+   * - range: '1D' | '5D' | '1M' | '3M' | '6M' | '1Y' | '5Y' (default '1Y')
+   * - interval: optional SmartAPI interval override
+   *
+   * RESPONSE:
+   * {
+   *   "success": true,
+   *   "data": {
+   *     "symbol": "BATAINDIA", "range": "1Y", "interval": "ONE_DAY",
+   *     "source": "Angel One", "asOf": "...", "fromCache": false, "isStale": false, "count": 246,
+   *     "candles": [{ "timestamp": ..., "open": ..., "high": ..., "low": ..., "close": ..., "volume": ... }, ...],
+   *     "metrics": { "observations": 246, "oneYearReturn": {...}, "volatility": {...}, "maxDrawdown": {...} }
+   *   }
+   * }
+   * NOTE: metrics is only computed for daily-interval responses; for
+   * intraday ranges (1D/5D) each metric is present but unavailable with a
+   * missingReason explaining why.
+   *
+   * HTTP STATUS:
+   * - 200: success (an empty candles array is a valid, non-error response)
+   * - 400: invalid range/interval
+   * - 503: provider unavailable/rate-limited/failed
+   */
+  router.get('/:symbol/history', (req, res, next) => {
+    return controller.getHistoricalData(req, res, next);
+  });
+
+  /**
    * POST /api/stocks/:symbol/refresh
    * =================================
    * Manually refresh stock price (bypass cache).

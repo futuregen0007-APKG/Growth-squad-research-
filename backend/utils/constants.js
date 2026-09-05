@@ -20,12 +20,44 @@
 export const CACHE_TTL = {
   // Stock prices update frequently → short cache
   STOCK_PRICE: parseInt(process.env.CACHE_TTL_STOCK || 20),          // ~20 seconds
-  
+
   // Company details are stable → longer cache
   COMPANY_DETAILS: parseInt(process.env.CACHE_TTL_COMPANY || 3600), // 1 hour
-  
+
   // Market status rarely changes during trading hours
   MARKET_STATUS: 60,                                                  // 1 minute
+
+  // Historical candles are immutable once a trading day closes; matches the
+  // TTL StockService.getHistoricalData already used before this constant existed.
+  HISTORY: 21600,                                                     // 6 hours
+};
+
+// ============================================================
+// HISTORICAL CANDLE RANGES/INTERVALS
+// ============================================================
+// Ranges accepted by GET /api/stocks/:symbol/history. '1W' is kept only for
+// the pre-existing internal SectorRotationService caller, not exposed as a
+// frontend range button.
+export const HISTORY_RANGES = ['1D', '5D', '1W', '1M', '3M', '6M', '1Y', '5Y'];
+
+// Candle intervals Angel One's SmartAPI historical endpoint accepts.
+export const HISTORY_INTERVALS = [
+  'ONE_MINUTE', 'THREE_MINUTE', 'FIVE_MINUTE', 'TEN_MINUTE',
+  'FIFTEEN_MINUTE', 'THIRTY_MINUTE', 'ONE_HOUR', 'ONE_DAY',
+];
+
+// Product-level default interval per range, used both by the provider (to
+// pick a request interval when the caller doesn't specify one) and by
+// StockService (to report the resolved interval in response metadata).
+export const DEFAULT_INTERVAL_BY_RANGE = {
+  '1D': 'ONE_MINUTE',
+  '5D': 'FIVE_MINUTE',
+  '1W': 'ONE_DAY',
+  '1M': 'ONE_DAY',
+  '3M': 'ONE_DAY',
+  '6M': 'ONE_DAY',
+  '1Y': 'ONE_DAY',
+  '5Y': 'ONE_DAY',
 };
 
 // ============================================================

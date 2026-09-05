@@ -1,22 +1,10 @@
 import { ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 
 const CandlestickChart = ({ data, isPositive }) => {
-  // Transform simple price series into candlestick format
-  const candlestickData = data.map((point, index) => {
-    const prevPoint = index > 0 ? data[index - 1] : point;
-    const open = prevPoint.v;
-    const close = point.v;
-    const high = Math.max(open, close) + (Math.random() * 5);
-    const low = Math.min(open, close) - (Math.random() * 5);
-    
-    return {
-      x: point.x,
-      open,
-      high,
-      low,
-      close,
-    };
-  });
+  // `data` items already carry real open/high/low/close from the provider
+  // (see StockDetail.jsx's history mapping) — no synthetic wicks are
+  // generated here.
+  const candlestickData = data;
 
   const CustomTooltip = ({ active, payload }) => {
     if (!active || !payload?.length) return null;

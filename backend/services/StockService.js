@@ -19,13 +19,19 @@
  */
 
 import { getCache, setCache, deleteCache } from '../utils/redisClient.js';
-import { CACHE_TTL, SUPPORTED_STOCKS, FALLBACK_STOCK_DATA } from '../utils/constants.js';
+import { CACHE_TTL, SUPPORTED_STOCKS, FALLBACK_STOCK_DATA, HISTORY_RANGES, HISTORY_INTERVALS, DEFAULT_INTERVAL_BY_RANGE } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
 import {
   createNotFoundError,
   createInvalidInputError,
+  createProviderError,
   AppError,
 } from '../utils/errorHandler.js';
+import { calculateDeterministicMetrics } from '../utils/historicalMetrics.js';
+
+// '1W' exists only for the internal SectorRotationService caller — not a
+// range a client should be able to request via the public history endpoint.
+const PUBLIC_HISTORY_RANGES = HISTORY_RANGES.filter((range) => range !== '1W');
 
 export class StockService {
   /**
@@ -359,9 +365,135 @@ export class StockService {
 
     const history = await this.provider.getHistoricalData(validatedSymbol, period);
     if (Array.isArray(history) && history.length) {
-      await setCache(cacheKey, history, 21600);
+      await setCache(cacheKey, history, CACHE_TTL.HISTORY);
     }
     return Array.isArray(history) ? history : [];
+  }
+
+  /**
+   * getHistoricalCandles - Public, schema-normalized historical candles for
+   * GET /api/stocks/:symbol/history.
+   *
+   * Unlike getHistoricalData (a bare array, kept for existing internal
+   * callers), this returns the full metadata envelope the frontend chart
+   * needs: source/asOf/fromCache/isStale/count/metrics alongside ascending,
+   * deduplicated candles with only finite OHLC values. A provider failure
+   * (network/auth/rate-limit/HTTP error) is rethrown as a 503 AppError; a
+   * genuinely empty provider response is returned as-is (count: 0,
+   * candles: []) rather than an error — the two are distinct and must never
+   * be confused with each other or with fabricated data.
+   *
+   * CACHE SEMANTICS: `fromCache` is true whenever this response was served
+   * from Redis rather than freshly fetched — it says nothing about
+   * freshness. `isStale` is reserved for a deliberate serve-expired-data
+   * fallback (e.g. serving a last-known-good response when the provider is
+   * down); no such fallback exists here, so isStale is always false. A
+   * fresh cache hit (within TTL) is `fromCache: true, isStale: false` —
+   * cached is not the same as stale.
+   *
+   * Concurrent identical requests (same symbol/range/interval) are
+   * deduplicated via an in-flight map so a rapid double-click or a
+   * symbol/range change that re-fires before the previous request settles
+   * never issues two real provider calls for the same data.
+   *
+   * @param {string} symbol
+   * @param {{range?: string, interval?: string}} options
+   * @throws {AppError} 400 for an invalid range/interval, 503 for a provider failure
+   */
+  async getHistoricalCandles(symbol, { range = '1Y', interval } = {}) {
+    const validatedSymbol = await this._validateSymbol(symbol);
+
+    const normalizedRange = String(range || '1Y').toUpperCase();
+    if (!PUBLIC_HISTORY_RANGES.includes(normalizedRange)) {
+      throw createInvalidInputError(
+        `Invalid range '${range}'. Allowed: ${PUBLIC_HISTORY_RANGES.join(', ')}`
+      );
+    }
+
+    let normalizedInterval = null;
+    if (interval !== undefined && interval !== null && interval !== '') {
+      normalizedInterval = String(interval).toUpperCase();
+      if (!HISTORY_INTERVALS.includes(normalizedInterval)) {
+        throw createInvalidInputError(
+          `Invalid interval '${interval}'. Allowed: ${HISTORY_INTERVALS.join(', ')}`
+        );
+      }
+    }
+
+    const resolvedInterval = normalizedInterval || DEFAULT_INTERVAL_BY_RANGE[normalizedRange] || 'ONE_DAY';
+    const cacheKey = `history:v2:${validatedSymbol}:${normalizedRange}:${resolvedInterval}`;
+    const inFlightKey = `historyCandles:${cacheKey}`;
+
+    if (this.inFlightRequests.has(inFlightKey)) {
+      this.logger.debug(`Stock service deduplicating history request for ${validatedSymbol}`);
+      return this.inFlightRequests.get(inFlightKey);
+    }
+
+    const requestPromise = (async () => {
+      const cached = await getCache(cacheKey);
+      if (cached) {
+        return { ...cached, fromCache: true, isStale: false };
+      }
+
+      let rawCandles;
+      try {
+        rawCandles = await this.provider.getHistoricalData(validatedSymbol, normalizedRange, normalizedInterval || undefined);
+      } catch (error) {
+        this.logger.error(`Error in getHistoricalCandles(${symbol}): ${error.message}`);
+        if (error instanceof AppError) throw error;
+        throw createProviderError('Angel One', `Historical data unavailable for ${validatedSymbol}: ${error.message}`);
+      }
+
+      const candles = (Array.isArray(rawCandles) ? rawCandles : [])
+        .filter((candle) => candle
+          && Number.isFinite(candle.timestamp)
+          && Number.isFinite(candle.open)
+          && Number.isFinite(candle.high)
+          && Number.isFinite(candle.low)
+          && Number.isFinite(candle.close))
+        .sort((a, b) => a.timestamp - b.timestamp)
+        .filter((candle, index, sorted) => index === 0 || candle.timestamp !== sorted[index - 1].timestamp);
+
+      // Return/volatility/drawdown assume one observation per trading day
+      // for annualization — never computed from intraday candles. Reported
+      // consistently (always present, marked unavailable with a reason)
+      // rather than sometimes omitted, so callers can rely on the shape.
+      const metrics = resolvedInterval === 'ONE_DAY'
+        ? calculateDeterministicMetrics(candles)
+        : (() => {
+          const reason = `Metrics require daily candles; this response uses ${resolvedInterval} candles`;
+          return {
+            observations: candles.length,
+            oneYearReturn: { value: null, available: false, missingReason: reason },
+            volatility: { value: null, available: false, missingReason: reason },
+            maxDrawdown: { value: null, available: false, missingReason: reason },
+          };
+        })();
+
+      const payload = {
+        symbol: validatedSymbol,
+        range: normalizedRange,
+        interval: resolvedInterval,
+        source: this.provider?.providerName || 'unknown',
+        asOf: new Date().toISOString(),
+        count: candles.length,
+        candles,
+        metrics,
+      };
+
+      if (candles.length) {
+        await setCache(cacheKey, payload, CACHE_TTL.HISTORY);
+      }
+
+      return { ...payload, fromCache: false, isStale: false };
+    })();
+
+    this.inFlightRequests.set(inFlightKey, requestPromise);
+    try {
+      return await requestPromise;
+    } finally {
+      this.inFlightRequests.delete(inFlightKey);
+    }
   }
 
   /**

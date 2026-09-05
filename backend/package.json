@@ -5,7 +5,7 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/managementPromise.test.js tests/historicalIntelligence.test.js tests/stockService.test.js tests/authTokens.test.js tests/portfolioHolding.test.js tests/provenance.test.js tests/documentDiscovery.test.js tests/marketStatus.test.js tests/goalRecommendation.test.js",
+    "test": "node --test tests/managementPromise.test.js tests/historicalIntelligence.test.js tests/stockService.test.js tests/authTokens.test.js tests/portfolioHolding.test.js tests/provenance.test.js tests/documentDiscovery.test.js tests/marketStatus.test.js tests/goalRecommendation.test.js tests/historicalData.test.js",
     "start": "node server.js"
   },
   "keywords": [],

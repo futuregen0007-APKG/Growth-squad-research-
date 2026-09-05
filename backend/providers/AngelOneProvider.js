@@ -3,6 +3,7 @@ import { BaseProvider } from './BaseProvider.js';
 import { logger } from '../utils/logger.js';
 import { createProviderError } from '../utils/errorHandler.js';
 import { getIstMarketStatus } from '../utils/marketStatus.js';
+import { DEFAULT_INTERVAL_BY_RANGE, HISTORY_INTERVALS } from '../utils/constants.js';
 
 const BASE_URL = 'https://apiconnect.angelone.in';
 const LOGIN_PATH = '/rest/auth/angelbroking/user/v1/loginByPassword';
@@ -30,6 +31,36 @@ const SYMBOL_ALIASES = {
   KALPATPOWR: 'KALPATARU',
   ZOMATO: 'ETERNAL',
 };
+
+// Day-window per UI range. '1W' uses ONE_DAY (the previous 'ONE_WEEK' value
+// is not a valid SmartAPI interval and would 400 like everything else did
+// before the date-format fix below).
+const RANGE_DAYS = {
+  '1D': 1,
+  '5D': 5,
+  '1W': 14,
+  '1M': 30,
+  '3M': 90,
+  '6M': 180,
+  '1Y': 370,
+  '5Y': 1825,
+};
+
+// SmartAPI's documented max lookback per interval (getCandleData), used to
+// cap the requested window so a caller-supplied interval override can never
+// silently produce a request SmartAPI would reject as too wide.
+const INTERVAL_MAX_DAYS = {
+  ONE_MINUTE: 30,
+  THREE_MINUTE: 60,
+  FIVE_MINUTE: 100,
+  TEN_MINUTE: 100,
+  FIFTEEN_MINUTE: 200,
+  THIRTY_MINUTE: 200,
+  ONE_HOUR: 400,
+  ONE_DAY: 2000,
+};
+
+const VALID_CANDLE_INTERVALS = new Set(HISTORY_INTERVALS);
 
 
 export class AngelOneProvider extends BaseProvider {
@@ -318,7 +349,21 @@ export class AngelOneProvider extends BaseProvider {
     };
   }
 
-  async getHistoricalData(symbol, period = '1D') {
+  /**
+   * getHistoricalData - Fetch OHLCV candles from SmartAPI's getCandleData.
+   *
+   * @param {string} symbol - Ticker, optionally 'EXCHANGE:SYMBOL'
+   * @param {string} period - A range key from RANGE_DAYS (e.g. '1Y', '5D')
+   * @param {string} [intervalOverride] - One of HISTORY_INTERVALS; when
+   *   omitted, the range's product-default interval (DEFAULT_INTERVAL_BY_RANGE)
+   *   is used. The requested day-window is capped to whatever interval is
+   *   actually used, per SmartAPI's documented max-days-per-interval limits.
+   * @returns {Array<{timestamp:number,open:number,high:number,low:number,close:number,volume:number}>}
+   *   Always a plain array (never a richer object) — StockService.getHistoricalCandles
+   *   wraps this with source/asOf/count metadata; existing callers
+   *   (goals.js, SectorRotationService) depend on this bare-array shape.
+   */
+  async getHistoricalData(symbol, period = '1D', intervalOverride) {
     this.validateSymbol(symbol);
     const session = await this.login();
     const [exchangePrefix, symbolValue] = String(symbol).split(':', 2);
@@ -328,31 +373,49 @@ export class AngelOneProvider extends BaseProvider {
     );
     const lookupSymbol = hasExchangePrefix ? symbolValue : symbol;
     const resolved = await this.resolveSymbol(lookupSymbol, exchange, session.jwtToken);
-    const intervalMap = { '1D': 'ONE_MINUTE', '1W': 'ONE_WEEK', '1M': 'ONE_DAY', '3M': 'ONE_DAY', '1Y': 'ONE_DAY' };
-    const interval = intervalMap[period] || 'ONE_DAY';
-    const days = { '1D': 1, '1W': 14, '1M': 45, '3M': 120, '1Y': 370 }[period] || 45;
+
+    const rangeKey = String(period || '1D').toUpperCase();
+    const requestedDays = RANGE_DAYS[rangeKey] || RANGE_DAYS['1M'];
+    const normalizedOverride = intervalOverride ? String(intervalOverride).toUpperCase() : null;
+    const interval = normalizedOverride && VALID_CANDLE_INTERVALS.has(normalizedOverride)
+      ? normalizedOverride
+      : (DEFAULT_INTERVAL_BY_RANGE[rangeKey] || 'ONE_DAY');
+    const days = Math.min(requestedDays, INTERVAL_MAX_DAYS[interval] || requestedDays);
+
     const to = new Date();
     const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
-    const formatDate = (date) => date.toISOString().slice(0, 19).replace('T', ' ');
-    const response = await this.client.post(
-      CANDLE_PATH,
-      {
-        exchange: resolved.exchange,
-        symboltoken: resolved.symbolToken,
-        interval,
-        fromdate: formatDate(from),
-        todate: formatDate(to),
-      },
-      { headers: this.getHeaders(session.jwtToken) },
-    );
-    return (response.data?.data || []).map((candle) => ({
-      timestamp: new Date(candle[0]).getTime(),
-      open: Number(candle[1]),
-      high: Number(candle[2]),
-      low: Number(candle[3]),
-      close: Number(candle[4]),
-      volume: Number(candle[5] || 0),
-    }));
+    // SmartAPI requires "yyyy-MM-dd HH:mm" (no seconds). The previous
+    // `.slice(0, 19)` included seconds, which SmartAPI silently rejects with
+    // an empty HTTP 400 for every symbol/range — confirmed by direct testing.
+    const formatDate = (date) => date.toISOString().slice(0, 16).replace('T', ' ');
+
+    try {
+      const response = await this.client.post(
+        CANDLE_PATH,
+        {
+          exchange: resolved.exchange,
+          symboltoken: resolved.symbolToken,
+          interval,
+          fromdate: formatDate(from),
+          todate: formatDate(to),
+        },
+        { headers: this.getHeaders(session.jwtToken) },
+      );
+      return (response.data?.data || []).map((candle) => ({
+        timestamp: new Date(candle[0]).getTime(),
+        open: Number(candle[1]),
+        high: Number(candle[2]),
+        low: Number(candle[3]),
+        close: Number(candle[4]),
+        volume: Number(candle[5] || 0),
+      }));
+    } catch (error) {
+      const status = error.response?.status;
+      throw createProviderError(
+        this.providerName,
+        `getCandleData failed for ${lookupSymbol} (${interval}, ${days}d)${status ? ` — HTTP ${status}` : ''}: ${error.message}`,
+      );
+    }
   }
 
   async getMarketStatus() {

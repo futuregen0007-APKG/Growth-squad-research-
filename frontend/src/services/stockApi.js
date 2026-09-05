@@ -73,6 +73,23 @@ export const fetchCompanyDetails = async (symbol) => {
   }
 };
 
+// Fetch real historical OHLCV candles for the price chart.
+// Returns the full metadata envelope from the backend
+// ({ symbol, range, interval, source, asOf, isStale, count, candles }) —
+// never mock/fallback candles; a provider/network failure throws so the
+// caller can render an explicit error state instead of a fake chart.
+export const fetchHistoricalData = async (symbol, range = '1Y', interval) => {
+  try {
+    const response = await api.get(`/stocks/${symbol}/history`, {
+      params: { range, ...(interval ? { interval } : {}) },
+    });
+    return response.data.data;
+  } catch (error) {
+    console.error(`Error fetching historical data for ${symbol}:`, error);
+    throw error;
+  }
+};
+
 // Filter stocks by criteria
 export const filterStocks = async (filters) => {
   try {
