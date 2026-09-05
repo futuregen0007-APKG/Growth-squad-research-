@@ -1,65 +1,47 @@
 import { useEffect, useRef, useState } from "react";
 import { Sparkles, Send, Cpu, RefreshCcw, FileText, ChevronRight } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
-import { AI_CHAT_SUGGESTIONS, AI_SEED_CONVERSATION, AI_PROMPT_CHIPS } from "@/data/mockData";
+import { AI_CHAT_SUGGESTIONS, AI_PROMPT_CHIPS } from "@/data/mockData";
 import { toast } from "sonner";
 import API_BASE from "@/config/api";
+import ReactMarkdown from "react-markdown";
+import remarkBreaks from "remark-breaks";
 
-const formatMarkdown = (text) => {
-  const lines = text.split("\n");
-  return lines.map((ln, i) => {
-    if (/^\*\*(.+)\*\*$/.test(ln.trim())) {
-      const m = ln.trim().match(/^\*\*(.+)\*\*$/);
-      return (
-        <h4 key={i} className="font-display font-bold text-gs-text mt-3 mb-1.5 text-[14px]">
-          {m[1]}
-        </h4>
-      );
-    }
-    if (ln.startsWith("• ") || ln.startsWith("- ")) {
-      const inner = ln.slice(2);
-      return (
-        <li key={i} className="text-[13px] text-gs-textMuted leading-relaxed ml-4 list-disc">
-          <span dangerouslySetInnerHTML={{ __html: renderInline(inner) }} />
-        </li>
-      );
-    }
-    if (ln.startsWith("|") && ln.includes("|")) {
-      // simple table line — render as preformatted
-      return (
-        <div key={i} className="font-mono text-[11.5px] text-gs-text whitespace-pre">
-          {ln}
-        </div>
-      );
-    }
-    if (ln.startsWith("_") && ln.endsWith("_")) {
-      return (
-        <p key={i} className="text-[11.5px] text-gs-textDim italic mt-3">
-          {ln.slice(1, -1)}
-        </p>
-      );
-    }
-    if (ln.trim() === "") return <div key={i} className="h-1.5" />;
-    return (
-      <p
-        key={i}
-        className="text-[13px] text-gs-textMuted leading-relaxed"
-        dangerouslySetInnerHTML={{ __html: renderInline(ln) }}
-      />
-    );
-  });
+// react-markdown renders straight to React elements from a parsed markdown
+// AST — it never builds an HTML string or touches innerHTML, so literal
+// "<script>"/"<img onerror=...>" text in a model response is displayed as
+// plain text rather than executed. remarkBreaks preserves single line breaks
+// the way the AI's plain-text output uses them.
+const MARKDOWN_COMPONENTS = {
+  h1: ({ children }) => (
+    <h4 className="font-display font-bold text-gs-text mt-3 mb-1.5 text-[14px]">{children}</h4>
+  ),
+  h2: ({ children }) => (
+    <h4 className="font-display font-bold text-gs-text mt-3 mb-1.5 text-[14px]">{children}</h4>
+  ),
+  h3: ({ children }) => (
+    <h4 className="font-display font-bold text-gs-text mt-3 mb-1.5 text-[14px]">{children}</h4>
+  ),
+  h4: ({ children }) => (
+    <h4 className="font-display font-bold text-gs-text mt-3 mb-1.5 text-[14px]">{children}</h4>
+  ),
+  p: ({ children }) => (
+    <p className="text-[13px] text-gs-textMuted leading-relaxed">{children}</p>
+  ),
+  ul: ({ children }) => <ul className="space-y-0.5">{children}</ul>,
+  ol: ({ children }) => <ol className="space-y-0.5">{children}</ol>,
+  li: ({ children }) => (
+    <li className="text-[13px] text-gs-textMuted leading-relaxed ml-4 list-disc">{children}</li>
+  ),
+  strong: ({ children }) => <span className="font-semibold text-gs-text">{children}</span>,
+  em: ({ children }) => <span className="text-[11.5px] text-gs-textDim italic">{children}</span>,
+  code: ({ children }) => (
+    <code className="font-mono text-[11.5px] text-gs-text">{children}</code>
+  ),
 };
 
-const renderInline = (s) =>
-  s
-    .replace(/\*\*(.+?)\*\*/g, '<span class="font-semibold text-gs-text">$1</span>')
-    .replace(
-      /\b([A-Z]{3,10})\b/g,
-      '<span class="font-mono text-gs-gold">$1</span>',
-    );
-
 export default function AIResearch() {
-  const [messages, setMessages] = useState(AI_SEED_CONVERSATION);
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const scrollRef = useRef(null);
@@ -292,7 +274,11 @@ export default function AIResearch() {
                   <div className="font-mono text-[10px] uppercase tracking-wider text-gs-gold mb-1.5">
                     GS Copilot
                   </div>
-                  <div className="space-y-0.5">{formatMarkdown(m.content)}</div>
+                  <div className="space-y-0.5">
+                    <ReactMarkdown remarkPlugins={[remarkBreaks]} components={MARKDOWN_COMPONENTS}>
+                      {m.content}
+                    </ReactMarkdown>
+                  </div>
                 </div>
               </div>
             ),
@@ -345,7 +331,7 @@ export default function AIResearch() {
           </div>
           <div className="flex items-center justify-between mt-2 text-[10px] font-mono text-gs-textDim uppercase tracking-wider">
             <span>Shift+Enter · new line</span>
-            <span>Mock responses · for UI demo</span>
+            <span>Connected to live backend</span>
           </div>
         </div>
       </section>
