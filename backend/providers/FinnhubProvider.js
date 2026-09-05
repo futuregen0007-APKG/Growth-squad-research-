@@ -22,6 +22,7 @@ import { BaseProvider } from './BaseProvider.js';
 import { API_CONFIG } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
 import { createProviderError } from '../utils/errorHandler.js';
+import { getIstMarketStatus } from '../utils/marketStatus.js';
 
 /**
  * FinnhubProvider - Implementation for Finnhub API
@@ -303,25 +304,7 @@ export class FinnhubProvider extends BaseProvider {
   async getMarketStatus() {
     try {
       logger.debug('Finnhub: Fetching market status');
-      
-      // Get current time and determine market status
-      const now = new Date();
-      const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-      
-      // NSE trading hours: 9:15 AM to 3:30 PM IST
-      const hours = istTime.getHours();
-      const minutes = istTime.getMinutes();
-      const timeInMinutes = hours * 60 + minutes;
-      
-      const isOpen = timeInMinutes >= 9 * 60 + 15 && timeInMinutes < 15 * 60 + 30;
-      
-      return {
-        isOpen,
-        region: 'NSE / BSE',
-        session: isOpen ? 'REGULAR' : 'CLOSED',
-        closesAt: '15:30 IST',
-        serverTime: istTime.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata' }) + ' IST',
-      };
+      return getIstMarketStatus();
     } catch (error) {
       logger.error(`Failed to get market status: ${error.message}`);
       

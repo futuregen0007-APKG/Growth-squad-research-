@@ -2,6 +2,7 @@ import axios from 'axios';
 import { BaseProvider } from './BaseProvider.js';
 import { logger } from '../utils/logger.js';
 import { createProviderError } from '../utils/errorHandler.js';
+import { getIstMarketStatus } from '../utils/marketStatus.js';
 
 const BASE_URL = 'https://apiconnect.angelone.in';
 const LOGIN_PATH = '/rest/auth/angelbroking/user/v1/loginByPassword';
@@ -355,17 +356,7 @@ export class AngelOneProvider extends BaseProvider {
   }
 
   async getMarketStatus() {
-    const now = new Date();
-    const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-    const minutes = istTime.getHours() * 60 + istTime.getMinutes();
-    const isOpen = minutes >= 555 && minutes < 930;
-    return {
-      isOpen,
-      region: 'NSE / BSE',
-      session: isOpen ? 'REGULAR' : 'CLOSED',
-      closesAt: '15:30 IST',
-      serverTime: `${istTime.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata' })} IST`,
-    };
+    return getIstMarketStatus();
   }
 
   formatStockData(data, symbol, resolved) {

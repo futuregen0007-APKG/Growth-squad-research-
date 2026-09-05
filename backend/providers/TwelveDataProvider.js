@@ -3,6 +3,7 @@ import { BaseProvider } from './BaseProvider.js';
 import { API_CONFIG } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
 import { createProviderError } from '../utils/errorHandler.js';
+import { getIstMarketStatus } from '../utils/marketStatus.js';
 
 export class TwelveDataProvider extends BaseProvider {
   constructor(apiKey) {
@@ -185,20 +186,7 @@ export class TwelveDataProvider extends BaseProvider {
 
   async getMarketStatus() {
     try {
-      const now = new Date();
-      const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-      const hours = istTime.getHours();
-      const minutes = istTime.getMinutes();
-      const timeInMinutes = hours * 60 + minutes;
-      const isOpen = timeInMinutes >= 9 * 60 + 15 && timeInMinutes < 15 * 60 + 30;
-
-      return {
-        isOpen,
-        region: 'NSE / BSE',
-        session: isOpen ? 'REGULAR' : 'CLOSED',
-        closesAt: '15:30 IST',
-        serverTime: istTime.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata' }) + ' IST',
-      };
+      return getIstMarketStatus();
     } catch (error) {
       logger.error(`Twelve Data: Failed to get market status: ${error.message}`);
       return {
