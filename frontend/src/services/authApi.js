@@ -43,6 +43,7 @@ export const registerUser = async (credentials) => {
   try {
     const response = await fetch(buildApiUrl('/auth/register'), {
       method: 'POST',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json'
       },
@@ -83,6 +84,7 @@ export const signinUser = async (credentials) => {
   try {
     const response = await fetch(buildApiUrl('/auth/signin'), {
       method: 'POST',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json'
       },
@@ -119,10 +121,11 @@ export const refreshAccessToken = async (refreshToken) => {
   try {
     const response = await fetch(`${API_BASE_URL}/api/auth/refresh-token`, {
       method: 'POST',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ refreshToken })
+      body: JSON.stringify(refreshToken ? { refreshToken } : {})
     });
 
     const data = await response.json();
@@ -152,6 +155,7 @@ export const logoutUser = async (refreshToken) => {
   try {
     await fetch(`${API_BASE_URL}/api/auth/logout`, {
       method: 'POST',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
@@ -180,6 +184,7 @@ export const getCurrentUser = async () => {
 
     const response = await fetch(`${API_BASE_URL}/api/auth/me`, {
       method: 'GET',
+      credentials: 'include',
       headers: {
         'Authorization': `Bearer ${accessToken}`
       }

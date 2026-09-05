@@ -1,5 +1,6 @@
 import express from 'express';
-import { register, signin } from '../controllers/auth.controller.js';
+import { logout, me, refresh, register, signin } from '../controllers/auth.controller.js';
+import authenticate from '../middleware/auth.js';
 
 /**
  * Authentication Routes
@@ -75,6 +76,9 @@ router.post('/register', register);
  * }
  */
 router.post('/signin', signin);
+router.get('/me', authenticate, me);
+router.post('/refresh-token', refresh);
+router.post('/logout', logout);
 
 /**
  * Future endpoints (commented):

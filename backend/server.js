@@ -23,6 +23,8 @@ import newsRoute from './routes/news.js';
 import { createGoalRoutes } from './routes/goals.js';
 import earningsIntelligenceRoute from './routes/earningsIntelligence.js';
 import { seedHistoricalIntelligence } from './scripts/seedHistoricalIntelligence.js';
+import { createPortfolioRoutes } from './routes/portfolio.js';
+import { createWatchlistRoutes } from './routes/watchlist.js';
 
 dotenv.config();
 
@@ -43,10 +45,27 @@ const connectMongo = async () => {
 
 const app = express();
 
-app.use(cors());
+const configuredCorsOrigins = (process.env.CORS_ORIGINS || process.env.FRONTEND_URL || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (configuredCorsOrigins.includes(origin)) return callback(null, true);
+    if (process.env.NODE_ENV !== 'production' && !configuredCorsOrigins.length) return callback(null, true);
+    return callback(new Error('Origin is not allowed by CORS'));
+  },
+  credentials: true,
+}));
 app.use(express.json());
 
 app.get('/health', (req, res) => {
+  res.status(200).json({ success: true, status: 'ok', uptime: process.uptime() });
+});
+
+app.get('/api/health', (req, res) => {
   res.status(200).json({ success: true, status: 'ok', uptime: process.uptime() });
 });
 
@@ -133,6 +152,8 @@ const startServer = async () => {
   app.use('/api/research', researchRoute);
   app.use('/api/news', newsRoute);
   app.use('/api/goals', createGoalRoutes(stockService));
+  app.use('/api/portfolio', createPortfolioRoutes(stockService));
+  app.use('/api/watchlist', createWatchlistRoutes(stockService));
   app.use('/api/earnings-intelligence', earningsIntelligenceRoute);
   app.use('/earnings-intelligence', earningsIntelligenceRoute);
   logger.info('Mounting route: /api/sector-rotation');

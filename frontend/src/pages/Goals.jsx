@@ -10,12 +10,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { toast } from 'sonner';
 import { FINANCIAL_GOALS } from '@/data/financialProfileData';
 import { getSectorAllocation } from '@/services/recommendationEngine';
+import { getWatchlists, addWatchlistSymbol } from '@/services/watchlistApi';
 import API_BASE from '@/config/api';
 import { ResponsiveContainer, LineChart, Line, Tooltip } from 'recharts';
 
 export default function Goals() {
   const navigate = useNavigate();
   const [goals, setGoals] = useState([]);
+  const [watchlistCache, setWatchlistCache] = useState(null);
+  const [watchlistBusy, setWatchlistBusy] = useState({});
+  const [watchlistAdded, setWatchlistAdded] = useState({});
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editingGoal, setEditingGoal] = useState(null);
@@ -234,6 +238,41 @@ export default function Goals() {
     const recommendation = recResults.find((item) => String(item.symbol || item.ticker).toUpperCase() === String(symbol).toUpperCase());
     setSelectedDetail({ goal: recGoal, stock: recommendation || null, ...recommendation });
     setDetailDialogOpen(true);
+  };
+
+  const ensureDefaultWatchlist = async () => {
+    if (watchlistCache) return watchlistCache;
+    const response = await getWatchlists();
+    const primary = (response.data || [])[0];
+    if (!primary) throw new Error('No watchlist is available for this account');
+    const cache = { id: primary.id, symbols: new Set(primary.symbols || []) };
+    setWatchlistCache(cache);
+    return cache;
+  };
+
+  const handleAddToWatchlist = async (rawSymbol) => {
+    // Normalize to match the backend's stored casing (Watchlist.symbols is
+    // schema-uppercased), so the local duplicate check can't false-negative
+    // on a case mismatch.
+    const symbol = String(rawSymbol || '').trim().toUpperCase();
+    if (!symbol || watchlistBusy[symbol]) return;
+    setWatchlistBusy((prev) => ({ ...prev, [symbol]: true }));
+    try {
+      const cache = await ensureDefaultWatchlist();
+      if (cache.symbols.has(symbol)) {
+        setWatchlistAdded((prev) => ({ ...prev, [symbol]: true }));
+        toast.error('Already in watchlist', { description: `${symbol} is already in your watchlist.` });
+        return;
+      }
+      await addWatchlistSymbol(cache.id, symbol);
+      cache.symbols.add(symbol);
+      setWatchlistAdded((prev) => ({ ...prev, [symbol]: true }));
+      toast.success('Added to watchlist', { description: `${symbol} has been added to your watchlist.` });
+    } catch (error) {
+      toast.error(error.message || `Could not add ${symbol} to watchlist`);
+    } finally {
+      setWatchlistBusy((prev) => ({ ...prev, [symbol]: false }));
+    }
   };
 
   const getGoalStatus = (goal) => {
@@ -760,7 +799,19 @@ export default function Goals() {
 
                     <div className="flex gap-2 mt-4 pt-3 border-t border-gs-border">
                       <Button size="sm" onClick={() => openDetailedRecommendation(s.ticker || s.symbol)} className="flex-1 bg-gs-gold text-gs-bg">View Analysis</Button>
-                      <Button size="sm" variant="outline" onClick={() => toast.success('Added to watchlist (mock)')}>Add</Button>
+                      {(() => {
+                        const watchSymbol = String(s.ticker || s.symbol || '').trim().toUpperCase();
+                        return (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={!watchSymbol || watchlistBusy[watchSymbol] || watchlistAdded[watchSymbol]}
+                            onClick={() => handleAddToWatchlist(watchSymbol)}
+                          >
+                            {watchlistBusy[watchSymbol] ? 'Adding…' : watchlistAdded[watchSymbol] ? 'Added' : 'Add'}
+                          </Button>
+                        );
+                      })()}
                     </div>
                   </div>
                 ))}

@@ -1,9 +1,9 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
 import { TrendingUp, TrendingDown, Plus, Trash2, ArrowUpRight, ArrowDownRight } from "lucide-react";
-import { STOCKS, FALLBACK_STOCK_DATA } from "@/data/mockData";
 import { fetchAllStocks } from "@/services/stockApi";
+import { addPortfolioHolding, deletePortfolioHolding, getPortfolio } from "@/services/portfolioApi";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -18,40 +18,43 @@ export default function Portfolio() {
   const navigate = useNavigate();
   const [stocks, setStocks] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [holdings, setHoldings] = useState([
-    { id: 1, symbol: 'HAL', quantity: 50, avgPrice: 4200 },
-    { id: 2, symbol: 'HDFCBANK', quantity: 100, avgPrice: 1600 },
-    { id: 3, symbol: 'TATAPOWER', quantity: 200, avgPrice: 380 },
-    { id: 4, symbol: 'LT', quantity: 30, avgPrice: 3400 },
-  ]);
+  const [error, setError] = useState(null);
+  const [holdings, setHoldings] = useState([]);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [newHolding, setNewHolding] = useState({ symbol: '', quantity: '', avgPrice: '' });
 
-  // Load stocks data
-  useState(() => {
-    const loadStocks = async () => {
+  // Load current prices from the backend.
+  useEffect(() => {
+    const loadPortfolio = async () => {
       try {
-        const data = await fetchAllStocks();
-        setStocks(data);
+        const portfolio = await getPortfolio();
+        setHoldings(portfolio.data?.holdings || []);
+        try {
+          setStocks(await fetchAllStocks());
+        } catch (stockError) {
+          console.error('Error loading stock metadata:', stockError);
+        }
       } catch (err) {
-        console.error('Error loading stocks:', err);
+        console.error('Error loading portfolio:', err);
+        setError('Portfolio data could not be loaded. Please try again.');
       } finally {
         setLoading(false);
       }
     };
-    loadStocks();
-  });
+    loadPortfolio();
+  }, []);
 
   // Calculate portfolio metrics
   const portfolioData = useMemo(() => {
     const holdingsWithPrice = holdings.map(holding => {
-      const stock = stocks.find(s => (s.symbol || s.ticker) === holding.symbol) || 
-                     FALLBACK_STOCK_DATA[holding.symbol];
-      const currentPrice = stock?.price || 0;
-      const currentValue = currentPrice * holding.quantity;
+      const stock = stocks.find(s => (s.symbol || s.ticker) === holding.symbol);
+      const currentPrice = Number.isFinite(Number(holding.currentPrice))
+        ? Number(holding.currentPrice)
+        : Number.isFinite(Number(stock?.price)) ? Number(stock.price) : null;
+      const currentValue = currentPrice === null ? null : currentPrice * holding.quantity;
       const investedValue = holding.avgPrice * holding.quantity;
-      const pnl = currentValue - investedValue;
-      const pnlPct = investedValue > 0 ? (pnl / investedValue) * 100 : 0;
+      const pnl = currentValue === null ? null : currentValue - investedValue;
+      const pnlPct = pnl === null || investedValue <= 0 ? null : (pnl / investedValue) * 100;
       
       return {
         ...holding,
@@ -60,18 +63,21 @@ export default function Portfolio() {
         investedValue,
         pnl,
         pnlPct,
-        name: stock?.name || holding.symbol,
-        sector: stock?.sector || 'N/A',
+        name: holding.name || stock?.name || holding.symbol,
+        sector: holding.sector || stock?.sector || 'N/A',
+        priceUnavailable: currentPrice === null,
       };
     });
 
     const totalInvested = holdingsWithPrice.reduce((sum, h) => sum + h.investedValue, 0);
-    const totalValue = holdingsWithPrice.reduce((sum, h) => sum + h.currentValue, 0);
-    const totalPnl = totalValue - totalInvested;
-    const totalPnlPct = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
+    const pricedHoldings = holdingsWithPrice.filter((holding) => holding.currentValue !== null);
+    const allPricesAvailable = pricedHoldings.length === holdingsWithPrice.length;
+    const totalValue = allPricesAvailable ? pricedHoldings.reduce((sum, h) => sum + h.currentValue, 0) : null;
+    const totalPnl = totalValue === null ? null : totalValue - totalInvested;
+    const totalPnlPct = totalPnl === null || totalInvested <= 0 ? null : (totalPnl / totalInvested) * 100;
 
     // Sector allocation for pie chart
-    const sectorAllocation = holdingsWithPrice.reduce((acc, h) => {
+    const sectorAllocation = pricedHoldings.reduce((acc, h) => {
       const sector = h.sector || 'Other';
       acc[sector] = (acc[sector] || 0) + h.currentValue;
       return acc;
@@ -89,34 +95,51 @@ export default function Portfolio() {
       totalPnl,
       totalPnlPct,
       pieData,
-      topGainer: holdingsWithPrice.reduce((max, h) => h.pnlPct > (max?.pnlPct || -Infinity) ? h : max, null),
-      topLoser: holdingsWithPrice.reduce((min, h) => h.pnlPct < (min?.pnlPct || Infinity) ? h : min, null),
+      topGainer: pricedHoldings.reduce((max, h) => h.pnlPct > (max?.pnlPct ?? -Infinity) ? h : max, null),
+      topLoser: pricedHoldings.reduce((min, h) => h.pnlPct < (min?.pnlPct ?? Infinity) ? h : min, null),
     };
   }, [holdings, stocks]);
 
-  const handleAddHolding = () => {
+  const handleAddHolding = async () => {
     if (newHolding.symbol && newHolding.quantity && newHolding.avgPrice) {
-      setHoldings([...holdings, {
-        id: Date.now(),
-        symbol: newHolding.symbol.toUpperCase(),
-        quantity: Number(newHolding.quantity),
-        avgPrice: Number(newHolding.avgPrice),
-      }]);
-      setNewHolding({ symbol: '', quantity: '', avgPrice: '' });
-      setAddDialogOpen(false);
+      try {
+        const response = await addPortfolioHolding({
+          symbol: newHolding.symbol.toUpperCase(),
+          quantity: Number(newHolding.quantity),
+          averageBuyPrice: Number(newHolding.avgPrice),
+        });
+        setHoldings((current) => [...current, response.data]);
+        setNewHolding({ symbol: '', quantity: '', avgPrice: '' });
+        setAddDialogOpen(false);
+      } catch (err) {
+        setError(err.message || 'Holding could not be added.');
+      }
     }
   };
 
-  const handleRemoveHolding = (id) => {
-    setHoldings(holdings.filter(h => h.id !== id));
+  const handleRemoveHolding = async (id) => {
+    try {
+      await deletePortfolioHolding(id);
+      setHoldings((current) => current.filter((holding) => holding.id !== id));
+    } catch (err) {
+      setError(err.message || 'Holding could not be removed.');
+    }
   };
 
-  const isPositive = portfolioData.totalPnl >= 0;
+  const isPositive = portfolioData.totalPnl === null || portfolioData.totalPnl >= 0;
 
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-gs-textMuted">Loading portfolio...</div>
+      </div>
+    );
+  }
+
+  if (error && !holdings.length) {
+    return (
+      <div className="flex items-center justify-center h-64 text-gs-textMuted">
+        {error}
       </div>
     );
   }
@@ -153,7 +176,7 @@ export default function Portfolio() {
                     <SelectValue placeholder="Select stock" />
                   </SelectTrigger>
                   <SelectContent className="bg-gs-card border-gs-border">
-                    {STOCKS.map(stock => (
+                    {stocks.map(stock => (
                       <SelectItem key={stock.ticker} value={stock.ticker}>
                         {stock.ticker} - {stock.name}
                       </SelectItem>
@@ -200,19 +223,19 @@ export default function Portfolio() {
         <div className="gs-card p-4">
           <div className="gs-label">Current Value</div>
           <div className="font-display text-xl font-bold text-gs-text mt-1 tabular-nums">
-            ₹{portfolioData.totalValue.toLocaleString('en-IN')}
+            {portfolioData.totalValue === null ? 'Market price unavailable' : `₹${portfolioData.totalValue.toLocaleString('en-IN')}`}
           </div>
         </div>
         <div className="gs-card p-4">
           <div className="gs-label">Total P&L</div>
           <div className={`font-display text-xl font-bold mt-1 tabular-nums ${isPositive ? 'text-gs-pos' : 'text-gs-neg'}`}>
-            {isPositive ? '+' : ''}₹{portfolioData.totalPnl.toLocaleString('en-IN')}
+            {portfolioData.totalPnl === null ? 'Market price unavailable' : `${isPositive ? '+' : ''}₹${portfolioData.totalPnl.toLocaleString('en-IN')}`}
           </div>
         </div>
         <div className="gs-card p-4">
           <div className="gs-label">P&L %</div>
           <div className={`font-display text-xl font-bold mt-1 tabular-nums ${isPositive ? 'text-gs-pos' : 'text-gs-neg'}`}>
-            {isPositive ? '+' : ''}{portfolioData.totalPnlPct.toFixed(2)}%
+            {portfolioData.totalPnlPct === null ? 'Market price unavailable' : `${isPositive ? '+' : ''}${portfolioData.totalPnlPct.toFixed(2)}%`}
           </div>
         </div>
       </div>
@@ -292,22 +315,22 @@ export default function Portfolio() {
                           ₹{holding.avgPrice.toLocaleString('en-IN')}
                         </td>
                         <td className="px-3 py-3 text-right font-mono text-[13px] text-gs-text tabular-nums">
-                          ₹{holding.currentPrice.toLocaleString('en-IN')}
+                          {holding.priceUnavailable ? 'Unavailable' : `₹${holding.currentPrice.toLocaleString('en-IN')}`}
                         </td>
                         <td className="px-3 py-3 text-right font-mono text-[13px] text-gs-text tabular-nums">
                           ₹{holding.investedValue.toLocaleString('en-IN')}
                         </td>
                         <td className="px-3 py-3 text-right font-mono text-[13px] text-gs-text tabular-nums">
-                          ₹{holding.currentValue.toLocaleString('en-IN')}
+                          {holding.currentValue === null ? 'Unavailable' : `₹${holding.currentValue.toLocaleString('en-IN')}`}
                         </td>
                         <td className="px-3 py-3 text-right">
-                          <div className={`font-mono text-[13px] text-gs-text tabular-nums ${holdingPositive ? 'text-gs-pos' : 'text-gs-neg'}`}>
-                            {holdingPositive ? '+' : ''}₹{holding.pnl.toLocaleString('en-IN')}
+                          <div className={`font-mono text-[13px] text-gs-text tabular-nums ${holding.pnl === null ? 'text-gs-textMuted' : holdingPositive ? 'text-gs-pos' : 'text-gs-neg'}`}>
+                            {holding.pnl === null ? 'Unavailable' : `${holdingPositive ? '+' : ''}₹${holding.pnl.toLocaleString('en-IN')}`}
                           </div>
                         </td>
                         <td className="px-3 py-3 text-right">
-                          <div className={`font-mono text-[13px] text-gs-text tabular-nums ${holdingPositive ? 'text-gs-pos' : 'text-gs-neg'}`}>
-                            {holdingPositive ? '+' : ''}{holding.pnlPct.toFixed(2)}%
+                          <div className={`font-mono text-[13px] text-gs-text tabular-nums ${holding.pnlPct === null ? 'text-gs-textMuted' : holdingPositive ? 'text-gs-pos' : 'text-gs-neg'}`}>
+                            {holding.pnlPct === null ? 'Unavailable' : `${holdingPositive ? '+' : ''}${holding.pnlPct.toFixed(2)}%`}
                           </div>
                         </td>
                         <td className="px-3 py-3 text-center">

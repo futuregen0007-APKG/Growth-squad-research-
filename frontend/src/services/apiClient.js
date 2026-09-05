@@ -62,18 +62,12 @@ const notifyTokenRefresh = (newToken) => {
  */
 const refreshToken = async () => {
   try {
-    const refreshTokenValue = localStorage.getItem('refreshToken');
-
-    if (!refreshTokenValue) {
-      throw new Error('No refresh token available');
-    }
-
     const response = await fetch(`${API_BASE_URL}/api/auth/refresh-token`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ refreshToken: refreshTokenValue })
+      body: JSON.stringify({})
     });
 
     if (!response.ok) {
@@ -125,6 +119,7 @@ const apiClient = {
     // Make initial request
     let response = await fetch(`${API_BASE_URL}${endpoint}`, {
       ...options,
+      credentials: 'include',
       headers
     });
 
@@ -153,6 +148,7 @@ const apiClient = {
           headers['Authorization'] = `Bearer ${newToken}`;
           response = await fetch(`${API_BASE_URL}${endpoint}`, {
             ...options,
+            credentials: 'include',
             headers
           });
         } catch (error) {
@@ -165,7 +161,7 @@ const apiClient = {
         return new Promise((resolve, reject) => {
           subscribeTokenRefresh((newToken) => {
             headers['Authorization'] = `Bearer ${newToken}`;
-            fetch(`${API_BASE_URL}${endpoint}`, { ...options, headers })
+            fetch(`${API_BASE_URL}${endpoint}`, { ...options, credentials: 'include', headers })
               .then((res) => parseApiResponse(res, endpoint))
               .then(resolve)
               .catch(reject);

@@ -1,4 +1,13 @@
-import jwt from 'jsonwebtoken';
+import User from '../models/User.js';
+import {
+  clearRefreshCookie,
+  getRefreshToken,
+  hashToken,
+  setRefreshCookie,
+  signAccessToken,
+  signRefreshToken,
+  verifyToken,
+} from '../utils/authTokens.js';
 import {
   createUser,
   findUserByEmail,
@@ -619,8 +628,6 @@ const signin = async (req, res) => {
     /**
      * Ensure JWT_SECRET is configured
      */
-    const jwtSecret = process.env.JWT_SECRET || 'dev-secret-change-me';
-
     /**
      * ========== ACCESS TOKEN ==========
      * 
@@ -636,20 +643,7 @@ const signin = async (req, res) => {
      * Lifetime: 15 minutes = 900 seconds
      * Short lifetime = if token is stolen, damage is limited to 15 mins
      */
-    const accessToken = jwt.sign(
-      {
-        userId: user._id,
-        email: user.email,
-        role: user.role,
-        type: 'access'
-      },
-      jwtSecret,
-      {
-        expiresIn: '15m', // 15 minutes
-        issuer: 'stock-market-ai', // Custom issuer for validation
-        audience: 'client' // Token intended for client
-      }
-    );
+    const accessToken = signAccessToken(user);
 
     /**
      * ========== REFRESH TOKEN ==========
@@ -666,18 +660,18 @@ const signin = async (req, res) => {
      * NOTE: In production, also store hashed refresh token in database
      * This allows revocation of specific tokens
      */
-    const refreshToken = jwt.sign(
-      {
-        userId: user._id,
-        type: 'refresh'
+    const refreshToken = signRefreshToken(user);
+    await User.findByIdAndUpdate(user._id, {
+      $push: {
+        refreshTokens: {
+          token: hashToken(refreshToken),
+          deviceId: req.headers['x-device-id'] || 'browser',
+          deviceName: req.headers['user-agent']?.slice(0, 120) || 'Browser',
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        },
       },
-      jwtSecret,
-      {
-        expiresIn: '7d', // 7 days
-        issuer: 'stock-market-ai',
-        audience: 'client'
-      }
-    );
+    });
+    setRefreshCookie(res, refreshToken);
 
     /**
      * ========== UPDATE LAST LOGIN ==========
@@ -706,7 +700,6 @@ const signin = async (req, res) => {
         user: userResponse,
         tokens: {
           accessToken,
-          refreshToken,
           expiresIn: 900 // Access token expiration in seconds (15 mins)
         }
       })
@@ -731,6 +724,64 @@ const signin = async (req, res) => {
       sendError(500, 'An error occurred during authentication. Please try again later')
     );
   }
+};
+
+export const me = async (req, res) => {
+  return res.json({ success: true, data: { user: sanitizeUser(req.user) } });
+};
+
+export const refresh = async (req, res) => {
+  const refreshToken = getRefreshToken(req);
+  if (!refreshToken) return res.status(401).json({ success: false, error: 'Refresh token required' });
+
+  try {
+    const payload = verifyToken(refreshToken, 'refresh');
+    const tokenHash = hashToken(refreshToken);
+    const user = await User.findOne({
+      _id: payload.userId,
+      accountStatus: 'active',
+      refreshTokens: { $elemMatch: { token: tokenHash, expiresAt: { $gt: new Date() } } },
+    });
+    if (!user) return res.status(401).json({ success: false, error: 'Refresh token is invalid or expired' });
+
+    const nextRefreshToken = signRefreshToken(user);
+    await User.findByIdAndUpdate(user._id, {
+      $pull: { refreshTokens: { token: tokenHash } },
+      $push: {
+        refreshTokens: {
+          token: hashToken(nextRefreshToken),
+          deviceId: req.headers['x-device-id'] || 'browser',
+          deviceName: req.headers['user-agent']?.slice(0, 120) || 'Browser',
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        },
+      },
+    });
+    setRefreshCookie(res, nextRefreshToken);
+    return res.json({ success: true, data: { tokens: { accessToken: signAccessToken(user), expiresIn: 900 } } });
+  } catch {
+    clearRefreshCookie(res);
+    return res.status(401).json({ success: false, error: 'Refresh token is invalid or expired' });
+  }
+};
+
+export const logout = async (req, res) => {
+  const refreshToken = getRefreshToken(req);
+  let userId = req.userId;
+  if (!userId && refreshToken) {
+    try {
+      userId = verifyToken(refreshToken, 'refresh').userId;
+    } catch {
+      userId = null;
+    }
+  }
+  if (refreshToken) {
+    await User.findOneAndUpdate(
+      { _id: userId },
+      { $pull: { refreshTokens: { token: hashToken(refreshToken) } } },
+    );
+  }
+  clearRefreshCookie(res);
+  return res.json({ success: true, message: 'Logged out successfully' });
 };
 
 /**

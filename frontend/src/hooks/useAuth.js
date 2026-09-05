@@ -1,4 +1,5 @@
 import { useState, useContext, useCallback, createContext } from 'react';
+import { logoutUser } from '../services/authApi';
 
 /**
  * ============================================================================
@@ -57,7 +58,7 @@ export const AuthProvider = ({ children }) => {
     }
   });
   const [accessToken, setAccessToken] = useState(() => localStorage.getItem('accessToken'));
-  const [refreshToken, setRefreshToken] = useState(() => localStorage.getItem('refreshToken'));
+  const [refreshToken, setRefreshToken] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -98,12 +99,11 @@ export const AuthProvider = ({ children }) => {
        * Set timeout to refresh token before expiration
        */
       localStorage.setItem('accessToken', tokens.accessToken);
-      localStorage.setItem('refreshToken', tokens.refreshToken);
       localStorage.setItem('user', JSON.stringify(user));
 
       // Update state
       setAccessToken(tokens.accessToken);
-      setRefreshToken(tokens.refreshToken);
+      setRefreshToken(null);
       setUser(user);
       setError(null);
 
@@ -130,6 +130,7 @@ export const AuthProvider = ({ children }) => {
    * 3. Error messages
    */
   const logout = useCallback(() => {
+    void logoutUser();
     localStorage.removeItem('accessToken');
     localStorage.removeItem('refreshToken');
     localStorage.removeItem('user');
@@ -152,7 +153,7 @@ export const AuthProvider = ({ children }) => {
    * @returns {string|null} Current refresh token
    */
   const getRefreshToken = useCallback(() => {
-    return refreshToken || localStorage.getItem('refreshToken');
+    return refreshToken;
   }, [refreshToken]);
 
   /**

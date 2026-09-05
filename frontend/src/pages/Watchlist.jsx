@@ -6,16 +6,16 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { WATCHLISTS, STOCKS } from "@/data/mockData";
 import { fetchAllStocks } from "@/services/stockApi";
+import { addWatchlistSymbol, getWatchlists, removeWatchlistSymbol } from "@/services/watchlistApi";
 import { toast } from "sonner";
 
 export default function Watchlist() {
   const [query, setQuery] = useState("");
-  const [active, setActive] = useState(WATCHLISTS[0].id);
+  const [active, setActive] = useState(null);
   const [allStocks, setAllStocks] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [watchlists, setWatchlists] = useState(WATCHLISTS);
+  const [watchlists, setWatchlists] = useState([]);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [newListName, setNewListName] = useState("");
   const [addStockDialogOpen, setAddStockDialogOpen] = useState(false);
@@ -24,17 +24,20 @@ export default function Watchlist() {
   const [sortOrder, setSortOrder] = useState("desc");
 
   useEffect(() => {
-    const loadStocks = async () => {
+    const loadWatchlists = async () => {
       try {
-        const stocks = await fetchAllStocks();
+        const [watchlistResponse, stocks] = await Promise.all([getWatchlists(), fetchAllStocks()]);
+        const lists = watchlistResponse.data || [];
+        setWatchlists(lists.map((list) => ({ ...list, tickers: list.symbols || [], count: (list.symbols || []).length })));
+        setActive(lists[0]?.id || null);
         setAllStocks(stocks);
       } catch (err) {
-        console.error('Error loading stocks:', err);
+        console.error('Error loading watchlists:', err);
       } finally {
         setLoading(false);
       }
     };
-    loadStocks();
+    loadWatchlists();
   }, []);
 
   const filtered = useMemo(() => {
@@ -71,38 +74,25 @@ export default function Watchlist() {
   }, [filtered]);
 
   const handleCreateWatchlist = () => {
-    if (newListName.trim()) {
-      const newList = {
-        id: `wl-${Date.now()}`,
-        name: newListName.trim(),
-        tickers: [],
-        count: 0,
-      };
-      setWatchlists([...watchlists, newList]);
-      setActive(newList.id);
-      setNewListName("");
-      setAddDialogOpen(false);
-      toast.success("Watchlist created", {
-        description: `"${newList.name}" has been added to your watchlists.`,
-      });
-    }
+    toast.error('Additional watchlists are not available yet');
   };
 
-  const handleAddStock = () => {
+  const handleAddStock = async () => {
     if (selectedStock) {
       const wl = watchlists.find((w) => w.id === active);
       if (wl && !wl.tickers.includes(selectedStock)) {
-        const updatedWatchlists = watchlists.map(w => 
-          w.id === active 
+        try {
+          await addWatchlistSymbol(active, selectedStock);
+          const updatedWatchlists = watchlists.map(w => w.id === active
             ? { ...w, tickers: [...w.tickers, selectedStock], count: w.tickers.length + 1 }
-            : w
-        );
-        setWatchlists(updatedWatchlists);
-        setSelectedStock("");
-        setAddStockDialogOpen(false);
-        toast.success("Stock added", {
-          description: `${selectedStock} has been added to ${wl.name}.`,
-        });
+            : w);
+          setWatchlists(updatedWatchlists);
+          setSelectedStock("");
+          setAddStockDialogOpen(false);
+          toast.success("Stock added", { description: `${selectedStock} has been added to ${wl.name}.` });
+        } catch (error) {
+          toast.error(error.message || 'Stock could not be added');
+        }
       } else if (wl && wl.tickers.includes(selectedStock)) {
         toast.error("Stock already in watchlist", {
           description: `${selectedStock} is already in ${wl.name}.`,
@@ -111,18 +101,19 @@ export default function Watchlist() {
     }
   };
 
-  const handleRemoveStock = (ticker) => {
+  const handleRemoveStock = async (ticker) => {
     const wl = watchlists.find((w) => w.id === active);
     if (wl) {
-      const updatedWatchlists = watchlists.map(w => 
-        w.id === active 
+      try {
+        await removeWatchlistSymbol(active, ticker);
+        const updatedWatchlists = watchlists.map(w => w.id === active
           ? { ...w, tickers: w.tickers.filter(t => t !== ticker), count: w.tickers.length - 1 }
-          : w
-      );
-      setWatchlists(updatedWatchlists);
-      toast.success("Stock removed", {
-        description: `${ticker} has been removed from ${wl.name}.`,
-      });
+          : w);
+        setWatchlists(updatedWatchlists);
+        toast.success("Stock removed", { description: `${ticker} has been removed from ${wl.name}.` });
+      } catch (error) {
+        toast.error(error.message || 'Stock could not be removed');
+      }
     }
   };
 
@@ -189,9 +180,9 @@ export default function Watchlist() {
                     <SelectValue placeholder="Select stock" />
                   </SelectTrigger>
                   <SelectContent className="bg-gs-card border-gs-border max-h-60">
-                    {STOCKS.map(stock => (
-                      <SelectItem key={stock.ticker} value={stock.ticker}>
-                        {stock.ticker} - {stock.name}
+                    {allStocks.map(stock => (
+                      <SelectItem key={stock.ticker || stock.symbol} value={stock.ticker || stock.symbol}>
+                        {stock.ticker || stock.symbol} — {stock.name || stock.ticker || stock.symbol}
                       </SelectItem>
                     ))}
                   </SelectContent>
