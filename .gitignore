@@ -113,3 +113,6 @@ credentials.json
 *.key
 .credentials
 frontend/node_modules/.cache/default-development/0.pack
+
+# Legacy flat-file user store (superseded by MongoDB) - contains real PII/password hashes
+backend/data/*.json
