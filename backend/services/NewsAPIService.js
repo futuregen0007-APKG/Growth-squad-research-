@@ -80,12 +80,25 @@ const similarEnough = (left, right) => {
   return overlap >= 0.72 || (moneyA && moneyA === moneyB && overlap >= 0.35);
 };
 
-const deduplicate = (articles) => {
+export const deduplicate = (articles) => {
   const result = [];
   for (const article of articles) {
     if (!result.some((existing) => similarEnough(existing.title, article.title))) result.push(article);
   }
   return result;
+};
+
+// Canonical-URL dedup for merging results across multiple symbol queries
+// (a single article can legitimately match more than one company's query).
+// Strips query string/fragment/trailing slash and lowercases so the same
+// article reached via different tracking params still collapses to one.
+export const canonicalizeArticleUrl = (url) => {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '').toLowerCase();
+  } catch {
+    return String(url || '').trim().toLowerCase();
+  }
 };
 
 const normalize = (article, symbol, companyName, sector) => {
@@ -145,6 +158,16 @@ export async function getStockNews(symbol, { days = 3 } = {}) {
       },
       timeout: 12000,
     });
+
+    // Event Registry can return HTTP 200 with a top-level {"error": "..."}
+    // body when the daily token quota is exhausted or the request is
+    // otherwise rejected — this must be classified as a provider failure,
+    // never treated as "zero articles found" (which would then get cached
+    // as if it were a real, valid empty result).
+    if (typeof response.data?.error === 'string' && response.data.error.trim()) {
+      throw new NewsAPIError(`News provider quota/error: ${response.data.error}`, 429);
+    }
+
     const normalized = deduplicate(response.data?.articles?.results
       ?.map((article) => ({ article, score: relevanceScore(article, companyName) }))
       .filter(({ score }) => score >= 2)
@@ -155,7 +178,7 @@ export async function getStockNews(symbol, { days = 3 } = {}) {
     cache.set(cacheKey, { data: normalized, fetchedAt: Date.now() });
     return normalized;
   } catch (error) {
-    const normalizedError = newsApiError(error);
+    const normalizedError = error instanceof NewsAPIError ? error : newsApiError(error);
     logger.warn(`[NewsAPI] ${normalizedSymbol}: ${normalizedError.message}`);
     throw normalizedError;
   }

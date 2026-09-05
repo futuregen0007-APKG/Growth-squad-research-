@@ -11,23 +11,57 @@ import {
   Tooltip,
   CartesianGrid,
 } from "recharts";
-import { ArrowUpRight, Sparkles, Newspaper, AlertCircle } from "lucide-react";
+import { ArrowUpRight, Sparkles, Newspaper, AlertCircle, TrendingUp, TrendingDown } from "lucide-react";
 import KPITile from "@/components/widgets/KPITile";
-import AIInsightCard from "@/components/widgets/AIInsightCard";
-import SectorHeatmap from "@/components/widgets/SectorHeatmap";
-import StockTable from "@/components/widgets/StockTable";
-import ResearchCard from "@/components/widgets/ResearchCard";
-import MarketSentiment from "@/components/widgets/MarketSentiment";
-import EarningsSnapshot from "@/components/widgets/EarningsSnapshot";
-import {
-  AI_INSIGHTS,
-  SECTOR_HEATMAP_DATA,
-  RESEARCH_FEED,
-  NEWS_FEED,
-  INDICES,
-} from "@/data/mockData";
-import { fetchAllStocks, fetchIndexQuotes } from "@/services/stockApi";
+import { fetchAllStocks, fetchIndexQuotes, fetchHistoricalData, fetchSectorRotation } from "@/services/stockApi";
+import { fetchNewsWithStatus } from "@/services/newsApi";
 import API_BASE from "@/config/api";
+
+const DASHBOARD_NEWS_SYMBOLS = ['AXISBANK', 'HDFCBANK', 'TCS', 'INFY'];
+
+const getRequestError = (error) => ({
+  status: error?.response?.status || error?.statusCode || null,
+  message: error?.response?.data?.error?.message
+    || error?.response?.data?.error
+    || error?.message
+    || 'Request failed',
+});
+
+const getUserError = (error, section) => {
+  const details = getRequestError(error);
+  if (error?.code === 'ECONNABORTED') return 'The request timed out. Please try again.';
+  if (!details.status) {
+    if (error?.code === 'ERR_NETWORK') {
+      return `Unable to connect to the backend. Configured API: ${API_BASE}`;
+    }
+    return `${section} request failed. Please try again.`;
+  }
+  if (details.status === 500 || details.status === 502 || details.status === 503 || details.status === 504) {
+    return `${section} service is temporarily unavailable.`;
+  }
+  if (details.status === 404) return 'The requested service is unavailable.';
+  return `${section} request failed. Please try again.`;
+};
+
+const logDashboardError = (request, endpoint, error) => {
+  if (process.env.NODE_ENV !== 'production') {
+    const details = getRequestError(error);
+    console.error('Dashboard request failed', {
+      request,
+      endpoint,
+      status: details.status || 'NETWORK_ERROR',
+      message: details.message,
+      requestType: 'GET',
+    });
+  }
+};
+
+const SectionError = ({ message }) => (
+  <div className="flex items-start gap-2 text-sm text-gs-textMuted">
+    <AlertCircle className="w-4 h-4 text-gs-neg flex-shrink-0 mt-0.5" />
+    <span>{message}</span>
+  </div>
+);
 
 const ChartTooltip = ({ active, payload }) => {
   if (!active || !payload?.length) return null;
@@ -48,79 +82,100 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const marketStatus = useMarketStatus();
-  const [stocks, setStocks] = useState([]);
-  const [dynamicIndexData, setDynamicIndexData] = useState({});
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [stockState, setStockState] = useState({ loading: true, data: [], error: null });
+  const [indexState, setIndexState] = useState({ loading: true, data: [], error: null });
+  const [newsState, setNewsState] = useState({ loading: true, data: [], error: null, failedSymbols: [], providerStatus: 'OK' });
+  const [niftyHistoryState, setNiftyHistoryState] = useState({ loading: true, candles: [], error: null, meta: null });
+  const [sectorState, setSectorState] = useState({ loading: true, data: [], error: null });
+
+  const stocks = stockState.data;
+  const dynamicIndexData = indexState.data.reduce((map, index) => {
+    map[index.symbol] = index;
+    return map;
+  }, {});
+  const indices = Object.values(dynamicIndexData);
 
   useEffect(() => {
-    const loadStocks = async () => {
-      try {
-        setLoading(true);
-        const [stocksData, indexData] = await Promise.all([
-          fetchAllStocks(),
-          fetchIndexQuotes(['NIFTY 50', 'NIFTYIT', 'SENSEX']),
-        ]);
-        setStocks(stocksData);
-        setDynamicIndexData(
-          indexData.reduce((map, index) => {
-            map[index.symbol] = index;
-            return map;
-          }, {})
-        );
-        setError(null);
-      } catch (err) {
-        console.error('Failed to load stocks or indices:', err);
-        setError('Failed to load market data');
-      } finally {
-        setLoading(false);
-      }
+    const controller = new AbortController();
+    let isActive = true;
+    const requestOptions = { signal: controller.signal };
+    const updateState = (setter, state) => {
+      if (isActive) setter(state);
     };
-    loadStocks();
+    const loadNews = (symbols) => fetchNewsWithStatus(symbols, requestOptions)
+      .then(({ articles, failedSymbols, providerStatus }) => updateState(setNewsState, {
+        loading: false, data: articles, error: null, failedSymbols, providerStatus,
+      }))
+      .catch((error) => {
+        if (!isActive || error?.code === 'ERR_CANCELED') return;
+        logDashboardError('News', '/api/news', error);
+        updateState(setNewsState, { loading: false, data: [], error: getUserError(error, 'News'), failedSymbols: [], providerStatus: 'DOWN' });
+      });
+
+    fetchHistoricalData('NIFTY 50', '1D', undefined, requestOptions)
+      .then((result) => updateState(setNiftyHistoryState, { loading: false, candles: result?.candles || [], error: null, meta: result }))
+      .catch((error) => {
+        if (!isActive || error?.code === 'ERR_CANCELED') return;
+        logDashboardError('Nifty history', '/api/stocks/NIFTY 50/history', error);
+        updateState(setNiftyHistoryState, { loading: false, candles: [], error: getUserError(error, 'Index chart'), meta: null });
+      });
+
+    fetchSectorRotation(requestOptions)
+      .then((data) => updateState(setSectorState, { loading: false, data, error: null }))
+      .catch((error) => {
+        if (!isActive || error?.code === 'ERR_CANCELED') return;
+        logDashboardError('Sector rotation', '/api/sector-rotation', error);
+        updateState(setSectorState, { loading: false, data: [], error: getUserError(error, 'Sector data') });
+      });
+
+    fetchAllStocks(requestOptions)
+      .then((data) => {
+        updateState(setStockState, { loading: false, data, error: null });
+        const symbols = [...new Set(data
+          .map((stock) => stock?.ticker || stock?.symbol)
+          .map((symbol) => String(symbol || '').trim().toUpperCase())
+          .filter(Boolean))].slice(0, 8);
+        return loadNews(symbols.length ? symbols : DASHBOARD_NEWS_SYMBOLS);
+      })
+      .catch((error) => {
+        if (!isActive || error?.code === 'ERR_CANCELED') return;
+        logDashboardError('Stocks', '/api/stocks', error);
+        updateState(setStockState, { loading: false, data: [], error: getUserError(error, 'Market data') });
+        void loadNews(DASHBOARD_NEWS_SYMBOLS);
+      });
+
+    fetchIndexQuotes(['NIFTY 50', 'NIFTYIT', 'SENSEX'], requestOptions)
+      .then((data) => updateState(setIndexState, { loading: false, data, error: null }))
+      .catch((error) => {
+        if (!isActive || error?.code === 'ERR_CANCELED') return;
+        logDashboardError('Indices', '/api/stocks/indices', error);
+        updateState(setIndexState, { loading: false, data: [], error: getUserError(error, 'Market indices') });
+      });
+
+    return () => {
+      isActive = false;
+      controller.abort();
+    };
   }, []);
 
-  const buildSeries = (index) => {
-    const base = index?.price ?? index?.value ?? 0;
-    if (Array.isArray(index?.series) && index.series.length > 0) {
-      return index.series.map((d, i) => ({
-        t: i,
-        v: d.v ?? d.value ?? base,
-        ts: `09:${String(15 + Math.floor(i * 12)).padStart(2, "0")}`,
-      }));
-    }
+  const news = newsState.data;
 
-    return Array.from({ length: 8 }, (_, i) => ({
-      t: i,
-      v: Number((base + (Math.random() - 0.5) * base * 0.02).toFixed(2)),
-      ts: `09:${String(15 + Math.floor(i * 12)).padStart(2, "0")}`,
-    }));
-  };
+  // Real Angel One intraday candles -> recharts points, labeled in IST
+  // regardless of the viewer's browser timezone.
+  const niftySeries = niftyHistoryState.candles.map((candle) => ({
+    ts: new Date(candle.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }),
+    v: candle.close,
+  }));
 
-  const niftyIndex = dynamicIndexData['NIFTY 50'] || INDICES[0];
-  const niftySeries = buildSeries(niftyIndex);
-  const niftyValue = niftyIndex.price ?? niftyIndex.value ?? 0;
-  const niftyChange = niftyIndex.change ?? 0;
-  const niftyChangePct = niftyIndex.changePct ?? 0;
+  const niftyIndex = dynamicIndexData['NIFTY 50'];
+  const niftyValue = niftyIndex?.price ?? niftyIndex?.value;
+  const niftyChange = niftyIndex?.change;
+  const niftyChangePct = niftyIndex?.changePct;
 
   // Sort stocks by change% to get gainers and losers
   const sortedByChange = [...stocks].sort((a, b) => (b.changePct || 0) - (a.changePct || 0));
   const gainers = sortedByChange.slice(0, 4);
   const losers = sortedByChange.slice(-4).reverse();
-
-  if (error) {
-    return (
-      <div className="space-y-6 animate-fade-up">
-        <div className="bg-gs-card border border-gs-neg/30 rounded-lg p-4 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-gs-neg flex-shrink-0 mt-0.5" />
-          <div>
-            <h3 className="font-semibold text-gs-text">Error Loading Market Data</h3>
-            <p className="text-sm text-gs-textMuted mt-1">{error}</p>
-            <p className="text-xs text-gs-textDim mt-2">Make sure your backend is running on {API_BASE}</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-6 animate-fade-up" data-testid="dashboard-page">
@@ -173,14 +228,10 @@ export default function Dashboard() {
 
       {/* Indices KPI grid */}
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 gs-stagger">
-        {INDICES.map((idx) => {
-          const dynamicIndex = dynamicIndexData[idx.symbol];
-          return <KPITile key={idx.symbol} {...(dynamicIndex ? { ...idx, ...dynamicIndex } : idx)} />;
-        })}
+        {indexState.loading ? <div className="col-span-full text-sm text-gs-textMuted">Loading market indices...</div>
+          : indices.length ? indices.map((idx) => <KPITile key={idx.symbol} {...idx} />)
+            : <div className="col-span-full"><SectionError message={indexState.error || 'No market index data available.'} /></div>}
       </div>
-
-      {/* Market Sentiment row */}
-      <MarketSentiment />
 
       {/* Main Grid */}
       <div className="grid grid-cols-12 gap-4">
@@ -192,10 +243,10 @@ export default function Dashboard() {
                 <div className="gs-label">Index · Nifty 50 · Intraday</div>
                 <div className="flex items-baseline gap-3 mt-1">
                   <span className="font-display text-2xl font-bold text-gs-text tabular-nums">
-                    {niftyValue.toLocaleString("en-IN")}
+                    {niftyValue == null ? 'Unavailable' : niftyValue.toLocaleString("en-IN")}
                   </span>
                   <span className="font-mono text-sm text-gs-pos tabular-nums">
-                    {niftyChange >= 0 ? '+' : ''}{niftyChange.toFixed(2)} ({niftyChangePct >= 0 ? '+' : ''}{niftyChangePct.toFixed(2)}%)
+                    {niftyChange == null || niftyChangePct == null ? 'Change unavailable' : `${niftyChange >= 0 ? '+' : ''}${niftyChange.toFixed(2)} (${niftyChangePct >= 0 ? '+' : ''}${niftyChangePct.toFixed(2)}%)`}
                   </span>
                 </div>
               </div>
@@ -214,44 +265,63 @@ export default function Dashboard() {
                 ))}
               </div>
             </div>
-            <div style={{ height: 280 }}>
-              <ResponsiveContainer>
-                <AreaChart data={niftySeries} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="niftyGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#D4AF37" stopOpacity={0.32} />
-                      <stop offset="100%" stopColor="#D4AF37" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid stroke="#1E222A" strokeDasharray="2 4" />
-                  <XAxis
-                    dataKey="ts"
-                    stroke="#475569"
-                    tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }}
-                    tickLine={false}
-                    axisLine={{ stroke: "#1E222A" }}
-                    minTickGap={32}
-                  />
-                  <YAxis
-                    stroke="#475569"
-                    tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }}
-                    tickLine={false}
-                    axisLine={{ stroke: "#1E222A" }}
-                    domain={["dataMin - 20", "dataMax + 20"]}
-                    width={60}
-                  />
-                  <Tooltip content={<ChartTooltip />} cursor={{ stroke: "#D4AF37", strokeDasharray: "3 3" }} />
-                  <Area
-                    type="monotone"
-                    dataKey="v"
-                    stroke="#D4AF37"
-                    strokeWidth={1.8}
-                    fill="url(#niftyGrad)"
-                    isAnimationActive={false}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
+            <div style={{ height: 280 }} data-testid="nifty-chart">
+              {niftyHistoryState.loading ? (
+                <div className="h-full grid place-items-center text-sm text-gs-textDim" data-testid="nifty-chart-loading">
+                  Loading intraday chart…
+                </div>
+              ) : niftyHistoryState.error ? (
+                <div className="h-full grid place-items-center text-sm text-gs-textMuted" data-testid="nifty-chart-error">
+                  <SectionError message={niftyHistoryState.error} />
+                </div>
+              ) : niftySeries.length === 0 ? (
+                <div className="h-full grid place-items-center text-sm text-gs-textMuted" data-testid="nifty-chart-empty">
+                  No intraday candles available yet today.
+                </div>
+              ) : (
+                <ResponsiveContainer>
+                  <AreaChart data={niftySeries} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="niftyGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#D4AF37" stopOpacity={0.32} />
+                        <stop offset="100%" stopColor="#D4AF37" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="#1E222A" strokeDasharray="2 4" />
+                    <XAxis
+                      dataKey="ts"
+                      stroke="#475569"
+                      tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }}
+                      tickLine={false}
+                      axisLine={{ stroke: "#1E222A" }}
+                      minTickGap={32}
+                    />
+                    <YAxis
+                      stroke="#475569"
+                      tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }}
+                      tickLine={false}
+                      axisLine={{ stroke: "#1E222A" }}
+                      domain={["dataMin - 20", "dataMax + 20"]}
+                      width={60}
+                    />
+                    <Tooltip content={<ChartTooltip />} cursor={{ stroke: "#D4AF37", strokeDasharray: "3 3" }} />
+                    <Area
+                      type="monotone"
+                      dataKey="v"
+                      stroke="#D4AF37"
+                      strokeWidth={1.8}
+                      fill="url(#niftyGrad)"
+                      isAnimationActive={false}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              )}
             </div>
+            {niftyHistoryState.meta && (
+              <div className="mt-2 text-[10px] text-gs-textDim font-mono">
+                Source: {niftyHistoryState.meta.source} · as of {new Date(niftyHistoryState.meta.asOf).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}
+              </div>
+            )}
           </div>
         </div>
 
@@ -269,9 +339,7 @@ export default function Dashboard() {
               View All <ArrowUpRight className="w-3 h-3" />
             </button>
           </div>
-          {AI_INSIGHTS.slice(0, 2).map((i) => (
-            <AIInsightCard key={i.id} insight={i} onOpen={() => navigate("/ai-research")} />
-          ))}
+          <div className="gs-card p-4 text-sm text-gs-textMuted">No evidence-backed AI insights available.</div>
         </div>
       </div>
 
@@ -281,19 +349,62 @@ export default function Dashboard() {
           <div className="gs-card p-5">
             <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
               <div>
-                <div className="gs-label">Sector Heatmap</div>
-                <h3 className="font-display font-bold text-gs-text mt-1">Sectoral Performance · 1D</h3>
+                <div className="gs-label">Sector Rotation</div>
+                <h3 className="font-display font-bold text-gs-text mt-1">Ranked by Relative Strength · Weekly</h3>
               </div>
-              <div className="flex items-center gap-2 text-[10px] font-mono text-gs-textDim">
-                <span className="flex items-center gap-1">
-                  <span className="w-2.5 h-2.5 bg-gs-pos inline-block" /> Gainers
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-2.5 h-2.5 bg-gs-neg inline-block" /> Losers
-                </span>
-              </div>
+              <button
+                onClick={() => navigate("/sectors")}
+                className="font-mono text-[10px] uppercase tracking-wider text-gs-textDim hover:text-gs-gold flex items-center gap-1"
+              >
+                Full Analysis <ArrowUpRight className="w-3 h-3" />
+              </button>
             </div>
-            <SectorHeatmap data={SECTOR_HEATMAP_DATA} height={300} />
+            {sectorState.loading ? (
+              <div className="flex items-center justify-center h-[220px] text-sm text-gs-textMuted" data-testid="sector-loading">
+                Loading sector data...
+              </div>
+            ) : sectorState.error ? (
+              <div className="flex items-center justify-center h-[220px]" data-testid="sector-error">
+                <SectionError message={sectorState.error} />
+              </div>
+            ) : sectorState.data.length === 0 ? (
+              <div className="flex items-center justify-center h-[220px] text-sm text-gs-textMuted" data-testid="sector-empty">
+                Sector data currently unavailable.
+              </div>
+            ) : (
+              <div className="space-y-1.5" data-testid="sector-list">
+                {/* current.x is a raw composite-price ratio (avg leader price /
+                    Nifty index level), not a normalized return — its absolute
+                    magnitude isn't a meaningful "% vs Nifty" figure, so only
+                    its rank order is shown here, never a fabricated percentage.
+                    current.y (momentum: % change of the smoothed ratio) is
+                    scale-invariant and shown as a real percentage. */}
+                {[...sectorState.data]
+                  .sort((a, b) => (b.current?.x ?? -Infinity) - (a.current?.x ?? -Infinity))
+                  .slice(0, 8)
+                  .map((sector, index) => {
+                    const momentumPct = sector.current?.y != null ? sector.current.y * 100 : null;
+                    const improving = momentumPct != null && momentumPct >= 0;
+                    return (
+                      <div key={sector.id} className="flex items-center justify-between py-1.5 border-b border-gs-border last:border-b-0">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="font-mono text-[10px] text-gs-textDim w-4 shrink-0">#{index + 1}</span>
+                          <span className="text-[12.5px] text-gs-text truncate">{sector.name}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-right shrink-0">
+                          <div>
+                            <div className="text-[9px] text-gs-textDim uppercase tracking-wider">Momentum</div>
+                            <div className={`font-mono text-[12px] tabular-nums flex items-center gap-1 justify-end ${momentumPct == null ? 'text-gs-textMuted' : improving ? 'text-gs-pos' : 'text-gs-neg'}`}>
+                              {momentumPct != null && (improving ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />)}
+                              {momentumPct == null ? 'N/A' : `${momentumPct >= 0 ? '+' : ''}${momentumPct.toFixed(2)}%`}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
           </div>
         </div>
 
@@ -306,8 +417,12 @@ export default function Dashboard() {
               </span>
             </div>
             <div className="space-y-2">
-              {loading ? (
-                <div className="text-center py-4 text-gs-textMuted text-sm">Loading...</div>
+              {stockState.loading ? (
+                <div className="text-center py-4 text-gs-textMuted text-sm">Loading market data...</div>
+              ) : stockState.error ? (
+                <SectionError message={stockState.error} />
+              ) : stocks.length === 0 ? (
+                <div className="text-center py-4 text-gs-textMuted text-sm">No market data is currently available.</div>
               ) : gainers.length > 0 ? (
                 gainers.map((s) => (
                   <button
@@ -347,8 +462,12 @@ export default function Dashboard() {
               </span>
             </div>
             <div className="space-y-2">
-              {loading ? (
-                <div className="text-center py-4 text-gs-textMuted text-sm">Loading...</div>
+              {stockState.loading ? (
+                <div className="text-center py-4 text-gs-textMuted text-sm">Loading market data...</div>
+              ) : stockState.error ? (
+                <SectionError message={stockState.error} />
+              ) : stocks.length === 0 ? (
+                <div className="text-center py-4 text-gs-textMuted text-sm">No market data is currently available.</div>
               ) : losers.length > 0 ? (
                 losers.map((s) => (
                   <button
@@ -382,23 +501,13 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Earnings Snapshot strip */}
-      <EarningsSnapshot />
-
       {/* Research feed + News */}
       <div className="grid grid-cols-12 gap-4">
-        <div className="col-span-12 lg:col-span-8">
-          <div className="flex items-center justify-between mb-3">
+        <div className="col-span-12 lg:col-span-8 space-y-3">
+          <div className="flex items-center justify-between">
             <h2 className="font-display font-bold text-gs-text">Research Feed</h2>
-            <span className="font-mono text-[10px] uppercase tracking-wider text-gs-textDim">
-              {RESEARCH_FEED.length} latest
-            </span>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {RESEARCH_FEED.slice(0, 4).map((r) => (
-              <ResearchCard key={r.id} item={r} onOpen={() => navigate("/ai-research")} />
-            ))}
-          </div>
+          <div className="gs-card p-4 text-sm text-gs-textMuted">Research feed coming soon — no verified, source-backed research records are wired to this view yet.</div>
         </div>
 
         <div className="col-span-12 lg:col-span-4">
@@ -406,19 +515,27 @@ export default function Dashboard() {
             <Newspaper className="w-4 h-4 text-gs-textDim" />
             <h2 className="font-display font-bold text-gs-text">Newsflow</h2>
           </div>
+          {!newsState.loading && !newsState.error && newsState.providerStatus === 'PARTIAL' && (
+            <div className="mb-2 text-[10.5px] text-gs-textDim flex items-center gap-1.5" data-testid="news-degraded">
+              <AlertCircle className="w-3 h-3 text-gs-gold shrink-0" />
+              News unavailable for {newsState.failedSymbols.length} symbol{newsState.failedSymbols.length === 1 ? '' : 's'} — showing available results.
+            </div>
+          )}
           <div className="gs-card divide-y divide-gs-border">
-            {NEWS_FEED.map((n) => (
-              <div key={n.id} className="p-4 hover:bg-gs-cardHover transition-colors cursor-pointer">
+            {newsState.loading ? <div className="p-4 text-sm text-gs-textMuted">Loading news...</div>
+              : newsState.error ? <div className="p-4"><SectionError message={newsState.error === 'News request failed.' ? 'News temporarily unavailable.' : newsState.error} /></div>
+              : news.length ? news.slice(0, 6).map((n) => (
+              <a key={`${n.symbol}-${n.url}`} href={n.url} target="_blank" rel="noreferrer" className="block p-4 hover:bg-gs-cardHover transition-colors">
                 <div className="flex items-center justify-between mb-1.5">
                   <span className="font-mono text-[10px] uppercase tracking-wider text-gs-textDim">
-                    {n.source}
+                    {n.source || 'Unknown source'}
                   </span>
-                  <span className="font-mono text-[10px] text-gs-textDim">{n.timestamp}</span>
+                  <span className="font-mono text-[10px] text-gs-textDim">{n.publishedAt ? new Date(n.publishedAt).toLocaleDateString() : 'Date unavailable'}</span>
                 </div>
-                <p className="text-[13px] text-gs-text leading-snug">{n.headline}</p>
-                {n.tickers.length > 0 && (
+                <p className="text-[13px] text-gs-text leading-snug">{n.title}</p>
+                {n.symbol && (
                   <div className="flex gap-1.5 mt-2">
-                    {n.tickers.map((t) => (
+                    {[n.symbol].map((t) => (
                       <span
                         key={t}
                         className="font-mono text-[10px] tracking-wider px-1.5 py-0.5 bg-gs-panel border border-gs-border rounded-sm text-gs-textMuted"
@@ -428,8 +545,8 @@ export default function Dashboard() {
                     ))}
                   </div>
                 )}
-              </div>
-            ))}
+              </a>
+            )) : <div className="p-4 text-sm text-gs-textMuted">No recent news available.</div>}
           </div>
         </div>
       </div>

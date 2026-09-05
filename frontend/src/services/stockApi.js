@@ -78,16 +78,28 @@ export const fetchCompanyDetails = async (symbol) => {
 // ({ symbol, range, interval, source, asOf, isStale, count, candles }) —
 // never mock/fallback candles; a provider/network failure throws so the
 // caller can render an explicit error state instead of a fake chart.
-export const fetchHistoricalData = async (symbol, range = '1Y', interval) => {
+export const fetchHistoricalData = async (symbol, range = '1Y', interval, options = {}) => {
   try {
-    const response = await api.get(`/stocks/${symbol}/history`, {
+    const response = await api.get(`/stocks/${encodeURIComponent(symbol)}/history`, {
       params: { range, ...(interval ? { interval } : {}) },
+      ...options,
     });
     return response.data.data;
   } catch (error) {
     console.error(`Error fetching historical data for ${symbol}:`, error);
     throw error;
   }
+};
+
+// Real sector rotation data (JdK RRG: relative-strength ratio + momentum per
+// sector, computed server-side from live Angel One weekly candles). This is
+// NOT a %-change heatmap — each sector's `current.x` is its real relative
+// strength vs Nifty (deviation from 1, as a ratio) and `current.y` is real
+// momentum (rate of change of that ratio). Never fabricate a 1D % change
+// from this data; render x/y as what they actually are.
+export const fetchSectorRotation = async (options = {}) => {
+  const response = await api.get('/sector-rotation', options);
+  return response.data.data || [];
 };
 
 // Filter stocks by criteria

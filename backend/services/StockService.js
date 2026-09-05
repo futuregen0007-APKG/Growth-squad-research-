@@ -19,7 +19,7 @@
  */
 
 import { getCache, setCache, deleteCache } from '../utils/redisClient.js';
-import { CACHE_TTL, SUPPORTED_STOCKS, FALLBACK_STOCK_DATA, HISTORY_RANGES, HISTORY_INTERVALS, DEFAULT_INTERVAL_BY_RANGE } from '../utils/constants.js';
+import { CACHE_TTL, SUPPORTED_STOCKS, FALLBACK_STOCK_DATA, INDEX_SYMBOLS, HISTORY_RANGES, HISTORY_INTERVALS, DEFAULT_INTERVAL_BY_RANGE } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
 import {
   createNotFoundError,
@@ -543,7 +543,7 @@ export class StockService {
     const upperSymbol = symbol.trim().toUpperCase();
 
     // If symbol exists in supported list or fallback data, return immediately
-    if (SUPPORTED_STOCKS[upperSymbol] || FALLBACK_STOCK_DATA[upperSymbol]) {
+    if (SUPPORTED_STOCKS[upperSymbol] || FALLBACK_STOCK_DATA[upperSymbol] || INDEX_SYMBOLS[upperSymbol]) {
       return upperSymbol;
     }
 
