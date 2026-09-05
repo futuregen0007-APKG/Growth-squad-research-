@@ -6,14 +6,37 @@ import { DynamicUniverseService } from '../services/DynamicUniverseService.js';
 import { RebalanceService } from '../services/RebalanceService.js';
 
 const sampleStocks = [
-  { ticker: 'HDFCBANK', name: 'HDFC Bank', sector: 'Banking', price: 1700, changePct: 1.5, pe: 18, marketCap: '₹12L Cr', volatility: 0.13 },
-  { ticker: 'RELIANCE', name: 'Reliance Industries', sector: 'Energy', price: 2910, changePct: 2.2, pe: 26, marketCap: '₹19L Cr', volatility: 0.18 },
-  { ticker: 'INFY', name: 'Infosys', sector: 'IT', price: 1540, changePct: 1.1, pe: 27, marketCap: '₹7L Cr', volatility: 0.16 },
-  { ticker: 'SUNPHARMA', name: 'Sun Pharmaceuticals', sector: 'Healthcare', price: 1600, changePct: 1.8, pe: 31, marketCap: '₹4L Cr', volatility: 0.17 },
-  { ticker: 'TATAPOWER', name: 'Tata Power', sector: 'Green Energy', price: 420, changePct: 2.8, pe: 20, marketCap: '₹1.4L Cr', volatility: 0.22 },
-  { ticker: 'LT', name: 'Larsen & Toubro', sector: 'Manufacturing', price: 3540, changePct: 2.1, pe: 20, marketCap: '₹4.8L Cr', volatility: 0.19 },
-  { ticker: 'ITC', name: 'ITC', sector: 'FMCG', price: 460, changePct: 0.9, pe: 24, marketCap: '₹6L Cr', volatility: 0.11 }
+  { ticker: 'HDFCBANK', name: 'HDFC Bank', sector: 'Banking', price: 1700, changePct: 1.5, pe: 18, roe: 17, marketCap: '₹12L Cr', volatility: 0.13 },
+  { ticker: 'RELIANCE', name: 'Reliance Industries', sector: 'Energy', price: 2910, changePct: 2.2, pe: 26, roe: 9, marketCap: '₹19L Cr', volatility: 0.18 },
+  { ticker: 'INFY', name: 'Infosys', sector: 'IT', price: 1540, changePct: 1.1, pe: 27, roe: 28, marketCap: '₹7L Cr', volatility: 0.16 },
+  { ticker: 'SUNPHARMA', name: 'Sun Pharmaceuticals', sector: 'Healthcare', price: 1600, changePct: 1.8, pe: 31, roe: 15, marketCap: '₹4L Cr', volatility: 0.17 },
+  { ticker: 'TATAPOWER', name: 'Tata Power', sector: 'Green Energy', price: 420, changePct: 2.8, pe: 20, roe: 11, marketCap: '₹1.4L Cr', volatility: 0.22 },
+  { ticker: 'LT', name: 'Larsen & Toubro', sector: 'Manufacturing', price: 3540, changePct: 2.1, pe: 20, roe: 13, marketCap: '₹4.8L Cr', volatility: 0.19 },
+  { ticker: 'ITC', name: 'ITC', sector: 'FMCG', price: 460, changePct: 0.9, pe: 24, roe: 30, marketCap: '₹6L Cr', volatility: 0.11 }
 ];
+
+// ~30 daily observations per stock: enough to clear the volatility minimum
+// sample size (20) used by the tightened PARTIAL/COMPLETE eligibility rule,
+// but not the drawdown (60) or one-year-return (200) minimums — so together
+// with each stock's pe+roe above, these reach PARTIAL (volatility + P/E +
+// ROE = 3 verified metrics spanning both required categories) rather than
+// INSUFFICIENT_DATA, letting the differs-by-goal-profile test below exercise
+// real ranked recommendations.
+const buildSampleHistory = (basePrice, seed, days = 30) => {
+  const closes = [];
+  let price = basePrice;
+  for (let i = 0; i < days; i += 1) {
+    const shock = Math.sin((i + seed) * 1.7) * 0.012 + Math.sin((i + seed) * 0.6) * 0.02;
+    price *= (1 + shock);
+    closes.push({ close: Number(price.toFixed(2)) });
+  }
+  return closes;
+};
+
+const sampleResearchData = sampleStocks.map((stock, index) => ({
+  symbol: stock.ticker,
+  history: buildSampleHistory(stock.price, index * 3 + 1),
+}));
 
 test('goal profiles should compute required rate and monthly shortfall', () => {
   const goal = {
@@ -57,8 +80,8 @@ test('recommendations should differ meaningfully by goal profile', async () => {
     riskProfile: 'aggressive',
   };
 
-  const houseRecommendation = await buildGoalRecommendation(houseGoal, sampleStocks);
-  const retirementRecommendation = await buildGoalRecommendation(retirementGoal, sampleStocks);
+  const houseRecommendation = await buildGoalRecommendation(houseGoal, sampleStocks, {}, { researchData: sampleResearchData });
+  const retirementRecommendation = await buildGoalRecommendation(retirementGoal, sampleStocks, {}, { researchData: sampleResearchData });
 
   const houseSymbols = houseRecommendation.recommendations.map((item) => item.symbol);
   const retirementSymbols = retirementRecommendation.recommendations.map((item) => item.symbol);
@@ -176,7 +199,7 @@ test('a stock with complete, verified metrics produces a deterministic numeric s
   assert.equal(firstMatch.goalFitScore, secondMatch.goalFitScore);
 });
 
-test('missing data lowers coverage, not risk: a stock with no historical candles gets null risk, not a favorable default', async () => {
+test('missing data lowers coverage, not risk: partial historical data (volatility only) never fabricates a risk score', async () => {
   const partialStock = {
     ticker: 'PARTIALSTOCK',
     name: 'Partial Data Ltd',
@@ -185,19 +208,88 @@ test('missing data lowers coverage, not risk: a stock with no historical candles
     changePct: 0.8,
     pe: 25,
     roe: 14,
-    // No historical candle data supplied for this symbol.
   };
+  // 30 observations clears the volatility minimum (20) but not the drawdown
+  // (60) or one-year-return (200) minimums, so only volatility is verified
+  // from the historical side — combined with pe+roe this is a genuine
+  // 3-metric, both-category PARTIAL case (see also the dedicated "mixed
+  // three-metric PARTIAL" test below).
+  const researchData = [{ symbol: 'PARTIALSTOCK', history: buildSampleHistory(800, 5) }];
 
-  const recommendation = await buildGoalRecommendation({ ...wealthGoal, id: 'goal-partial' }, [partialStock, ...sampleStocks], {}, { researchData: [] });
+  const recommendation = await buildGoalRecommendation({ ...wealthGoal, id: 'goal-partial' }, [partialStock, ...sampleStocks], {}, { researchData });
   const match = recommendation.recommendations.find((item) => item.symbol === 'PARTIALSTOCK');
 
-  assert.ok(match, 'a stock with 2/5 verified metrics (valuation + quality) should still be rankable as PARTIAL');
+  assert.ok(match, 'volatility + P/E + ROE (3 metrics spanning both categories) should be rankable as PARTIAL');
   assert.equal(match.scoreStatus, 'PARTIAL');
-  assert.equal(match.dataCoveragePct, 40);
-  assert.deepEqual(match.missingMetrics.sort(), ['maxDrawdown', 'oneYearReturn', 'volatility']);
-  // Missing historical data must not be smuggled into a fabricated risk score.
+  assert.equal(match.dataCoveragePct, 60);
+  assert.deepEqual(match.missingMetrics.sort(), ['maxDrawdown', 'oneYearReturn']);
+  // Drawdown is still unverified (needs 60+ observations) even though
+  // volatility is — the risk score must not be fabricated from volatility
+  // alone.
   assert.equal(match.riskScore, null);
   assert.equal(match.risk, 'UNKNOWN');
+});
+
+// --- Eligibility-tightening regression tests (commit "require sufficient
+// evidence for goal scores") ---
+// The PARTIAL tier previously allowed a numeric score with just 1 verified
+// metric. These prove the new rule: PARTIAL requires >=3/5 metrics spanning
+// both the historical and fundamental categories; anything less is
+// INSUFFICIENT_DATA with goalFitScore/riskScore null and is excluded from
+// ranked recommendations regardless of sector fit.
+
+const tighteningGoal = { ...wealthGoal, id: 'goal-tightening', sector: 'Auto' };
+
+test('only P/E available is insufficient (1 metric)', async () => {
+  const stock = { ticker: 'ONLYPE', name: 'Only PE Ltd', sector: 'Auto', price: 300, changePct: 0.4, pe: 19 };
+  const recommendation = await buildGoalRecommendation({ ...tighteningGoal, id: 'goal-only-pe' }, [stock], {}, { researchData: [] });
+  const match = recommendation.recommendations.find((item) => item.symbol === 'ONLYPE');
+  assert.equal(match, undefined, 'a single verified metric must never produce a ranked recommendation');
+  assert.equal(recommendation.dataQualitySummary.insufficientDataExcludedCount, 1);
+});
+
+test('only volatility available is insufficient (1 metric)', async () => {
+  const stock = { ticker: 'ONLYVOL', name: 'Only Volatility Ltd', sector: 'Auto', price: 300, changePct: 0.4 };
+  // 30 observations clears the volatility-only minimum (20) but nothing else,
+  // and no pe/roe are supplied at all.
+  const researchData = [{ symbol: 'ONLYVOL', history: buildSampleHistory(300, 9) }];
+  const recommendation = await buildGoalRecommendation({ ...tighteningGoal, id: 'goal-only-vol' }, [stock], {}, { researchData });
+  const match = recommendation.recommendations.find((item) => item.symbol === 'ONLYVOL');
+  assert.equal(match, undefined, 'a single verified metric must never produce a ranked recommendation');
+  assert.equal(recommendation.dataQualitySummary.insufficientDataExcludedCount, 1);
+});
+
+test('two strong metrics (P/E + ROE) are insufficient without any historical evidence', async () => {
+  const stock = { ticker: 'TWOSTRONG', name: 'Two Strong Ltd', sector: 'Auto', price: 300, changePct: 0.4, pe: 21, roe: 20 };
+  const recommendation = await buildGoalRecommendation({ ...tighteningGoal, id: 'goal-two-strong' }, [stock], {}, { researchData: [] });
+  const match = recommendation.recommendations.find((item) => item.symbol === 'TWOSTRONG');
+  assert.equal(match, undefined, 'two verified metrics from a single category must never produce a ranked recommendation');
+  assert.equal(recommendation.dataQualitySummary.insufficientDataExcludedCount, 1);
+});
+
+test('three metrics from a single category (all historical, no fundamentals) is insufficient', async () => {
+  const stock = { ticker: 'ALLHIST', name: 'All Historical Ltd', sector: 'Auto', price: 300, changePct: 0.4 };
+  // 220 observations clears all three historical minimums (volatility 20,
+  // drawdown 60, one-year-return 200), giving 3/5 metrics — but no pe/roe.
+  const researchData = [{ symbol: 'ALLHIST', history: buildSampleHistory(300, 13, 220) }];
+  const recommendation = await buildGoalRecommendation({ ...tighteningGoal, id: 'goal-all-hist' }, [stock], {}, { researchData });
+  const match = recommendation.recommendations.find((item) => item.symbol === 'ALLHIST');
+  assert.equal(match, undefined, 'three metrics confined to one category must never produce a ranked recommendation');
+  assert.equal(recommendation.dataQualitySummary.insufficientDataExcludedCount, 1);
+});
+
+test('a valid mixed three-metric case (volatility + P/E + ROE) is PARTIAL with a real numeric score', async () => {
+  const stock = { ticker: 'MIXEDPARTIAL', name: 'Mixed Partial Ltd', sector: 'Auto', price: 300, changePct: 0.4, pe: 23, roe: 12 };
+  const researchData = [{ symbol: 'MIXEDPARTIAL', history: buildSampleHistory(300, 17) }];
+  const recommendation = await buildGoalRecommendation({ ...tighteningGoal, id: 'goal-mixed-partial' }, [stock], {}, { researchData });
+  const match = recommendation.recommendations.find((item) => item.symbol === 'MIXEDPARTIAL');
+
+  assert.ok(match, 'volatility + P/E + ROE spans both required categories at 3/5 metrics and must be rankable');
+  assert.equal(match.scoreStatus, 'PARTIAL');
+  assert.equal(match.confidence, 'MEDIUM');
+  assert.equal(match.dataCoveragePct, 60);
+  assert.deepEqual(match.missingMetrics.sort(), ['maxDrawdown', 'oneYearReturn']);
+  assert.ok(typeof match.goalFitScore === 'number' && match.goalFitScore >= 0 && match.goalFitScore <= 100);
 });
 
 test('RebalanceService should evaluate glidepath and detect portfolio drift', () => {

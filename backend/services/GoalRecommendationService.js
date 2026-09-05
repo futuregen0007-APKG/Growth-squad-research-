@@ -152,35 +152,64 @@ const METRIC_WEIGHTS = {
 };
 
 const METRIC_KEYS = Object.keys(METRIC_WEIGHTS);
+const HISTORICAL_METRIC_KEYS = ['volatility', 'oneYearReturn', 'maxDrawdown'];
+const FUNDAMENTAL_METRIC_KEYS = ['valuation', 'quality'];
 
-// A metric is "available" only when it comes from a verified source: real
-// historical candles (volatility/oneYearReturn/maxDrawdown all come from the
-// same fetch) or a real, positive fundamentals value (pe/roe). Zero/negative/
-// missing values are treated as not-provided rather than defaulted.
+// A historical statistic is only trusted once enough candle observations back
+// it — a "1-year return" from 5 days of data, or a volatility/drawdown figure
+// from 3 days, is not verified evidence even though it's mathematically
+// computable. Each statistic gets its own minimum sample size reflecting how
+// much history it actually needs to be meaningful: a short realized-volatility
+// window is a standard convention (~1 trading month), drawdown needs a longer
+// look-back to capture a real peak-to-trough move (~1 quarter), and a genuine
+// 1-year return needs close to a full year of trading days.
+const MIN_OBSERVATIONS_FOR_VOLATILITY = 20;
+const MIN_OBSERVATIONS_FOR_DRAWDOWN = 60;
+const MIN_OBSERVATIONS_FOR_RETURN = 200;
+
+// A metric is "available" only when it comes from a verified, sufficiently
+// sampled source: real historical candles (each of volatility/oneYearReturn/
+// maxDrawdown independently gated by its own minimum observation count above)
+// or a real, positive fundamentals value (pe/roe). Zero/negative/missing/
+// under-sampled values are treated as not-provided rather than defaulted.
 const buildMetricAvailability = (stock, historical) => {
   const pe = Number(stock.pe ?? stock.PE);
   const roe = Number(stock.roe ?? stock.ROE);
+  const observations = historical.available ? historical.observations : 0;
   return {
-    volatility: historical.available ? { available: true, value: historical.volatility } : { available: false, value: null },
-    oneYearReturn: historical.available ? { available: true, value: historical.oneYearReturn } : { available: false, value: null },
-    maxDrawdown: historical.available ? { available: true, value: historical.maxDrawdown } : { available: false, value: null },
+    volatility: observations >= MIN_OBSERVATIONS_FOR_VOLATILITY ? { available: true, value: historical.volatility } : { available: false, value: null },
+    oneYearReturn: observations >= MIN_OBSERVATIONS_FOR_RETURN ? { available: true, value: historical.oneYearReturn } : { available: false, value: null },
+    maxDrawdown: observations >= MIN_OBSERVATIONS_FOR_DRAWDOWN ? { available: true, value: historical.maxDrawdown } : { available: false, value: null },
     valuation: Number.isFinite(pe) && pe > 0 ? { available: true, value: pe } : { available: false, value: null },
     quality: Number.isFinite(roe) && roe > 0 ? { available: true, value: roe } : { available: false, value: null },
   };
 };
 
-// >=4/5 verified metrics => COMPLETE; 1-3/5 => PARTIAL; 0/5 => INSUFFICIENT_DATA.
-// Sector match is intentionally excluded from this coverage calculation so a
-// sector-only match can never read as "high confidence" on its own.
+// COMPLETE: >=4/5 verified metrics.
+// PARTIAL: >=3/5 verified metrics AND at least one historical metric AND at
+//   least one fundamental metric — a single strong metric, two strong
+//   metrics, or three metrics drawn from only one category (e.g. all three
+//   historical stats with no P/E or ROE) must never qualify.
+// INSUFFICIENT_DATA: everything else (0-2 metrics, or 3+ metrics missing an
+//   entire required category). Sector match is intentionally excluded from
+//   this calculation so a sector-only match can never read as "high
+//   confidence" on its own.
 const evaluateDataQuality = (availability) => {
   const availableMetrics = METRIC_KEYS.filter((key) => availability[key].available);
   const missingMetrics = METRIC_KEYS.filter((key) => !availability[key].available);
   const dataCoveragePct = Math.round((availableMetrics.length / METRIC_KEYS.length) * 100);
 
+  const hasHistorical = HISTORICAL_METRIC_KEYS.some((key) => availability[key].available);
+  const hasFundamental = FUNDAMENTAL_METRIC_KEYS.some((key) => availability[key].available);
+
   let scoreStatus;
-  if (availableMetrics.length >= 4) scoreStatus = 'COMPLETE';
-  else if (availableMetrics.length >= 1) scoreStatus = 'PARTIAL';
-  else scoreStatus = 'INSUFFICIENT_DATA';
+  if (availableMetrics.length >= 4) {
+    scoreStatus = 'COMPLETE';
+  } else if (availableMetrics.length >= 3 && hasHistorical && hasFundamental) {
+    scoreStatus = 'PARTIAL';
+  } else {
+    scoreStatus = 'INSUFFICIENT_DATA';
+  }
 
   const confidence = scoreStatus === 'COMPLETE' ? 'HIGH' : scoreStatus === 'PARTIAL' ? 'MEDIUM' : 'LOW';
 
@@ -190,11 +219,14 @@ const evaluateDataQuality = (availability) => {
 // Computes a 0-100 score strictly from verified metrics that are actually
 // available, weighted-averaged over only those metrics' weights (so a
 // missing metric is excluded, never defaulted). Sector fit can only nudge
-// this score by up to +/-10 points and can never produce a score by itself:
-// if zero verified metrics exist, this returns null regardless of sector fit.
+// this score by up to +/-10 points and can never create eligibility or
+// produce a score by itself: this only runs at all when evaluateDataQuality
+// has already classified the stock as COMPLETE or PARTIAL — an
+// INSUFFICIENT_DATA stock never reaches this function (see
+// evaluateStockForGoal), so a single strong metric or two strong metrics can
+// never produce a numeric score no matter how favorable the sector match is.
 const computeVerifiedScore = (availability, sectorFitScore) => {
   const availableKeys = METRIC_KEYS.filter((key) => availability[key].available);
-  if (availableKeys.length === 0) return null;
 
   const weightSum = availableKeys.reduce((sum, key) => sum + METRIC_WEIGHTS[key], 0);
   const weightedScore = availableKeys.reduce((sum, key) => {
@@ -238,14 +270,26 @@ const getResearchMetrics = (stock, researchBySymbol) => {
   return calculateHistoricalMetrics(historical?.history || []);
 };
 
-// Risk can only be computed from real measured volatility/drawdown. Missing
-// historical data must lower data coverage (see evaluateDataQuality), never
-// get smuggled into a risk score via a default — so this returns null rather
-// than a fabricated "safe" number when no verified history exists.
+// Used only for the coarse universe-eligibility pre-screen below (unrelated
+// to the verified-metrics scoring pipeline): treats "any" historical data as
+// enough to compute a screening-only risk score.
 const getRiskScore = (metrics) => {
   if (!metrics.available) return null;
   const volatilityScore = clamp((metrics.volatility - 10) * 2.2, 0, 65);
   const drawdownScore = clamp(Math.abs(metrics.maxDrawdown) * 0.75, 0, 25);
+  return Math.round(clamp(volatilityScore + drawdownScore, 0, 100));
+};
+
+// The risk score shown to the client must meet the same sufficiency bar as
+// the verified metrics themselves: both volatility and drawdown have to be
+// independently available (see MIN_OBSERVATIONS_FOR_* above). Missing
+// historical data must lower data coverage (see evaluateDataQuality), never
+// get smuggled into a risk score via a default — so this returns null rather
+// than a fabricated "safe" number whenever either input is unverified.
+const getVerifiedRiskScore = (availability) => {
+  if (!availability.volatility.available || !availability.maxDrawdown.available) return null;
+  const volatilityScore = clamp((availability.volatility.value - 10) * 2.2, 0, 65);
+  const drawdownScore = clamp(Math.abs(availability.maxDrawdown.value) * 0.75, 0, 25);
   return Math.round(clamp(volatilityScore + drawdownScore, 0, 100));
 };
 
@@ -256,11 +300,18 @@ const getRiskLabel = (riskScore) => {
   return 'HIGH';
 };
 
+// Only asserts specific historical figures when all three (return, volatility,
+// drawdown) independently meet their minimum sample-size thresholds — a
+// partially-verified stock (e.g. volatility available but return not yet
+// backed by a full year of candles) gets the conservative "unavailable"
+// phrasing rather than a sentence quoting a number that missingMetrics also
+// lists as missing.
 const buildWhyRecommended = (stock, goalProfile) => {
   const historical = stock.historical;
-  const historyClause = historical.available
+  const allHistoricalVerified = HISTORICAL_METRIC_KEYS.every((key) => stock.availableMetrics?.includes(key));
+  const historyClause = allHistoricalVerified
     ? `its measured one-year return was ${historical.oneYearReturn}% with ${historical.volatility}% annualized volatility and a ${historical.maxDrawdown}% maximum drawdown`
-    : 'historical candle data is unavailable from the configured provider';
+    : 'historical candle data is unavailable or does not yet meet the minimum sample size required from the configured provider';
   const valuationClause = stock.pe
     ? `the available P/E is ${stock.pe}, which was included in the valuation score`
     : 'valuation data was unavailable and was not invented';
@@ -288,18 +339,24 @@ const evaluateStockForGoal = (stock, goalProfile, historical) => {
   const sectorFitScore = mapSectorPreference(goalProfile.goalType, goalProfile.yearsRemaining, stock.sector || stock.industry, goalProfile.selectedSector);
   const availability = buildMetricAvailability(stock, historical);
   const dataQuality = evaluateDataQuality(availability);
-  const goalFitScore = computeVerifiedScore(availability, sectorFitScore);
-  return { availability, sectorFitScore, goalFitScore, ...dataQuality };
+  // Only a COMPLETE or PARTIAL classification is allowed to receive a
+  // numeric score — INSUFFICIENT_DATA never reaches computeVerifiedScore,
+  // regardless of how many raw metrics happen to have values.
+  const goalFitScore = dataQuality.scoreStatus === 'INSUFFICIENT_DATA' ? null : computeVerifiedScore(availability, sectorFitScore);
+  const riskScore = getVerifiedRiskScore(availability);
+  return { availability, sectorFitScore, goalFitScore, riskScore, ...dataQuality };
 };
 
 const riskCapacityCenter = (riskCapacity) => (riskCapacity === 'CONSERVATIVE' ? 25 : riskCapacity === 'AGGRESSIVE' ? 70 : 50);
 
-const buildGoalFitComponents = (evaluation, historical, riskScore, goalProfile) => {
+const buildGoalFitComponents = (evaluation, riskScore, goalProfile) => {
   const { availability, sectorFitScore } = evaluation;
   return {
     goalHorizonFit: Math.round(clamp(60 + Math.min(goalProfile.yearsRemaining, 15) * 2.5, 0, 100)),
     riskFit: riskScore == null ? null : Math.round(clamp(100 - Math.abs(riskScore - riskCapacityCenter(goalProfile.riskCapacity)), 0, 100)),
-    historicalStability: historical.available ? Math.round(clamp(100 - historical.volatility * 1.8 - Math.abs(historical.maxDrawdown) * 0.45, 0, 100)) : null,
+    historicalStability: availability.volatility.available && availability.maxDrawdown.available
+      ? Math.round(clamp(100 - availability.volatility.value * 1.8 - Math.abs(availability.maxDrawdown.value) * 0.45, 0, 100))
+      : null,
     businessQuality: availability.quality.available ? Math.round(METRIC_SCORERS.quality(availability.quality.value)) : null,
     growthPotential: availability.oneYearReturn.available ? Math.round(METRIC_SCORERS.oneYearReturn(availability.oneYearReturn.value)) : null,
     valuation: availability.valuation.available ? Math.round(METRIC_SCORERS.valuation(availability.valuation.value)) : null,
@@ -504,7 +561,6 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
 
   const scored = filtered.map((stock) => {
     const historical = getResearchMetrics(stock, researchBySymbol);
-    const riskScore = getRiskScore(historical);
     const evaluation = evaluateStockForGoal(stock, goalProfile, historical);
     return {
       ...stock,
@@ -514,9 +570,9 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
       availableMetrics: evaluation.availableMetrics,
       missingMetrics: evaluation.missingMetrics,
       confidence: evaluation.confidence,
-      riskScore,
+      riskScore: evaluation.riskScore,
       historical,
-      goalFitComponents: buildGoalFitComponents(evaluation, historical, riskScore, goalProfile),
+      goalFitComponents: buildGoalFitComponents(evaluation, evaluation.riskScore, goalProfile),
       rejectionReasons: [
         goalProfile.investmentHorizon === 'SHORT_TERM' && Number(stock.volatility ?? stock.annualVolatility ?? 0.18) > 0.26 ? 'Volatility is too high for the target timeline.' : null,
         goalProfile.goalType === 'house' && goalProfile.yearsRemaining <= 3 && (stock.sector || stock.industry) === 'IT' ? 'Short-term goal makes technology exposure less suitable.' : null,
@@ -577,14 +633,16 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
       risk: getRiskLabel(stock.riskScore),
       whyRecommended: buildWhyRecommended(stock, goalProfile),
       reasons: [
-        stock.historical.available ? `${stock.historical.volatility}% measured annualized volatility and ${stock.historical.maxDrawdown}% maximum drawdown were included.` : 'Historical volatility and drawdown data are unavailable from the configured provider and were excluded from the score.',
-        stock.pe ? `Available valuation input: P/E ${stock.pe}.` : 'Valuation data was unavailable and excluded from the score.',
-        stock.roe ? `Available quality input: ROE ${stock.roe}.` : 'Quality (ROE) data was unavailable and excluded from the score.',
+        stock.availableMetrics?.includes('volatility') ? `${stock.historical.volatility}% measured annualized volatility was included.` : 'Volatility data is unavailable or below the minimum sample size and was excluded from the score.',
+        stock.availableMetrics?.includes('maxDrawdown') ? `${stock.historical.maxDrawdown}% measured maximum drawdown was included.` : 'Drawdown data is unavailable or below the minimum sample size and was excluded from the score.',
+        stock.availableMetrics?.includes('oneYearReturn') ? `${stock.historical.oneYearReturn}% measured one-year return was included.` : 'One-year return data is unavailable or below the minimum sample size and was excluded from the score.',
+        stock.availableMetrics?.includes('valuation') ? `Available valuation input: P/E ${stock.pe}.` : 'Valuation data was unavailable and excluded from the score.',
+        stock.availableMetrics?.includes('quality') ? `Available quality input: ROE ${stock.roe}.` : 'Quality (ROE) data was unavailable and excluded from the score.',
         `Data coverage: ${stock.dataCoveragePct}% of verified metrics available (${stock.confidence} confidence). Missing: ${stock.missingMetrics.length ? stock.missingMetrics.join(', ') : 'none'}.`,
       ],
-      history: stock.historical.available
+      history: HISTORICAL_METRIC_KEYS.every((key) => stock.availableMetrics?.includes(key))
         ? `The provider returned ${stock.historical.observations} daily observations. The one-year price change was ${stock.historical.oneYearReturn}%, annualized volatility was ${stock.historical.volatility}%, and maximum drawdown was ${stock.historical.maxDrawdown}%. These are historical measurements, not a forecast.`
-        : 'Historical candle data was unavailable from the configured provider for this stock, so historical performance metrics are not asserted.',
+        : 'Historical candle data was unavailable, or did not meet the minimum sample size required, from the configured provider for this stock, so historical performance metrics are not asserted.',
       present: explainStockPresent(stock, goalProfile),
       future: explainStockFuture(stock, goalProfile),
       risks: [
