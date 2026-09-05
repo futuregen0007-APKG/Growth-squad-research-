@@ -755,13 +755,29 @@ export default function Goals() {
                       </div>
                       <div className="text-right shrink-0">
                         <div className="font-mono">₹{Number(s.price || s.regularMarketPrice || 0).toFixed(2)}</div>
-                        <div className="text-lg font-mono text-gs-gold mt-1">{s.goalFitScore ?? s.score ?? 0}<span className="text-[10px] text-gs-textDim">/100</span></div>
+                        <div className="text-lg font-mono text-gs-gold mt-1">
+                          {s.goalFitScore == null ? 'N/A' : s.goalFitScore}
+                          {s.goalFitScore != null && <span className="text-[10px] text-gs-textDim">/100</span>}
+                        </div>
                       </div>
                     </div>
 
+                    {/* Data coverage & confidence */}
+                    <div className="mt-2 flex items-center justify-between gap-2 text-[10px]">
+                      <span className={`font-mono px-1.5 py-0.5 rounded border ${s.confidence === 'HIGH' ? 'text-emerald-400 bg-emerald-950/60 border-emerald-800/60' : s.confidence === 'MEDIUM' ? 'text-amber-400 bg-amber-950/40 border-amber-800/50' : 'text-gs-textDim bg-gs-bg border-gs-border'}`}>
+                        {s.confidence || 'LOW'} confidence
+                      </span>
+                      <span className="text-gs-textDim font-mono">{s.dataCoveragePct ?? 0}% data coverage</span>
+                    </div>
+                    {s.missingMetrics?.length > 0 && (
+                      <div className="mt-1 text-[10px] text-gs-textDim">
+                        Missing: {s.missingMetrics.join(', ')}
+                      </div>
+                    )}
+
                     {/* AI Sentiment & Status Row */}
                     <div className="mt-3 flex items-center justify-between border-t border-gs-border pt-2">
-                      <span className="text-[10px] uppercase tracking-wider text-gs-textDim">{s.recommendation || 'CONSIDER'}</span>
+                      <span className="text-[10px] uppercase tracking-wider text-gs-textDim">{s.recommendation || 'INSUFFICIENT_DATA'}</span>
                       {s.sentimentBadge === 'BULLISH' ? (
                         <span className="text-emerald-400 font-mono text-[10px] bg-emerald-950/60 border border-emerald-800/60 px-2 py-0.5 rounded flex items-center gap-1">
                           <TrendingUp className="w-3 h-3" /> Bullish ({s.sentimentScore > 0 ? `+${s.sentimentScore}` : s.sentimentScore})
@@ -838,9 +854,22 @@ export default function Goals() {
                 ].map(([label, value]) => <div key={label} className="bg-gs-panel border border-gs-border p-3"><div className="gs-label">{label}</div><div className="text-gs-text mt-1 capitalize">{value}</div></div>)}
               </div>
               <div className="flex items-end justify-between gap-3 border-b border-gs-border pb-3">
-                <div><div className="gs-label">Goal fit score</div><div className="font-display text-3xl font-bold text-gs-gold">{selectedDetail.goalFitScore ?? 0}<span className="text-sm text-gs-textDim">/100</span></div></div>
-                <div className="text-right"><div className="gs-label">Risk score</div><div className="font-mono text-xl text-gs-text">{selectedDetail.riskScore ?? 'N/A'}<span className="text-xs text-gs-textDim">/100</span></div></div>
+                <div><div className="gs-label">Goal fit score</div><div className="font-display text-3xl font-bold text-gs-gold">{selectedDetail.goalFitScore == null ? 'N/A' : selectedDetail.goalFitScore}{selectedDetail.goalFitScore != null && <span className="text-sm text-gs-textDim">/100</span>}</div></div>
+                <div className="text-right"><div className="gs-label">Risk score</div><div className="font-mono text-xl text-gs-text">{selectedDetail.riskScore ?? 'N/A'}{selectedDetail.riskScore != null && <span className="text-xs text-gs-textDim">/100</span>}</div></div>
               </div>
+              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                <span className={`font-mono px-2 py-0.5 rounded border ${selectedDetail.confidence === 'HIGH' ? 'text-emerald-400 bg-emerald-950/60 border-emerald-800/60' : selectedDetail.confidence === 'MEDIUM' ? 'text-amber-400 bg-amber-950/40 border-amber-800/50' : 'text-gs-textDim bg-gs-bg border-gs-border'}`}>
+                  {selectedDetail.confidence || 'LOW'} confidence
+                </span>
+                <span className="font-mono px-2 py-0.5 rounded border border-gs-border bg-gs-bg text-gs-textDim">
+                  {selectedDetail.scoreStatus || 'INSUFFICIENT_DATA'} · {selectedDetail.dataCoveragePct ?? 0}% data coverage
+                </span>
+              </div>
+              {selectedDetail.missingMetrics?.length > 0 && (
+                <div className="text-xs text-gs-textDim">
+                  Missing inputs: {selectedDetail.missingMetrics.join(', ')}
+                </div>
+              )}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
                 {Object.entries(selectedDetail.components || {}).map(([key, value]) => <div key={key} className="bg-gs-panel border border-gs-border p-2"><div className="text-gs-textDim capitalize">{key.replace(/([A-Z])/g, ' $1')}</div><div className="font-mono text-gs-text mt-1">{value == null ? 'Unavailable' : `${value}/100`}</div></div>)}
               </div>
@@ -855,7 +884,7 @@ export default function Goals() {
                 </div>
                 {selectedDetail.sentimentDrivers?.length > 0 && (
                   <div className="mt-2 text-xs text-gs-textMuted">
-                    <span className="font-medium text-gs-text">Verified Catalysts:</span>
+                    <span className="font-medium text-gs-text">AI-Identified News Catalysts (unverified):</span>
                     <ul className="list-disc pl-4 mt-1 space-y-0.5">
                       {selectedDetail.sentimentDrivers.map((item, idx) => <li key={idx}>{item}</li>)}
                     </ul>

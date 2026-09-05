@@ -128,44 +128,82 @@ const mapSectorPreference = (goalType, yearsRemaining, sector, selectedSector = 
   return preferred.includes(sector) ? 90 : 55;
 };
 
-const scoreVolatility = (stock, goalType, yearsRemaining) => {
-  const volatility = Number(stock.volatility ?? stock.annualVolatility ?? 0.18);
-  if (!Number.isFinite(volatility) || volatility <= 0) return 65;
-  if (yearsRemaining <= 3) return clamp(100 - (volatility * 250), 0, 100);
-  if (yearsRemaining <= 7) return clamp(100 - (volatility * 180), 0, 100);
-  return clamp(100 - (volatility * 120), 0, 100);
+// Each of these scorers is only ever invoked with a real, verified data point —
+// never with a substituted/default value. A stock with no data for a metric
+// simply does not get that metric's weight (see buildMetricAvailability /
+// computeVerifiedScore below), rather than receiving a favorable placeholder.
+const METRIC_SCORERS = {
+  volatility: (annualizedVolatilityPct) => clamp(100 - annualizedVolatilityPct * 1.8, 0, 100),
+  oneYearReturn: (oneYearReturnPct) => clamp(50 + oneYearReturnPct * 1.5, 0, 100),
+  maxDrawdown: (maxDrawdownPct) => clamp(100 - Math.abs(maxDrawdownPct) * 1.2, 0, 100),
+  valuation: (pe) => clamp(100 - Math.abs(pe - 20) * 2.5, 0, 100),
+  quality: (roe) => clamp(roe * 4, 0, 100),
 };
 
-const scoreValuation = (stock) => {
-  const pe = Number(stock.pe ?? stock.PE ?? 0);
-  if (!Number.isFinite(pe) || pe <= 0) return 60;
-  return clamp(100 - Math.abs(pe - 20) * 2.5, 0, 100);
+// Relative weights used only across whichever metrics are actually available
+// for a given stock (see computeVerifiedScore) — never renormalized in a way
+// that lets a missing metric quietly boost the others beyond their share.
+const METRIC_WEIGHTS = {
+  volatility: 30,
+  oneYearReturn: 15,
+  maxDrawdown: 15,
+  valuation: 20,
+  quality: 20,
 };
 
-const scoreQuality = (stock) => {
-  const marketCap = Number(String(stock.marketCap || '').replace(/[^\d.]/g, '') || 0);
-  const hasDebt = Number(stock.debt || 0);
-  let score = 55;
-  if (marketCap > 1000) score += 20;
-  if (Number(stock.roe || stock.ROE || 0) > 12) score += 12;
-  if (Number(stock.roe || stock.ROE || 0) > 18) score += 8;
-  if (!hasDebt || hasDebt < 1) score += 8;
-  return clamp(score, 0, 100);
+const METRIC_KEYS = Object.keys(METRIC_WEIGHTS);
+
+// A metric is "available" only when it comes from a verified source: real
+// historical candles (volatility/oneYearReturn/maxDrawdown all come from the
+// same fetch) or a real, positive fundamentals value (pe/roe). Zero/negative/
+// missing values are treated as not-provided rather than defaulted.
+const buildMetricAvailability = (stock, historical) => {
+  const pe = Number(stock.pe ?? stock.PE);
+  const roe = Number(stock.roe ?? stock.ROE);
+  return {
+    volatility: historical.available ? { available: true, value: historical.volatility } : { available: false, value: null },
+    oneYearReturn: historical.available ? { available: true, value: historical.oneYearReturn } : { available: false, value: null },
+    maxDrawdown: historical.available ? { available: true, value: historical.maxDrawdown } : { available: false, value: null },
+    valuation: Number.isFinite(pe) && pe > 0 ? { available: true, value: pe } : { available: false, value: null },
+    quality: Number.isFinite(roe) && roe > 0 ? { available: true, value: roe } : { available: false, value: null },
+  };
 };
 
-const scoreGrowth = (stock, goalType, yearsRemaining) => {
-  const changePct = Number(stock.changePct || stock.dayChange || 0);
-  const base = Number.isFinite(changePct) ? 50 + changePct * 7 : 60;
-  const longTermBoost = yearsRemaining > 7 ? 12 : 0;
-  if (['retirement', 'passive_income', 'freedom', 'wealth_creation'].includes(goalType)) return clamp(base + longTermBoost + 8, 0, 100);
-  return clamp(base, 0, 100);
+// >=4/5 verified metrics => COMPLETE; 1-3/5 => PARTIAL; 0/5 => INSUFFICIENT_DATA.
+// Sector match is intentionally excluded from this coverage calculation so a
+// sector-only match can never read as "high confidence" on its own.
+const evaluateDataQuality = (availability) => {
+  const availableMetrics = METRIC_KEYS.filter((key) => availability[key].available);
+  const missingMetrics = METRIC_KEYS.filter((key) => !availability[key].available);
+  const dataCoveragePct = Math.round((availableMetrics.length / METRIC_KEYS.length) * 100);
+
+  let scoreStatus;
+  if (availableMetrics.length >= 4) scoreStatus = 'COMPLETE';
+  else if (availableMetrics.length >= 1) scoreStatus = 'PARTIAL';
+  else scoreStatus = 'INSUFFICIENT_DATA';
+
+  const confidence = scoreStatus === 'COMPLETE' ? 'HIGH' : scoreStatus === 'PARTIAL' ? 'MEDIUM' : 'LOW';
+
+  return { availableMetrics, missingMetrics, dataCoveragePct, scoreStatus, confidence };
 };
 
-const scoreLiquidity = (stock) => {
-  const marketCap = Number(String(stock.marketCap || '').replace(/[^\d.]/g, '') || 0);
-  if (marketCap > 1000) return 90;
-  if (marketCap > 500) return 75;
-  return 55;
+// Computes a 0-100 score strictly from verified metrics that are actually
+// available, weighted-averaged over only those metrics' weights (so a
+// missing metric is excluded, never defaulted). Sector fit can only nudge
+// this score by up to +/-10 points and can never produce a score by itself:
+// if zero verified metrics exist, this returns null regardless of sector fit.
+const computeVerifiedScore = (availability, sectorFitScore) => {
+  const availableKeys = METRIC_KEYS.filter((key) => availability[key].available);
+  if (availableKeys.length === 0) return null;
+
+  const weightSum = availableKeys.reduce((sum, key) => sum + METRIC_WEIGHTS[key], 0);
+  const weightedScore = availableKeys.reduce((sum, key) => {
+    const subScore = METRIC_SCORERS[key](availability[key].value);
+    return sum + subScore * METRIC_WEIGHTS[key];
+  }, 0) / weightSum;
+
+  const sectorAdjustment = clamp((sectorFitScore - 50) * 0.2, -10, 10);
+  return Math.round(clamp(weightedScore + sectorAdjustment, 0, 100));
 };
 
 const calculateHistoricalMetrics = (history = []) => {
@@ -197,26 +235,22 @@ const calculateHistoricalMetrics = (history = []) => {
 
 const getResearchMetrics = (stock, researchBySymbol) => {
   const historical = researchBySymbol.get(String(stock.ticker || stock.symbol).toUpperCase());
-  const metrics = calculateHistoricalMetrics(historical?.history || []);
-  if (metrics.available) return metrics;
-  return {
-    ...metrics,
-    source: null,
-    fallbackVolatility: Number(stock.volatility ?? stock.annualVolatility ?? 0),
-  };
+  return calculateHistoricalMetrics(historical?.history || []);
 };
 
-const getRiskScore = (stock, metrics) => {
-  const quotedVolatility = Number(stock.volatility ?? stock.annualVolatility ?? 0) * 100;
-  const volatility = metrics.available ? Math.max(metrics.volatility, quotedVolatility) : quotedVolatility;
-  const drawdown = metrics.available ? Math.abs(metrics.maxDrawdown) : 0;
-  const volatilityScore = clamp((volatility - 10) * 2.2, 0, 65);
-  const drawdownScore = clamp(drawdown * 0.75, 0, 25);
-  const sizePenalty = scoreLiquidity(stock) < 65 ? 10 : 0;
-  return Math.round(clamp(volatilityScore + drawdownScore + sizePenalty, 0, 100));
+// Risk can only be computed from real measured volatility/drawdown. Missing
+// historical data must lower data coverage (see evaluateDataQuality), never
+// get smuggled into a risk score via a default — so this returns null rather
+// than a fabricated "safe" number when no verified history exists.
+const getRiskScore = (metrics) => {
+  if (!metrics.available) return null;
+  const volatilityScore = clamp((metrics.volatility - 10) * 2.2, 0, 65);
+  const drawdownScore = clamp(Math.abs(metrics.maxDrawdown) * 0.75, 0, 25);
+  return Math.round(clamp(volatilityScore + drawdownScore, 0, 100));
 };
 
 const getRiskLabel = (riskScore) => {
+  if (riskScore == null) return 'UNKNOWN';
   if (riskScore <= 30) return 'LOW';
   if (riskScore <= 60) return 'MODERATE';
   return 'HIGH';
@@ -244,59 +278,35 @@ const riskTierAllows = (riskCapacity, riskScore, hasHistoricalData) => {
   return riskScore >= 20 && riskScore <= 78;
 };
 
-const scoreGoalFit = (stock, goalProfile, researchMetrics = {}) => {
-  const { goalType, yearsRemaining, requiredMonthlyInvestment, monthlyContribution, riskCapacity, selectedSector } = goalProfile;
-  let score = 50;
-
-  score += mapSectorPreference(goalType, yearsRemaining, stock.sector || stock.industry, selectedSector);
-  const volatilityForScore = researchMetrics.available
-    ? clamp(100 - researchMetrics.volatility * 1.8, 0, 100)
-    : scoreVolatility(stock, goalType, yearsRemaining);
-  score += volatilityForScore * 0.35;
-  score += scoreValuation(stock) * 0.2;
-  score += scoreGrowth(stock, goalType, yearsRemaining) * 0.15;
-  score += scoreQuality(stock) * 0.15;
-  score += scoreLiquidity(stock) * 0.15;
-
-  if (['retirement', 'passive_income', 'freedom', 'wealth_creation'].includes(goalType)) {
-    score += ['IT', 'Healthcare', 'Consumer', 'Banking', 'Energy', 'Manufacturing'].includes(stock.sector || stock.industry) ? 12 : 0;
-  }
-
-  if (['house', 'education', 'car', 'marriage'].includes(goalType) && ['Banking', 'FMCG', 'Healthcare', 'Power', 'Auto'].includes(stock.sector || stock.industry)) {
-    score += 10;
-  }
-
-  if (yearsRemaining <= 3) {
-    score -= ['Green Energy', 'Infrastructure', 'IT'].includes(stock.sector) ? 18 : 0;
-  }
-
-  if (riskCapacity === 'CONSERVATIVE') score += volatilityForScore * 0.15;
-
-  if (riskCapacity === 'AGGRESSIVE' && yearsRemaining > 7) {
-    score += ['IT', 'Green Energy', 'Infrastructure', 'Manufacturing', 'Healthcare'].includes(stock.sector) ? 12 : 0;
-  }
-
-  if (riskCapacity === 'AGGRESSIVE') score += scoreGrowth(stock, goalType, yearsRemaining) * 0.12;
-  if (riskCapacity === 'CONSERVATIVE') score += scoreQuality(stock) * 0.12;
-
-  if (monthlyContribution > 0 && requiredMonthlyInvestment > 0) {
-    const gapRatio = requiredMonthlyInvestment / Math.max(monthlyContribution, 1);
-    if (gapRatio > 1.5) score -= 10;
-  }
-
-  return clamp(score / 2, 0, 100);
+// Bundles metric availability, data-quality classification, and the verified
+// score for one stock. This is the single source of truth for both the
+// recommendation ranking and the transparency fields (scoreStatus,
+// dataCoveragePct, availableMetrics, missingMetrics, confidence) returned to
+// the client — they are derived from the same availability object, never
+// computed independently, so they cannot disagree with each other.
+const evaluateStockForGoal = (stock, goalProfile, historical) => {
+  const sectorFitScore = mapSectorPreference(goalProfile.goalType, goalProfile.yearsRemaining, stock.sector || stock.industry, goalProfile.selectedSector);
+  const availability = buildMetricAvailability(stock, historical);
+  const dataQuality = evaluateDataQuality(availability);
+  const goalFitScore = computeVerifiedScore(availability, sectorFitScore);
+  return { availability, sectorFitScore, goalFitScore, ...dataQuality };
 };
 
-const buildGoalFitComponents = (stock, goalProfile, metrics, riskScore) => ({
-  goalHorizonFit: Math.round(clamp(goalProfile.yearsRemaining <= 3 ? 100 - Math.abs(riskScore - 25) : 75 + Math.min(goalProfile.yearsRemaining, 15), 0, 100)),
-  riskFit: Math.round(clamp(100 - Math.abs(riskScore - (goalProfile.riskCapacity === 'CONSERVATIVE' ? 25 : goalProfile.riskCapacity === 'AGGRESSIVE' ? 70 : 50)), 0, 100)),
-  historicalStability: metrics.available ? Math.round(clamp(100 - metrics.volatility * 1.8 - Math.abs(metrics.maxDrawdown) * 0.45, 0, 100)) : null,
-  businessQuality: scoreQuality(stock),
-  growthPotential: scoreGrowth(stock, goalProfile.goalType, goalProfile.yearsRemaining),
-  valuation: scoreValuation(stock),
-  sectorOutlook: mapSectorPreference(goalProfile.goalType, goalProfile.yearsRemaining, stock.sector || stock.industry, goalProfile.selectedSector),
-  newsSentiment: null,
-});
+const riskCapacityCenter = (riskCapacity) => (riskCapacity === 'CONSERVATIVE' ? 25 : riskCapacity === 'AGGRESSIVE' ? 70 : 50);
+
+const buildGoalFitComponents = (evaluation, historical, riskScore, goalProfile) => {
+  const { availability, sectorFitScore } = evaluation;
+  return {
+    goalHorizonFit: Math.round(clamp(60 + Math.min(goalProfile.yearsRemaining, 15) * 2.5, 0, 100)),
+    riskFit: riskScore == null ? null : Math.round(clamp(100 - Math.abs(riskScore - riskCapacityCenter(goalProfile.riskCapacity)), 0, 100)),
+    historicalStability: historical.available ? Math.round(clamp(100 - historical.volatility * 1.8 - Math.abs(historical.maxDrawdown) * 0.45, 0, 100)) : null,
+    businessQuality: availability.quality.available ? Math.round(METRIC_SCORERS.quality(availability.quality.value)) : null,
+    growthPotential: availability.oneYearReturn.available ? Math.round(METRIC_SCORERS.oneYearReturn(availability.oneYearReturn.value)) : null,
+    valuation: availability.valuation.available ? Math.round(METRIC_SCORERS.valuation(availability.valuation.value)) : null,
+    sectorOutlook: sectorFitScore,
+    newsSentiment: null,
+  };
+};
 
 const getPlanningAnnualReturn = (goalType = 'custom', yearsRemaining = 5, riskCapacity = 'MODERATE') => {
   if (['retirement', 'passive_income', 'freedom', 'wealth_creation'].includes(goalType)) return 0.1;
@@ -471,7 +481,7 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
     const volatility = Number(stock.volatility ?? stock.annualVolatility ?? 0.18);
     const pe = Number(stock.pe ?? stock.PE ?? 0);
     const metrics = getResearchMetrics(stock, researchBySymbol);
-    const riskScore = getRiskScore(stock, metrics);
+    const riskScore = getRiskScore(metrics);
     if (goalProfile.investmentHorizon === 'SHORT_TERM' && volatility > 0.26) return false;
     if (goalProfile.investmentHorizon === 'SHORT_TERM' && pe > 35) return false;
     if (goalProfile.goalType === 'retirement' && sector === 'Green Energy' && volatility > 0.3) return false;
@@ -481,29 +491,54 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
     return Boolean(stock.ticker || stock.symbol) && sector !== 'Unknown';
   });
 
+  // STATUS_RANK enforces "complete candidates first, then partial" — stocks
+  // with insufficient verified data are ranked last within `scored` and are
+  // excluded from `rankable` a few lines down, so they are never surfaced as
+  // recommendations regardless of any sector match.
+  const STATUS_RANK = { COMPLETE: 0, PARTIAL: 1, INSUFFICIENT_DATA: 2 };
+  const rankComparator = (a, b) => {
+    const statusDiff = STATUS_RANK[a.scoreStatus] - STATUS_RANK[b.scoreStatus];
+    if (statusDiff !== 0) return statusDiff;
+    return (b.goalFitScore ?? -1) - (a.goalFitScore ?? -1);
+  };
+
   const scored = filtered.map((stock) => {
     const historical = getResearchMetrics(stock, researchBySymbol);
-    const riskScore = getRiskScore(stock, historical);
-    const goalFitScore = scoreGoalFit(stock, goalProfile, historical);
+    const riskScore = getRiskScore(historical);
+    const evaluation = evaluateStockForGoal(stock, goalProfile, historical);
     return {
       ...stock,
-      goalFitScore,
+      goalFitScore: evaluation.goalFitScore,
+      scoreStatus: evaluation.scoreStatus,
+      dataCoveragePct: evaluation.dataCoveragePct,
+      availableMetrics: evaluation.availableMetrics,
+      missingMetrics: evaluation.missingMetrics,
+      confidence: evaluation.confidence,
       riskScore,
       historical,
-      goalFitComponents: buildGoalFitComponents(stock, goalProfile, historical, riskScore),
-      riskFit: clamp(scoreVolatility(stock, goalProfile.goalType, goalProfile.yearsRemaining), 0, 100),
-      valuationFit: scoreValuation(stock),
-      sectorFit: mapSectorPreference(goalProfile.goalType, goalProfile.yearsRemaining, stock.sector || stock.industry, goalProfile.selectedSector),
+      goalFitComponents: buildGoalFitComponents(evaluation, historical, riskScore, goalProfile),
       rejectionReasons: [
         goalProfile.investmentHorizon === 'SHORT_TERM' && Number(stock.volatility ?? stock.annualVolatility ?? 0.18) > 0.26 ? 'Volatility is too high for the target timeline.' : null,
         goalProfile.goalType === 'house' && goalProfile.yearsRemaining <= 3 && (stock.sector || stock.industry) === 'IT' ? 'Short-term goal makes technology exposure less suitable.' : null,
       ].filter(Boolean),
     };
-  }).sort((a, b) => b.goalFitScore - a.goalFitScore);
+  }).sort(rankComparator);
 
+  // Stocks with zero verified metrics are never ranked as recommendations,
+  // no matter how well their sector matches the goal.
+  const rankable = scored.filter((stock) => stock.scoreStatus !== 'INSUFFICIENT_DATA');
+
+  // `rankable` is already sorted best-first (COMPLETE before PARTIAL, higher
+  // score first within each). The per-sector diversity pick below keeps the
+  // FIRST (best) stock seen for each sector, so a higher-quality candidate
+  // can never be silently displaced by a lower-status same-sector stock.
   const sectorCandidates = goalProfile.selectedSector
-    ? scored
-    : [...new Map(scored.map((stock) => [normalizeSector(stock.sector || stock.industry), stock])).values()];
+    ? rankable
+    : [...rankable.reduce((bySector, stock) => {
+        const key = normalizeSector(stock.sector || stock.industry);
+        if (!bySector.has(key)) bySector.set(key, stock);
+        return bySector;
+      }, new Map()).values()];
   const topCandidates = sectorCandidates.slice(0, goalProfile.selectedSector ? 5 : 20);
 
   const newsData = await Promise.all(
@@ -529,17 +564,23 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
     return {
       symbol,
       companyName: stock.name || stock.companyName || symbol,
-      goalFitScore: Math.round(stock.goalFitScore),
+      goalFitScore: stock.goalFitScore,
+      scoreStatus: stock.scoreStatus,
+      dataCoveragePct: stock.dataCoveragePct,
+      availableMetrics: stock.availableMetrics,
+      missingMetrics: stock.missingMetrics,
+      confidence: stock.confidence,
       riskScore: stock.riskScore,
       components: stock.goalFitComponents,
-      recommendation: stock.goalFitScore >= 78 ? 'CONSIDER' : stock.goalFitScore >= 65 ? 'WATCH' : 'AVOID',
+      recommendation: stock.goalFitScore == null ? 'INSUFFICIENT_DATA' : stock.goalFitScore >= 78 ? 'CONSIDER' : stock.goalFitScore >= 65 ? 'WATCH' : 'AVOID',
       allocationPercent,
       risk: getRiskLabel(stock.riskScore),
       whyRecommended: buildWhyRecommended(stock, goalProfile),
       reasons: [
-        stock.historical.available ? `${stock.historical.volatility}% measured annualized volatility and ${stock.historical.maxDrawdown}% maximum drawdown were included.` : 'Historical volatility and drawdown data are unavailable from the configured provider.',
+        stock.historical.available ? `${stock.historical.volatility}% measured annualized volatility and ${stock.historical.maxDrawdown}% maximum drawdown were included.` : 'Historical volatility and drawdown data are unavailable from the configured provider and were excluded from the score.',
         stock.pe ? `Available valuation input: P/E ${stock.pe}.` : 'Valuation data was unavailable and excluded from the score.',
-        `${stock.sector || 'Available'} sector fit and liquidity were evaluated for the selected goal horizon.`,
+        stock.roe ? `Available quality input: ROE ${stock.roe}.` : 'Quality (ROE) data was unavailable and excluded from the score.',
+        `Data coverage: ${stock.dataCoveragePct}% of verified metrics available (${stock.confidence} confidence). Missing: ${stock.missingMetrics.length ? stock.missingMetrics.join(', ') : 'none'}.`,
       ],
       history: stock.historical.available
         ? `The provider returned ${stock.historical.observations} daily observations. The one-year price change was ${stock.historical.oneYearReturn}%, annualized volatility was ${stock.historical.volatility}%, and maximum drawdown was ${stock.historical.maxDrawdown}%. These are historical measurements, not a forecast.`
@@ -609,9 +650,12 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
       const researchBySymbol = new Map(research.map((item) => [String(item.ticker).toUpperCase(), item]));
       recommendations = recommendations.map((item) => {
         const enriched = researchBySymbol.get(String(item.symbol).toUpperCase());
-        if (!enriched) return item;
+        // News/AI sentiment is never allowed to manufacture a score for a
+        // candidate that lacks verified financial metrics — only items that
+        // already carry a real goalFitScore (COMPLETE/PARTIAL) get blended.
+        if (!enriched || item.goalFitScore == null) return item;
 
-        const rawScore = Number(item.goalFitScore || 50);
+        const rawScore = item.goalFitScore;
         let sentimentScore = enriched.sentimentScore ?? 0;
         let sentimentConfidence = enriched.sentimentConfidence ?? 0.5;
         let sentimentDrivers = enriched.sentimentDrivers || [];
@@ -643,8 +687,13 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
         };
       });
 
-      // Re-sort after sentiment weighting
-      recommendations.sort((a, b) => (b.goalFitScore || 0) - (a.goalFitScore || 0));
+      // Re-sort after sentiment weighting, preserving complete-before-partial
+      // ranking; sentiment never overrides the data-quality tier.
+      recommendations.sort((a, b) => {
+        const statusDiff = STATUS_RANK[a.scoreStatus] - STATUS_RANK[b.scoreStatus];
+        if (statusDiff !== 0) return statusDiff;
+        return (b.goalFitScore ?? -1) - (a.goalFitScore ?? -1);
+      });
     } catch (error) {
       // The deterministic scoring and explanations remain usable when AI research is unavailable.
     }
@@ -674,6 +723,12 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
       recommendedApproach: goalProfile.recommendedApproach,
     },
     recommendations,
+    dataQualitySummary: {
+      screenedCount: scored.length,
+      completeCount: scored.filter((stock) => stock.scoreStatus === 'COMPLETE').length,
+      partialCount: scored.filter((stock) => stock.scoreStatus === 'PARTIAL').length,
+      insufficientDataExcludedCount: scored.filter((stock) => stock.scoreStatus === 'INSUFFICIENT_DATA').length,
+    },
     rebalanceAnalysis,
     projection: buildProjection(goalProfile),
     disclaimer: 'Investment returns are market-dependent and not guaranteed. This analysis is for informational purposes and should not be treated as personalized financial advice.',
