@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { registerUser, signinUser } from '../services/authApi';
 import '../styles/Login.css';
 
 const Signup = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { login, isAuthenticated, setLoading, clearError } = useAuth();
 
   const [formData, setFormData] = useState({
@@ -19,11 +20,15 @@ const Signup = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [apiError, setApiError] = useState(null);
 
+  const returnTo = location.state?.returnTo && location.state.returnTo.startsWith('/') && !location.state.returnTo.startsWith('//')
+    ? location.state.returnTo
+    : '/dashboard';
+
   useEffect(() => {
     if (isAuthenticated()) {
-      navigate('/dashboard');
+      navigate(returnTo, { replace: true });
     }
-  }, [isAuthenticated, navigate]);
+  }, [isAuthenticated, navigate, returnTo]);
 
   const validateEmail = useCallback((email) => {
     if (!email) return 'Email is required';
@@ -107,10 +112,11 @@ const Signup = () => {
       }
 
       setFormData({ email: '', username: '', password: '', confirmPassword: '' });
-      navigate('/dashboard', { replace: true });
+      navigate(returnTo, { replace: true });
     } catch (error) {
-      console.error('Signup error:', error);
-      const message = error?.message || 'An error occurred while creating your account. Please try again.';
+      const message = error?.statusCode === 409
+        ? 'An account with these details already exists.'
+        : 'Unable to create your account right now. Please check your details and try again.';
       setApiError(message);
     } finally {
       setIsSubmitting(false);
@@ -121,15 +127,32 @@ const Signup = () => {
   return (
     <div className="login-container">
       <div className="login-card">
+        <section className="login-brief" aria-label="GrowthSquad Research Terminal">
+          <div className="login-brand"><span className="login-brand-mark">GS</span><span><strong>GrowthSquad</strong><small>RESEARCH TERMINAL</small></span></div>
+          <div className="login-kicker">INDIAN EQUITIES | EVIDENCE FIRST</div>
+          <h1>Build a stronger research habit.</h1>
+          <p>Join the terminal for provider-backed market intelligence, planning tools and company research.</p>
+          <ul className="login-capabilities">
+            <li><strong>Verified market intelligence</strong><small>Provider-backed signals and coverage.</small></li>
+            <li><strong>Goal-based portfolio planning</strong><small>Deterministic allocation and glidepaths.</small></li>
+            <li><strong>Evidence-backed company research</strong><small>Traceable facts, promises and sources.</small></li>
+          </ul>
+        </section>
+        <section className="login-panel">
         <div className="login-header">
+          <div className="login-kicker">ACCOUNT ACCESS</div>
           <h1>Create your account</h1>
           <p>Sign up to access your dashboard</p>
         </div>
 
+        {location.state?.contextMessage && (
+          <div className="login-context" role="status">{location.state.contextMessage}</div>
+        )}
+
         {apiError && (
           <div className="alert alert-error" role="alert">
             <button className="alert-close" onClick={() => setApiError(null)} aria-label="Close alert">×</button>
-            <strong>Signup Error:</strong> {apiError}
+            <strong>Sign-up failed:</strong> {apiError}
           </div>
         )}
 
@@ -165,9 +188,10 @@ const Signup = () => {
 
         <div className="login-footer">
           <p>
-            Already have an account? <Link to="/login" className="link-primary">Sign in here</Link>
+            Already have an account? <Link to="/login" state={{ returnTo }} className="link-primary">Sign in here</Link>
           </p>
         </div>
+        </section>
       </div>
     </div>
   );

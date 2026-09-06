@@ -61,7 +61,6 @@ export const registerUser = async (credentials) => {
 
     return data.data;
   } catch (error) {
-    console.error('Register error:', error);
     throw error;
   }
 };
@@ -103,7 +102,6 @@ export const signinUser = async (credentials) => {
 
     return data.data;
   } catch (error) {
-    console.error('Signin error:', error);
     throw error;
   }
 };

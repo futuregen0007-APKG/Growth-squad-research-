@@ -1,5 +1,6 @@
-import { useState, useCallback } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useState, useCallback, useEffect } from 'react';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
+import { Activity, Eye, EyeOff, FileSearch, LockKeyhole, Target } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { signinUser } from '../services/authApi';
 import '../styles/Login.css';
@@ -23,9 +24,16 @@ import '../styles/Login.css';
  * - Tokens are stored after API response
  * - No password sent over unencrypted connection (HTTPS required)
  */
+const getSafeReturnTo = (location) => {
+  const candidate = location.state?.returnTo || new URLSearchParams(location.search).get('returnTo') || '/dashboard';
+  return candidate.startsWith('/') && !candidate.startsWith('//') && candidate !== '/login' ? candidate : '/dashboard';
+};
+
 const Login = () => {
   const navigate = useNavigate();
-  const { login, setLoading, clearError } = useAuth();
+  const location = useLocation();
+  const { login, setLoading, clearError, isAuthenticated } = useAuth();
+  const returnTo = getSafeReturnTo(location);
 
   /**
    * Form state
@@ -38,6 +46,11 @@ const Login = () => {
   const [errors, setErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [apiError, setApiError] = useState(null);
+  const [showPassword, setShowPassword] = useState(false);
+
+  useEffect(() => {
+    if (isAuthenticated()) navigate(returnTo, { replace: true });
+  }, [isAuthenticated, navigate, returnTo]);
 
   /**
    * ========== INPUT VALIDATION ==========
@@ -207,16 +220,15 @@ const Login = () => {
        * useEffect will handle this once isAuthenticated() is true
        * Or we can manually navigate
        */
-      navigate('/dashboard', { replace: true });
+      navigate(returnTo, { replace: true });
 
     } catch (error) {
       /**
        * Network error or other unexpected error
        */
-      console.error('Login error:', error);
-      setApiError(
-        'An error occurred during login. Please check your connection and try again.'
-      );
+      setApiError(error?.statusCode === 401
+        ? 'Invalid email or password. Please check your credentials and try again.'
+        : 'Unable to sign in right now. Please check your connection and try again.');
     } finally {
       /**
        * Clear loading state
@@ -232,11 +244,28 @@ const Login = () => {
   return (
     <div className="login-container">
       <div className="login-card">
-        {/* HEADER */}
-        <div className="login-header">
-          <h1>Welcome Back</h1>
-          <p>Sign in to your account</p>
-        </div>
+        <section className="login-brief" aria-label="GrowthSquad Research Terminal">
+          <div className="login-brand"><span className="login-brand-mark">GS</span><span><strong>GrowthSquad</strong><small>RESEARCH TERMINAL</small></span></div>
+          <div className="login-kicker">INDIAN EQUITIES · EVIDENCE FIRST</div>
+          <h1>Research with a sharper edge.</h1>
+          <p>Institutional-style market intelligence, planning tools and company research for disciplined decisions.</p>
+          <ul className="login-capabilities">
+            <li><Activity size={16} /> <span><strong>Verified market intelligence</strong><small>Provider-backed signals and coverage.</small></span></li>
+            <li><Target size={16} /> <span><strong>Goal-based portfolio planning</strong><small>Deterministic allocation and glidepaths.</small></span></li>
+            <li><FileSearch size={16} /> <span><strong>Evidence-backed company research</strong><small>Traceable facts, promises and sources.</small></span></li>
+          </ul>
+        </section>
+
+        <section className="login-panel">
+          <div className="login-header">
+            <div className="login-kicker">ACCOUNT ACCESS</div>
+            <h2>Welcome back</h2>
+            <p>Sign in to continue to your terminal.</p>
+          </div>
+
+          {location.state?.contextMessage && (
+            <div className="login-context" role="status">{location.state.contextMessage}</div>
+          )}
 
         {/* API ERROR MESSAGE */}
         {apiError && (
@@ -248,7 +277,7 @@ const Login = () => {
             >
               ×
             </button>
-            <strong>Login Error:</strong> {apiError}
+            <strong>Sign-in failed:</strong> {apiError}
           </div>
         )}
 
@@ -285,7 +314,7 @@ const Login = () => {
             </label>
             <input
               id="password"
-              type="password"
+              type={showPassword ? 'text' : 'password'}
               name="password"
               value={formData.password}
               onChange={handleChange}
@@ -293,17 +322,15 @@ const Login = () => {
               className={`form-input ${errors.password ? 'input-error' : ''}`}
               disabled={isSubmitting}
               autoComplete="current-password"
+              aria-invalid={Boolean(errors.password)}
+              aria-describedby={errors.password ? 'login-password-error' : undefined}
             />
+            <button type="button" className="password-toggle" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? 'Hide password' : 'Show password'}>
+              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
             {errors.password && (
-              <span className="form-error">{errors.password}</span>
+              <span id="login-password-error" className="form-error">{errors.password}</span>
             )}
-          </div>
-
-          {/* FORGOT PASSWORD LINK */}
-          <div className="form-links">
-            <Link to="/forgot-password" className="link-secondary">
-              Forgot password?
-            </Link>
           </div>
 
           {/* SUBMIT BUTTON */}
@@ -322,23 +349,20 @@ const Login = () => {
           </button>
         </form>
 
-        {/* SIGNUP LINK */}
         <div className="login-footer">
           <p>
             Don't have an account?{' '}
-            <Link to="/signup" className="link-primary">
+            <Link to="/signup" state={{ returnTo }} className="link-primary">
               Sign up here
             </Link>
           </p>
         </div>
 
-        {/* SECURITY INFO */}
         <div className="security-info">
-          <p className="text-muted">
-            🔒 Your password is encrypted and never stored in plain text.
-            We use industry-standard security practices to protect your data.
-          </p>
+          <LockKeyhole size={15} aria-hidden="true" />
+          <p>Your password is securely hashed. Authentication tokens are handled using protected application security controls.</p>
         </div>
+        </section>
       </div>
     </div>
   );

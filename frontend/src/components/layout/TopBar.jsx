@@ -4,6 +4,7 @@ import { Sparkles, Bell, Command, Globe, Settings, Menu } from "lucide-react";
 import { useLocation } from "react-router-dom";
 import BrandLogo from "../widgets/BrandLogo";
 import SearchBar from "../SearchBar";
+import { useAuth } from "@/hooks/useAuth";
 
 const PAGE_TITLES = {
   "/dashboard": { title: "Market Dashboard", subtitle: "Live overview of Indian equities" },
@@ -16,6 +17,7 @@ const PAGE_TITLES = {
 export default function TopBar({ onOpenCommand, onOpenMobileNav }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const { isAuthenticated } = useAuth();
   const [time, setTime] = useState(new Date());
 
   useEffect(() => {
@@ -70,6 +72,14 @@ export default function TopBar({ onOpenCommand, onOpenMobileNav }) {
 
       {/* Quick actions */}
       <div className="hidden md:flex items-center gap-1.5">
+        {!isAuthenticated() && (
+          <button
+            onClick={() => navigate("/login")}
+            className="flex items-center gap-1.5 bg-gs-gold text-gs-bg rounded-sm px-2.5 py-1.5 text-[12px] font-semibold hover:bg-gs-gold/90 transition-colors"
+          >
+            Sign In
+          </button>
+        )}
         <button
           onClick={() => navigate("/ai-research")}
           className="flex items-center gap-1.5 bg-gs-goldMuted border border-gs-gold/30 text-gs-gold rounded-sm px-2.5 py-1.5 text-[12px] hover:bg-gs-gold/20 transition-colors"

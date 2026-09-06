@@ -27,6 +27,8 @@ import BrandLogo from "../widgets/BrandLogo";
 import { SECTORS } from "@/data/mockData";
 import { cn } from "@/lib/utils";
 import { useMarketStatus } from "@/hooks/useMarketStatus";
+import { useAuth } from "@/hooks/useAuth";
+import { useNavigate } from "react-router-dom";
 
 const NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, badge: null },
@@ -57,6 +59,8 @@ const SECTOR_ICON = {
 
 export default function Sidebar() {
   const marketStatus = useMarketStatus();
+  const { isAuthenticated } = useAuth();
+  const navigate = useNavigate();
 
   return (
     <aside
@@ -157,7 +161,7 @@ export default function Sidebar() {
 
       {/* User block */}
       <div className="border-t border-gs-border p-4">
-        <div className="flex items-center gap-3">
+        {isAuthenticated() ? <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-sm bg-gradient-to-br from-gs-gold to-amber-700 grid place-items-center text-gs-bg font-display font-bold text-xs">
             AR
           </div>
@@ -167,7 +171,9 @@ export default function Sidebar() {
               Pro Analyst
             </div>
           </div>
-        </div>
+        </div> : <button onClick={() => navigate('/login')} className="w-full flex items-center justify-center gap-2 bg-gs-gold text-gs-bg rounded-sm px-3 py-2 text-xs font-semibold hover:bg-gs-gold/90">
+          Sign In
+        </button>}
       </div>
     </aside>
   );

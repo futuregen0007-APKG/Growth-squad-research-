@@ -1,5 +1,5 @@
 import "@/App.css";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from "react-router-dom";
 import { Toaster } from "sonner";
 
 import Layout from "@/components/layout/Layout";
@@ -23,6 +23,29 @@ import InvestmentBaskets from "@/pages/InvestmentBaskets";
 import SIPPlanner from "@/pages/SIPPlanner";
 import RetirementPlanner from "@/pages/RetirementPlanner";
 import NetWorth from "@/pages/NetWorth";
+import { useAuth } from "@/hooks/useAuth";
+
+const getSafeReturnTo = (location) => {
+  const path = `${location.pathname || ''}${location.search || ''}${location.hash || ''}`;
+  return path.startsWith('/') && !path.startsWith('//') && path !== '/login' ? path : '/dashboard';
+};
+
+const getProtectedContext = (pathname) => {
+  if (pathname.startsWith('/portfolio')) return 'Sign in to access your portfolio.';
+  if (pathname.startsWith('/watchlist')) return 'Sign in to access your watchlist.';
+  return 'Sign in to access this workspace.';
+};
+
+function ProtectedRoute() {
+  const { isAuthenticated } = useAuth();
+  const location = useLocation();
+
+  if (!isAuthenticated()) {
+    return <Navigate to="/login" replace state={{ returnTo: getSafeReturnTo(location), contextMessage: getProtectedContext(location.pathname) }} />;
+  }
+
+  return <Outlet />;
+}
 
 function App() {
   return (
@@ -33,17 +56,9 @@ function App() {
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
-          <Route path="/onboarding" element={<FinancialOnboarding />} />
           <Route element={<Layout />}>
             <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/watchlist" element={<Watchlist />} />
-            <Route path="/portfolio" element={<Portfolio />} />
             <Route path="/goals" element={<Goals />} />
-            <Route path="/baskets" element={<InvestmentBaskets />} />
-            <Route path="/sip-planner" element={<SIPPlanner />} />
-            <Route path="/retirement" element={<RetirementPlanner />} />
-            <Route path="/net-worth" element={<NetWorth />} />
-            <Route path="/settings" element={<Settings />} />
             <Route path="/news" element={<News />} />
             <Route path="/sectors" element={<SectorIntelligence />} />
             <Route path="/earnings" element={<EarningsIntelligence />} />
@@ -52,6 +67,18 @@ function App() {
             <Route path="/ai-research" element={<AIResearch />} />
             <Route path="/stock/:ticker" element={<StockDetail />} />
             <Route path="/search" element={<SearchResults />} />
+          </Route>
+          <Route element={<ProtectedRoute />}>
+            <Route path="/onboarding" element={<FinancialOnboarding />} />
+            <Route element={<Layout />}>
+              <Route path="/watchlist" element={<Watchlist />} />
+              <Route path="/portfolio" element={<Portfolio />} />
+              <Route path="/baskets" element={<InvestmentBaskets />} />
+              <Route path="/sip-planner" element={<SIPPlanner />} />
+              <Route path="/retirement" element={<RetirementPlanner />} />
+              <Route path="/net-worth" element={<NetWorth />} />
+              <Route path="/settings" element={<Settings />} />
+            </Route>
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
