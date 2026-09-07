@@ -1,223 +1,134 @@
-import { useEffect, useRef, useState } from "react";
-import { Sparkles, Send, Cpu, RefreshCcw, FileText, ChevronRight } from "lucide-react";
-import { Textarea } from "@/components/ui/textarea";
-import { AI_CHAT_SUGGESTIONS, AI_PROMPT_CHIPS } from "@/data/mockData";
-import { toast } from "sonner";
-import API_BASE from "@/config/api";
-import ReactMarkdown from "react-markdown";
-import remarkBreaks from "remark-breaks";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Sparkles, Cpu, AlertCircle } from "lucide-react";
+import { AI_PROMPT_CHIPS } from "@/data/mockData";
+import ChatSidebar from "@/components/chat/ChatSidebar";
+import ChatMessageBubble from "@/components/chat/ChatMessageBubble";
+import ChatComposer from "@/components/chat/ChatComposer";
+import { useChatStream } from "@/hooks/useChatStream";
+import * as chatApi from "@/services/chatApi";
 
-// react-markdown renders straight to React elements from a parsed markdown
-// AST — it never builds an HTML string or touches innerHTML, so literal
-// "<script>"/"<img onerror=...>" text in a model response is displayed as
-// plain text rather than executed. remarkBreaks preserves single line breaks
-// the way the AI's plain-text output uses them.
-const MARKDOWN_COMPONENTS = {
-  h1: ({ children }) => (
-    <h4 className="font-display font-bold text-gs-text mt-3 mb-1.5 text-[14px]">{children}</h4>
-  ),
-  h2: ({ children }) => (
-    <h4 className="font-display font-bold text-gs-text mt-3 mb-1.5 text-[14px]">{children}</h4>
-  ),
-  h3: ({ children }) => (
-    <h4 className="font-display font-bold text-gs-text mt-3 mb-1.5 text-[14px]">{children}</h4>
-  ),
-  h4: ({ children }) => (
-    <h4 className="font-display font-bold text-gs-text mt-3 mb-1.5 text-[14px]">{children}</h4>
-  ),
-  p: ({ children }) => (
-    <p className="text-[13px] text-gs-textMuted leading-relaxed">{children}</p>
-  ),
-  ul: ({ children }) => <ul className="space-y-0.5">{children}</ul>,
-  ol: ({ children }) => <ol className="space-y-0.5">{children}</ol>,
-  li: ({ children }) => (
-    <li className="text-[13px] text-gs-textMuted leading-relaxed ml-4 list-disc">{children}</li>
-  ),
-  strong: ({ children }) => <span className="font-semibold text-gs-text">{children}</span>,
-  em: ({ children }) => <span className="text-[11.5px] text-gs-textDim italic">{children}</span>,
-  code: ({ children }) => (
-    <code className="font-mono text-[11.5px] text-gs-text">{children}</code>
-  ),
-};
+const errorMessage = (error) => error?.response?.error || error?.message || 'Something went wrong.';
 
 export default function AIResearch() {
+  const [threads, setThreads] = useState([]);
+  const [threadsLoading, setThreadsLoading] = useState(true);
+  const [threadsError, setThreadsError] = useState(null);
+
+  const [activeThreadId, setActiveThreadId] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState("");
-  const [thinking, setThinking] = useState(false);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [messagesError, setMessagesError] = useState(null);
+  const [pendingUserText, setPendingUserText] = useState(null); // optimistic user bubble while sending
+  const [sendError, setSendError] = useState(null);
+
   const scrollRef = useRef(null);
+  const lastUserTextRef = useRef(null);
+
+  const loadThreads = useCallback(() => {
+    setThreadsLoading(true);
+    setThreadsError(null);
+    chatApi.listThreads()
+      .then((data) => setThreads(data || []))
+      .catch((error) => setThreadsError(errorMessage(error)))
+      .finally(() => setThreadsLoading(false));
+  }, []);
+
+  useEffect(() => { loadThreads(); }, [loadThreads]);
+
+  const loadThreadMessages = useCallback((threadId) => {
+    if (!threadId) { setMessages([]); return; }
+    setMessagesLoading(true);
+    setMessagesError(null);
+    chatApi.getThread(threadId)
+      .then((data) => setMessages(data.messages || []))
+      .catch((error) => setMessagesError(errorMessage(error)))
+      .finally(() => setMessagesLoading(false));
+  }, []);
+
+  const { send, stop, isStreaming, draft } = useChatStream({
+    threadId: activeThreadId,
+    onThreadCreated: (newThreadId) => {
+      setActiveThreadId(newThreadId);
+      loadThreads();
+    },
+  });
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages, thinking]);
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages, draft, pendingUserText]);
 
- const send = async (text) => {
-
-    const q = (text ?? input).trim();
-
-    if (!q) return;
-
-    setMessages((m) => [
-
-        ...m,
-
-        {
-            role: "user",
-            content: q,
-        },
-
-    ]);
-
-    setInput("");
-
-    setThinking(true);
-
-    try {
-
-        const backendUrl = API_BASE;
-        const res = await fetch(`${backendUrl.replace(/\/$/, '')}/api/chat`, {
-
-            method: "POST",
-
-            headers: {
-
-                "Content-Type": "application/json",
-
-            },
-
-            body: JSON.stringify({
-
-                message: q,
-
-            }),
-
-        });
-
-        const data = await res.json();
-
-        setMessages((m) => [
-
-            ...m,
-
-            {
-
-                role: "ai",
-
-                content: data.reply,
-
-            },
-
+  const handleSend = useCallback((text) => {
+    setSendError(null);
+    setPendingUserText(text);
+    lastUserTextRef.current = text;
+    send(text)
+      .then((result) => {
+        if (!result) return;
+        setPendingUserText(null);
+        setMessages((prev) => [
+          ...prev,
+          { role: 'user', content: text, createdAt: new Date().toISOString() },
+          { role: 'assistant', content: result.content || '', citations: result.citations || [], toolActivity: result.toolActivity || [], createdAt: new Date().toISOString(), status: result.aborted ? 'ABORTED' : 'COMPLETE' },
         ]);
+        loadThreads(); // title may have been set from the first message
+      })
+      .catch((error) => {
+        setPendingUserText(null);
+        setSendError(errorMessage(error));
+      });
+  }, [send, loadThreads]);
 
-    } catch {
+  const handleRegenerate = useCallback(() => {
+    if (!lastUserTextRef.current || isStreaming) return;
+    setMessages((prev) => prev.slice(0, -1)); // drop the last assistant answer; a fresh one is appended on completion
+    handleSend(lastUserTextRef.current);
+  }, [handleSend, isStreaming]);
 
-        setMessages((m) => [
-
-            ...m,
-
-            {
-
-                role: "ai",
-
-                content: "Something went wrong.",
-
-            },
-
-        ]);
-
-    }
-
-    setThinking(false);
-
-};
-  const reset = () => {
+  const handleNewChat = () => {
+    setActiveThreadId(null);
     setMessages([]);
-    toast.success("Conversation cleared", {
-      description: "Start a fresh research thread.",
-    });
+    setMessagesError(null);
+    setSendError(null);
   };
 
+  const handleSelectThread = (threadId) => {
+    if (isStreaming) return;
+    setActiveThreadId(threadId);
+    loadThreadMessages(threadId);
+  };
+
+  const handleRenameThread = (threadId, title) => {
+    chatApi.renameThread(threadId, title)
+      .then(() => loadThreads())
+      .catch((error) => setThreadsError(errorMessage(error)));
+  };
+
+  const handleDeleteThread = (threadId) => {
+    chatApi.deleteThread(threadId)
+      .then(() => {
+        if (threadId === activeThreadId) handleNewChat();
+        loadThreads();
+      })
+      .catch((error) => setThreadsError(errorMessage(error)));
+  };
+
+  const showEmptyState = !messages.length && !pendingUserText && !draft && !messagesLoading;
+
   return (
-    <div
-      className="grid grid-cols-12 gap-4 animate-fade-up lg:h-[calc(100vh-3.5rem-2.25rem-3rem)]"
-      data-testid="ai-research-page"
-    >
-      {/* Left rail — suggestions & threads */}
-      <aside className="col-span-12 lg:col-span-3 space-y-4 overflow-y-auto pr-1">
-        <div>
-          <div className="gs-label mb-2">Smart Prompts</div>
-          <div className="space-y-3">
-            {Object.entries(
-              AI_PROMPT_CHIPS.reduce((acc, c) => {
-                (acc[c.category] = acc[c.category] || []).push(c);
-                return acc;
-              }, {}),
-            ).map(([cat, chips]) => {
-              const accent =
-                chips[0].color === "gold"
-                  ? "text-gs-gold"
-                  : chips[0].color === "red"
-                    ? "text-gs-neg"
-                    : chips[0].color === "green"
-                      ? "text-gs-pos"
-                      : "text-gs-blue";
-              return (
-                <div key={cat}>
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <span className={`w-1 h-1 rounded-full ${accent.replace("text-", "bg-")}`} />
-                    <span className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-gs-textDim">
-                      {cat}
-                    </span>
-                  </div>
-                  <div className="space-y-1.5">
-                    {chips.map((chip, i) => (
-                      <button
-                        key={`${cat}-${i}`}
-                        onClick={() => send(chip.text)}
-                        className="w-full text-left gs-card p-2.5 hover:bg-gs-cardHover transition-colors group"
-                        data-testid={`prompt-chip-${cat.toLowerCase()}-${i}`}
-                      >
-                        <div className="flex items-start gap-2">
-                          <Sparkles className={`w-3 h-3 ${accent} mt-0.5 shrink-0 opacity-70 group-hover:opacity-100 transition-opacity`} />
-                          <span className="text-[12px] text-gs-textMuted group-hover:text-gs-text leading-snug">
-                            {chip.text}
-                          </span>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+    <div className="grid grid-cols-12 gap-4 animate-fade-up lg:h-[calc(100vh-3.5rem-2.25rem-3rem)]" data-testid="ai-research-page">
+      <ChatSidebar
+        chips={AI_PROMPT_CHIPS}
+        onSelectPrompt={handleSend}
+        threads={threads}
+        threadsLoading={threadsLoading}
+        threadsError={threadsError}
+        activeThreadId={activeThreadId}
+        onNewChat={handleNewChat}
+        onSelectThread={handleSelectThread}
+        onRenameThread={handleRenameThread}
+        onDeleteThread={handleDeleteThread}
+      />
 
-        <div>
-          <div className="gs-label mb-2">Recent Threads</div>
-          <div className="gs-card divide-y divide-gs-border">
-            {[
-              "Indian Railway capex theme",
-              "Defence order book mapping",
-              "HDFCBANK Q2 NIM analysis",
-              "Green Energy PLI II winners",
-            ].map((t) => (
-              <button
-                key={t}
-                className="w-full flex items-center justify-between p-3 hover:bg-gs-cardHover transition-colors"
-              >
-                <div className="flex items-center gap-2">
-                  <FileText className="w-3.5 h-3.5 text-gs-textDim" />
-                  <span className="text-[12px] text-gs-textMuted truncate">{t}</span>
-                </div>
-                <ChevronRight className="w-3.5 h-3.5 text-gs-textDim" />
-              </button>
-            ))}
-          </div>
-        </div>
-      </aside>
-
-      {/* Chat area */}
       <section className="col-span-12 lg:col-span-9 flex flex-col gs-card overflow-hidden">
         <div className="flex items-center justify-between px-5 py-3 border-b border-gs-border">
           <div className="flex items-center gap-2">
@@ -225,25 +136,21 @@ export default function AIResearch() {
               <Cpu className="w-3.5 h-3.5 text-gs-gold" />
             </div>
             <div className="leading-tight">
-              <div className="font-display font-bold text-gs-text text-sm">
-                GS Research Copilot
-              </div>
-              <div className="font-mono text-[10px] uppercase tracking-wider text-gs-textDim">
-                Indian Equities · v1.4
-              </div>
+              <div className="font-display font-bold text-gs-text text-sm">GS Copilot</div>
+              <div className="font-mono text-[10px] uppercase tracking-wider text-gs-textDim">Indian Equities Research Assistant</div>
             </div>
           </div>
-          <button
-            onClick={reset}
-            className="flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider text-gs-textDim hover:text-gs-text"
-            data-testid="reset-chat-btn"
-          >
-            <RefreshCcw className="w-3 h-3" /> Reset
-          </button>
         </div>
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto p-5 space-y-5 min-h-[400px]">
-          {messages.length === 0 && (
+          {messagesLoading && <div className="text-sm text-gs-textDim text-center py-8">Loading conversation…</div>}
+          {messagesError && (
+            <div className="flex items-start gap-2 text-sm text-gs-textMuted justify-center py-8">
+              <AlertCircle className="w-4 h-4 text-gs-neg flex-shrink-0 mt-0.5" /> {messagesError}
+            </div>
+          )}
+
+          {showEmptyState && (
             <div className="h-full grid place-items-center text-center">
               <div>
                 <div className="w-12 h-12 mx-auto grid place-items-center bg-gs-goldMuted border border-gs-gold/30 rounded-sm mb-3">
@@ -251,89 +158,43 @@ export default function AIResearch() {
                 </div>
                 <h3 className="font-display font-bold text-gs-text">Ask the GS Copilot</h3>
                 <p className="text-[13px] text-gs-textMuted max-w-md mt-1">
-                  Synthesise earnings, build sector theses, and compare metrics across Indian
-                  equities — like an in-house equity analyst.
+                  Synthesise earnings, build sector theses, and compare metrics across Indian equities — like an in-house equity analyst.
                 </p>
               </div>
             </div>
           )}
 
-          {messages.map((m, i) =>
-            m.role === "user" ? (
-              <div key={i} className="flex justify-end" data-testid={`msg-user-${i}`}>
-                <div className="bg-gs-card border border-gs-border rounded-sm px-4 py-2.5 max-w-[80%] text-[13px] text-gs-text">
-                  {m.content}
-                </div>
-              </div>
-            ) : (
-              <div key={i} className="flex gap-3" data-testid={`msg-ai-${i}`}>
-                <div className="w-7 h-7 shrink-0 grid place-items-center bg-gs-goldMuted border border-gs-gold/30 rounded-sm">
-                  <Sparkles className="w-3.5 h-3.5 text-gs-gold" />
-                </div>
-                <div className="flex-1 max-w-[90%] pt-0.5">
-                  <div className="font-mono text-[10px] uppercase tracking-wider text-gs-gold mb-1.5">
-                    GS Copilot
-                  </div>
-                  <div className="space-y-0.5">
-                    <ReactMarkdown remarkPlugins={[remarkBreaks]} components={MARKDOWN_COMPONENTS}>
-                      {m.content}
-                    </ReactMarkdown>
-                  </div>
-                </div>
-              </div>
-            ),
+          {messages.map((m, i) => (
+            <ChatMessageBubble
+              key={i}
+              message={m}
+              isLast={i === messages.length - 1 && m.role === 'assistant'}
+              onRegenerate={handleRegenerate}
+            />
+          ))}
+
+          {pendingUserText && <ChatMessageBubble message={{ role: 'user', content: pendingUserText }} />}
+
+          {draft && (
+            <ChatMessageBubble
+              message={{ role: 'assistant', content: draft.content, toolActivity: draft.toolActivity, streaming: true }}
+            />
+          )}
+          {draft && draft.status && !draft.content && (
+            <div className="flex items-center gap-2 pl-10 text-[12px] text-gs-textDim" aria-live="polite" data-testid="stream-status">
+              <span className="w-1.5 h-1.5 bg-gs-gold rounded-full animate-pulse-dot" />
+              {draft.status}
+            </div>
           )}
 
-          {thinking && (
-            <div className="flex gap-3" data-testid="ai-thinking">
-              <div className="w-7 h-7 shrink-0 grid place-items-center bg-gs-goldMuted border border-gs-gold/30 rounded-sm">
-                <Sparkles className="w-3.5 h-3.5 text-gs-gold animate-pulse" />
-              </div>
-              <div className="flex items-center gap-1 pt-1.5">
-                <span className="w-1.5 h-1.5 bg-gs-gold rounded-full animate-pulse-dot" />
-                <span
-                  className="w-1.5 h-1.5 bg-gs-gold rounded-full animate-pulse-dot"
-                  style={{ animationDelay: "0.2s" }}
-                />
-                <span
-                  className="w-1.5 h-1.5 bg-gs-gold rounded-full animate-pulse-dot"
-                  style={{ animationDelay: "0.4s" }}
-                />
-              </div>
+          {sendError && (
+            <div className="flex items-start gap-2 text-sm text-gs-textMuted">
+              <AlertCircle className="w-4 h-4 text-gs-neg flex-shrink-0 mt-0.5" /> {sendError}
             </div>
           )}
         </div>
 
-        {/* Input */}
-        <div className="border-t border-gs-border p-3">
-          <div className="flex gap-2 items-end">
-            <Textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-              placeholder="Ask about a stock, sector, earnings call or thesis…"
-              className="bg-gs-bg border-gs-border text-gs-text resize-none min-h-[44px] max-h-32 text-sm rounded-sm flex-1"
-              data-testid="ai-chat-input"
-            />
-            <button
-              onClick={() => send()}
-              disabled={!input.trim() || thinking}
-              className="bg-gs-gold text-gs-bg px-4 py-2.5 rounded-sm font-medium text-sm hover:bg-gs-gold/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
-              data-testid="ai-chat-send"
-            >
-              <Send className="w-3.5 h-3.5" /> Send
-            </button>
-          </div>
-          <div className="flex items-center justify-between mt-2 text-[10px] font-mono text-gs-textDim uppercase tracking-wider">
-            <span>Shift+Enter · new line</span>
-            <span>Connected to live backend</span>
-          </div>
-        </div>
+        <ChatComposer onSend={handleSend} onStop={stop} isStreaming={isStreaming} />
       </section>
     </div>
   );

@@ -64,13 +64,13 @@ function App() {
             <Route path="/earnings" element={<EarningsIntelligence />} />
             <Route path="/earnings/:symbol" element={<EarningsIntelligence />} />
             <Route path="/earnings-intelligence/:symbol" element={<EarningsIntelligence />} />
-            <Route path="/ai-research" element={<AIResearch />} />
             <Route path="/stock/:ticker" element={<StockDetail />} />
             <Route path="/search" element={<SearchResults />} />
           </Route>
           <Route element={<ProtectedRoute />}>
             <Route path="/onboarding" element={<FinancialOnboarding />} />
             <Route element={<Layout />}>
+              <Route path="/ai-research" element={<AIResearch />} />
               <Route path="/watchlist" element={<Watchlist />} />
               <Route path="/portfolio" element={<Portfolio />} />
               <Route path="/baskets" element={<InvestmentBaskets />} />

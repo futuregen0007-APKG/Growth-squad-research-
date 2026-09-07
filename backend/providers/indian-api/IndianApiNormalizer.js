@@ -61,18 +61,87 @@ const pick = (obj, ...keys) => {
 
 /**
  * Generic "detect the common fields, preserve the rest" normalizer for a
- * single entry within a loosely-documented nested array (financials,
- * corporate actions, news, etc.). Never fabricates a field it cannot find.
+ * single entry within a loosely-documented nested array (corporate
+ * actions, news, shareholding, etc.). Never fabricates a field it cannot
+ * find. Checks BOTH lower-camelCase and IndianAPI's actual PascalCase
+ * variants (confirmed empirically against a real /stock response —
+ * financial-statement entries use `FiscalYear`/`EndDate`/`StatementDate`,
+ * not `fiscalYear`/`date` — see normalizeFinancials below, which uses the
+ * dedicated financial-entry normalizer instead of this generic one for
+ * exactly that reason).
  */
 const normalizeGenericEntry = (entry) => {
   if (!entry || typeof entry !== 'object') return null;
-  const { date, period, fiscalYear, title, headline, url, link, sourceUrl, ...rest } = entry;
+  const date = pick(entry, 'date', 'Date', 'EndDate', 'StatementDate', 'fiscalYear', 'FiscalYear');
+  const period = pick(entry, 'period', 'Period', 'fiscalYear', 'FiscalYear');
+  const title = pick(entry, 'title', 'Title', 'headline', 'Headline');
+  const sourceUrl = pick(entry, 'url', 'Url', 'URL', 'link', 'Link', 'sourceUrl');
+  const { date: _d, Date: _D, EndDate: _ED, StatementDate: _SD, period: _p, Period: _P, fiscalYear: _fy, FiscalYear: _FY, title: _t, Title: _T, headline: _h, Headline: _H, url: _u, Url: _U, URL: _URL, link: _l, Link: _L, sourceUrl: _su, ...rest } = entry;
   return {
-    date: toDateIsoOrNull(date || fiscalYear),
-    period: period || fiscalYear || null,
-    title: title || headline || null,
-    sourceUrl: isUsableUrl(url || link || sourceUrl) ? (url || link || sourceUrl) : null,
+    date: toDateIsoOrNull(date),
+    period: period != null ? String(period) : null,
+    title: title || null,
+    sourceUrl: isUsableUrl(sourceUrl) ? sourceUrl : null,
     raw: rest && Object.keys(rest).length ? rest : entry,
+  };
+};
+
+// Statement-type codes IndianAPI's `stockFinancialMap` uses, confirmed
+// empirically: INC (income statement), BAL (balance sheet), CAS (cash
+// flow). Each maps to an array of { displayName, key, value, ... } line
+// items — the ACTUAL numbers (revenue, margins, PAT, etc.) live here, not
+// at the top level of a financials[] entry.
+const STATEMENT_TYPE_LABELS = { INC: 'Income Statement', BAL: 'Balance Sheet', CAS: 'Cash Flow' };
+
+/**
+ * normalizeFinancialEntry - a financials[] entry has its own confirmed
+ * shape (FiscalYear, EndDate, StatementDate, Type, fiscalPeriodNumber,
+ * stockFinancialMap: { INC: [...], BAL: [...], CAS: [...] }) — distinct
+ * enough from the generic corporate-actions/news/shareholding shape that
+ * it gets its own normalizer rather than forcing it through
+ * normalizeGenericEntry's guesswork.
+ */
+const normalizeFinancialEntry = (entry) => {
+  if (!entry || typeof entry !== 'object') return null;
+  const fiscalYear = pick(entry, 'FiscalYear', 'fiscalYear');
+  const endDate = pick(entry, 'EndDate', 'endDate');
+  const statementDate = pick(entry, 'StatementDate', 'statementDate');
+  const fiscalPeriodNumber = pick(entry, 'fiscalPeriodNumber', 'FiscalPeriodNumber');
+  const statementType = pick(entry, 'Type', 'type');
+
+  // Period label prefers the fiscal year IndianAPI reports directly (e.g.
+  // "2026") — callers needing "FY2026"/"Q2 FY2026" phrasing normalize this
+  // further; we never invent a quarter/year that wasn't actually present.
+  const period = fiscalYear != null ? String(fiscalYear) : null;
+
+  const lineItems = [];
+  const financialMap = pick(entry, 'stockFinancialMap', 'StockFinancialMap');
+  if (financialMap && typeof financialMap === 'object') {
+    for (const [statementCode, items] of Object.entries(financialMap)) {
+      if (!Array.isArray(items)) continue;
+      for (const item of items) {
+        const value = toNumberOrNull(item?.value);
+        if (value === null || !item?.displayName) continue; // never fabricate a missing line item
+        lineItems.push({
+          statementType: statementCode,
+          statementLabel: STATEMENT_TYPE_LABELS[statementCode] || statementCode,
+          displayName: item.displayName,
+          key: item.key || null,
+          value,
+        });
+      }
+    }
+  }
+
+  return {
+    date: toDateIsoOrNull(endDate || statementDate),
+    period,
+    fiscalPeriodNumber: fiscalPeriodNumber != null ? Number(fiscalPeriodNumber) : null,
+    statementType: statementType || null,
+    title: null,
+    sourceUrl: null, // IndianAPI's structured financials carry no per-record citable URL — never fabricate one
+    lineItems,
+    raw: entry,
   };
 };
 
@@ -90,22 +159,63 @@ const normalizeCompanyProfile = (raw) => {
   };
 };
 
+/**
+ * normalizeFinancials - uses normalizeFinancialEntry (empirically matched
+ * to IndianAPI's real FiscalYear/EndDate/StatementDate/stockFinancialMap
+ * shape), not the generic entry normalizer — the generic one's
+ * lower-camelCase field guesses (date/period/fiscalYear) never matched
+ * IndianAPI's actual PascalCase keys, so every financial record's period
+ * silently came back null. Confirmed against a real /stock response.
+ */
 const normalizeFinancials = (raw) => {
-  const financials = pick(raw, 'financials', 'stockFinancialMap');
+  const financials = pick(raw, 'financials', 'StockFinancials');
   if (!Array.isArray(financials)) return [];
   return financials
     .map((entry) => {
-      const normalized = normalizeGenericEntry(entry);
+      const normalized = normalizeFinancialEntry(entry);
       if (!normalized) return null;
       return { ...normalized, unitHint: NORMALIZED_UNIT_HINT };
     })
     .filter(Boolean);
 };
 
+// IndianAPI's keyMetrics is a fixed set of named categories (confirmed
+// empirically: mgmtEffectiveness, margins, financialstrength, valuation,
+// incomeStatement, growth, persharedata, priceandVolume), each itself an
+// object of metric-name -> value pairs. Splitting into one normalized
+// entry PER CATEGORY (rather than one opaque blob) is what lets
+// getCompanyFinancials/getCompanyResearch build an evidence excerpt that
+// actually names real numbers instead of an empty/untitled record.
+const KEY_METRIC_CATEGORY_LABELS = {
+  margins: 'Margins',
+  valuation: 'Valuation',
+  growth: 'Growth',
+  financialstrength: 'Financial Strength',
+  mgmtEffectiveness: 'Management Effectiveness',
+  incomeStatement: 'Income Statement Ratios',
+  persharedata: 'Per-Share Data',
+  priceandVolume: 'Price & Volume',
+};
+
 const normalizeKeyMetrics = (raw) => {
   const keyMetrics = raw?.keyMetrics;
-  if (!keyMetrics || typeof keyMetrics !== 'object') return {};
-  return { raw: keyMetrics };
+  if (!keyMetrics || typeof keyMetrics !== 'object') return { categories: [], raw: null };
+
+  const categories = Object.entries(keyMetrics)
+    .filter(([, value]) => value && typeof value === 'object')
+    .map(([categoryKey, categoryValue]) => {
+      const metrics = Object.entries(categoryValue)
+        .map(([name, value]) => ({ name, value: toNumberOrNull(value) }))
+        .filter((m) => m.value !== null);
+      return {
+        category: categoryKey,
+        label: KEY_METRIC_CATEGORY_LABELS[categoryKey] || categoryKey,
+        metrics,
+      };
+    })
+    .filter((c) => c.metrics.length);
+
+  return { categories, raw: keyMetrics };
 };
 
 const normalizeShareholding = (raw) => {

@@ -1,0 +1,33 @@
+import { evidenceForPrompt } from '../evidence.js';
+
+const EVIDENCE_DEPENDENT_INTENTS = new Set([
+  'LIVE_MARKET_DATA', 'COMPANY_RESEARCH', 'EARNINGS_INTELLIGENCE',
+  'DOCUMENT_RESEARCH', 'NEWS_RESEARCH', 'STOCK_COMPARISON', 'FOLLOW_UP',
+]);
+
+/**
+ * validateEvidence - deterministic pre-composition gate. Deduplicates
+ * evidence and, for intents that inherently require company-specific
+ * facts, flags plainly when nothing came back so composeAnswer is told to
+ * say "insufficient evidence" rather than improvise.
+ */
+export const validateEvidence = async (state) => {
+  if (state.errors.length) return {};
+  if (state.onEvent) state.onEvent({ type: 'status', message: 'Validating evidence…' });
+
+  const seen = new Set();
+  const deduped = state.evidence.filter((item) => {
+    if (!item?.evidenceId || seen.has(item.evidenceId)) return false;
+    seen.add(item.evidenceId);
+    return true;
+  });
+
+  const warnings = [];
+  if (EVIDENCE_DEPENDENT_INTENTS.has(state.intent) && state.toolPlan.length && !deduped.length) {
+    warnings.push('No verifiable evidence was found for this request — say so explicitly rather than guessing.');
+  }
+
+  return { evidence: evidenceForPrompt(deduped), warnings };
+};
+
+export default validateEvidence;

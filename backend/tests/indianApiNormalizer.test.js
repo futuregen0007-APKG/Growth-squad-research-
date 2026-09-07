@@ -48,12 +48,23 @@ test('normalizeCompanyResearch drops a news entry with no title or no usable URL
   assert.equal(result.news[0].title, 'Real article');
 });
 
-test('normalizeCompanyResearch preserves fiscal period/date and full raw payload on generic entries', () => {
+test('normalizeCompanyResearch preserves fiscal period/date and real financial line items (IndianAPI\'s confirmed FiscalYear/EndDate/stockFinancialMap shape)', () => {
+  // Field names here (FiscalYear/EndDate/StatementDate/stockFinancialMap
+  // with {displayName,key,value} line items) are the REAL shape confirmed
+  // against a live /stock response — not guessed. A prior version of the
+  // normalizer used lower-camelCase field-name guesses (period/date/
+  // fiscalYear) that never matched this real shape, so every financial
+  // record's period/line-items silently came back empty — this test
+  // guards against that regression.
   const result = normalizeCompanyResearch({
-    financials: [{ period: 'FY2025', date: '2025-05-15', revenue: 250000, someUnknownField: 'x' }],
+    financials: [{
+      FiscalYear: 2025, EndDate: '2025-05-15', StatementDate: '2025-05-20', Type: 'Annual', fiscalPeriodNumber: 4,
+      stockFinancialMap: { INC: [{ displayName: 'Total Revenue', key: 'TotalRevenue', value: '250000' }] },
+    }],
   });
-  assert.equal(result.financials[0].period, 'FY2025');
+  assert.equal(result.financials[0].period, '2025');
   assert.equal(result.financials[0].date, new Date('2025-05-15').toISOString());
-  assert.equal(result.financials[0].raw.revenue, 250000);
-  assert.equal(result.financials[0].raw.someUnknownField, 'x');
+  assert.equal(result.financials[0].lineItems[0].displayName, 'Total Revenue');
+  assert.equal(result.financials[0].lineItems[0].value, 250000);
+  assert.equal(result.financials[0].raw.FiscalYear, 2025);
 });

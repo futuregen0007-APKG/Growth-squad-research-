@@ -25,6 +25,7 @@ import earningsIntelligenceRoute from './routes/earningsIntelligence.js';
 import { seedHistoricalIntelligence } from './scripts/seedHistoricalIntelligence.js';
 import { createPortfolioRoutes } from './routes/portfolio.js';
 import { createWatchlistRoutes } from './routes/watchlist.js';
+import { startChatRateLimitCleanup } from './middleware/chatRateLimit.js';
 
 dotenv.config();
 
@@ -110,6 +111,7 @@ const startServer = async () => {
   await connectMongo();
   await seedHistoricalIntelligence().catch(err => logger.warn('Seed error: ' + err.message));
   await initializeRedis();
+  startChatRateLimitCleanup();
 
   let provider;
   if (marketProvider === 'angel-one' || marketProvider === 'angelone' || marketProvider === 'angel') {

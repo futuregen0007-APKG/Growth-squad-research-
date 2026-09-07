@@ -1,44 +1,38 @@
-import express from "express";
-import { HumanMessage } from "@langchain/core/messages";
-import { graph } from "../graph/graph.js";
+import express from 'express';
+import { authenticate } from '../middleware/auth.js';
+import { chatRateLimit } from '../middleware/chatRateLimit.js';
+import {
+  listUserThreads, createUserThread, getUserThread, renameUserThread, deleteUserThread, sendMessage, legacySendMessage,
+} from '../controllers/ChatController.js';
 
 const router = express.Router();
 
-router.post("/", async (req, res) => {
+/**
+ * Backward-compatible legacy contract: POST /api/chat { message } -> { reply }.
+ * Unauthenticated, no thread/memory — preserved for any existing consumer
+ * that hasn't migrated to the threaded API below. New frontend code should
+ * use the threaded endpoints instead.
+ */
+router.post('/', legacySendMessage);
 
-    try {
+// Everything below requires authentication — GS Copilot's thread history,
+// watchlist/portfolio tools, and long-term memory are all per-user. A
+// dedicated sub-router (rather than router.use('/threads', authenticate))
+// ensures every path here — including the /messages convenience route,
+// which is NOT under /threads — is actually gated.
+const authed = express.Router();
+authed.use(authenticate);
 
-        const { message } = req.body;
+authed.get('/threads', listUserThreads);
+authed.post('/threads', createUserThread);
+authed.get('/threads/:threadId', getUserThread);
+authed.patch('/threads/:threadId', renameUserThread);
+authed.delete('/threads/:threadId', deleteUserThread);
 
-        const result = await graph.invoke({
+authed.post('/threads/:threadId/messages', chatRateLimit, sendMessage);
+// Convenience: start a new thread and send the first message in one call.
+authed.post('/messages', chatRateLimit, sendMessage);
 
-            messages: [
-                new HumanMessage(message)
-            ]
-
-        });
-
-        const aiMessage =
-            result.messages[result.messages.length - 1];
-
-        res.json({
-
-            reply: aiMessage.content
-
-        });
-
-    } catch (err) {
-
-        console.log(err);
-
-        res.status(500).json({
-
-            error: err.message
-
-        });
-
-    }
-
-});
+router.use('/', authed);
 
 export default router;

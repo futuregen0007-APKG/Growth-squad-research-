@@ -76,8 +76,33 @@ export const createLiveMarketDataProvider = (providerName = process.env.MARKET_D
   }
 };
 
+let liveMarketDataProviderInstance = null;
+
+/**
+ * getLiveMarketDataProvider - singleton accessor for GS Copilot's tool
+ * layer (backend/graph/tools/liveQuoteTool.js) and any other code that
+ * needs live-market access outside server.js's own request pipeline.
+ *
+ * NOTE: server.js constructs its OWN AngelOneProvider instance inline
+ * inside startServer() (with additional legacy-provider validation logic
+ * for FMP/TwelveData/Finnhub) — deliberately left untouched per "do not
+ * replace working Angel One". This getter therefore creates a SECOND
+ * AngelOneProvider instance the first time a tool needs one, which will
+ * do its own separate login/scrip-master fetch the first time it's used.
+ * This is a known, accepted duplication, not a bug — merging them would
+ * require restructuring server.js's provider selection, which carries the
+ * exact risk that constraint exists to prevent.
+ */
+export const getLiveMarketDataProvider = () => {
+  if (!liveMarketDataProviderInstance) {
+    liveMarketDataProviderInstance = createLiveMarketDataProvider();
+  }
+  return liveMarketDataProviderInstance;
+};
+
 export default {
   createCompanyResearchProvider,
   getCompanyResearchProvider,
   createLiveMarketDataProvider,
+  getLiveMarketDataProvider,
 };

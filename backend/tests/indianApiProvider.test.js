@@ -16,10 +16,18 @@ const SAMPLE_STOCK_RESPONSE = {
   percentChange: -0.5,
   yearHigh: 4400,
   yearLow: 3400,
+  // Field names here are IndianAPI's REAL confirmed shape (verified
+  // against a live /stock response — see IndianApiNormalizer.js's header
+  // comment), not a guess: FiscalYear/EndDate/StatementDate/Type/
+  // fiscalPeriodNumber, with the actual numbers nested in
+  // stockFinancialMap.{INC,BAL,CAS}[] as {displayName,key,value}.
   financials: [
-    { period: 'FY2025', date: '2025-05-15', revenue: 250000, netProfit: 45000 },
+    {
+      FiscalYear: 2025, EndDate: '2025-05-15', StatementDate: '2025-05-20', Type: 'Annual', fiscalPeriodNumber: 4,
+      stockFinancialMap: { INC: [{ displayName: 'Total Revenue', key: 'TotalRevenue', value: '250000' }, { displayName: 'Net Income', key: 'NetIncome', value: '45000' }] },
+    },
   ],
-  keyMetrics: { peRatio: 28.4 },
+  keyMetrics: { valuation: { peRatio: 28.4 } },
   shareholding: [{ period: 'Q1FY26', date: '2025-07-10', promoter: 72.3 }],
   stockCorporateActionData: [{ date: '2025-06-01', title: 'Final Dividend', amount: 28 }],
   recentNews: [
@@ -80,8 +88,8 @@ test('IndianApiProvider financials/shareholding/corporateActions are normalized 
 
   const financials = await provider.getFinancials('ZZTESTCO');
   assert.equal(financials.data.length, 1);
-  assert.equal(financials.data[0].period, 'FY2025');
-  assert.equal(financials.data[0].raw.revenue, 250000);
+  assert.equal(financials.data[0].period, '2025');
+  assert.equal(financials.data[0].lineItems.find((li) => li.displayName === 'Total Revenue').value, 250000);
 
   const shareholding = await provider.getShareholding('ZZTESTCO');
   assert.equal(shareholding.data.length, 1);

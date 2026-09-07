@@ -891,16 +891,32 @@ export function getCompanyResearch(stock) {
 // =====================================================================
 // AI Research Assistant — categorized prompt chips
 // =====================================================================
+/**
+ * AI_PROMPT_CHIPS - GS Copilot Smart Prompt suggestions.
+ *
+ * Audited against what GS Copilot's tools can actually answer (see
+ * backend/graph/tools/toolRegistry.js and graph/nodes/classifyIntent.js's
+ * isUnsupportedSectorDiscovery): every tool takes an explicit, real,
+ * named company symbol (or an explicit list of 2+ for comparison) — there
+ * is no sector-universe/ranking/discovery tool or dataset. A prompt like
+ * "Best defence companies by order book" or "Top 3 stocks for FY27 capex
+ * theme" asks GS Copilot to rank/discover across an open-ended set of
+ * companies with no real data source for that, which previously let the
+ * model either fail with "no verifiable evidence" or risk answering from
+ * its own unsupported training knowledge. Removed those and any other
+ * sector-wide/thematic chip with no named company; replaced with
+ * per-company or explicit-comparison prompts that map onto a real,
+ * data-backed tool (getCompanyResearch/getCompanyFinancials/compareStocks/
+ * getEarningsTimeline/getCompanyNews).
+ */
 export const AI_PROMPT_CHIPS = [
   { category: "Earnings", text: "Analyse HAL Q2 FY26 results", color: "gold" },
   { category: "Earnings", text: "Summarise Tata Motors latest earnings", color: "gold" },
-  { category: "Compare", text: "Compare BEL vs HAL on order book", color: "blue" },
+  { category: "Compare", text: "Compare BEL vs HAL on margins and valuation", color: "blue" },
   { category: "Compare", text: "HDFCBANK vs ICICIBANK margin trends", color: "blue" },
-  { category: "Sector", text: "Best defence companies by order book", color: "green" },
-  { category: "Sector", text: "Build a thesis on Indian railway capex theme", color: "green" },
-  { category: "Risk", text: "Risks in Indian railway sector", color: "red" },
-  { category: "Risk", text: "NIM compression risk for private banks", color: "red" },
-  { category: "Thesis", text: "Why is Defence sector re-rating?", color: "gold" },
-  { category: "Thesis", text: "Top 3 stocks for FY27 capex theme", color: "blue" },
+  { category: "Company", text: "What are the key risks for IRCTC?", color: "red" },
+  { category: "Company", text: "TCS company profile and key metrics", color: "green" },
+  { category: "Research", text: "NEWGEN management promises and outcomes", color: "gold" },
+  { category: "Research", text: "RVNL recent news and developments", color: "blue" },
 ];
 
