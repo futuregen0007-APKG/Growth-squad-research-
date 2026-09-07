@@ -525,17 +525,17 @@ export default function Dashboard() {
             {newsState.loading ? <div className="p-4 text-sm text-gs-textMuted">Loading news...</div>
               : newsState.error ? <div className="p-4"><SectionError message={newsState.error === 'News request failed.' ? 'News temporarily unavailable.' : newsState.error} /></div>
               : news.length ? news.slice(0, 6).map((n) => (
-              <a key={`${n.symbol}-${n.url}`} href={n.url} target="_blank" rel="noreferrer" className="block p-4 hover:bg-gs-cardHover transition-colors">
+              <a key={n.url} href={n.url} target="_blank" rel="noreferrer" className="block p-4 hover:bg-gs-cardHover transition-colors">
                 <div className="flex items-center justify-between mb-1.5">
                   <span className="font-mono text-[10px] uppercase tracking-wider text-gs-textDim">
                     {n.source || 'Unknown source'}
                   </span>
-                  <span className="font-mono text-[10px] text-gs-textDim">{n.publishedAt ? new Date(n.publishedAt).toLocaleDateString() : 'Date unavailable'}</span>
+                  <span className="font-mono text-[10px] text-gs-textDim">{n.publishedAt ? new Date(n.publishedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium' }) : 'Date unavailable'}</span>
                 </div>
                 <p className="text-[13px] text-gs-text leading-snug">{n.title}</p>
-                {n.symbol && (
+                {n.symbols?.length > 0 && (
                   <div className="flex gap-1.5 mt-2">
-                    {[n.symbol].map((t) => (
+                    {n.symbols.slice(0, 3).map((t) => (
                       <span
                         key={t}
                         className="font-mono text-[10px] tracking-wider px-1.5 py-0.5 bg-gs-panel border border-gs-border rounded-sm text-gs-textMuted"

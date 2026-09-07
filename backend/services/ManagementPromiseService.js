@@ -15,10 +15,13 @@ import {
 } from './ExecutionScoreService.js';
 import openai from './openaiClient.js';
 import { logger } from '../utils/logger.js';
+import { periodsMatch, normalizeFinancialValue, financialUnitFamily } from '../utils/financialNormalization.js';
+import { searchActualOutcomesFromIndianApi } from './OutcomeEvidenceService.js';
 
 const isDbConnected = () => mongoose.connection?.readyState === 1;
 
 const researchJobs = new Map();
+const REAL_RESEARCH_FILTER = { dataOrigin: 'REAL_RESEARCH' };
 
 const companyFor = (symbol) => {
   const normalized = String(symbol || '').toUpperCase().trim();
@@ -28,6 +31,15 @@ const companyFor = (symbol) => {
 const toDate = (value) => {
   const parsed = value ? new Date(value) : null;
   return parsed && !Number.isNaN(parsed.getTime()) ? parsed : null;
+};
+
+const isUsableUrl = (value) => {
+  try {
+    const url = new URL(String(value || ''));
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
 };
 
 // Promise importance weights as defined in specifications
@@ -40,11 +52,17 @@ export const IMPORTANCE_WEIGHTS = {
 // Status scores for deterministic reliability calculation
 export const STATUS_SCORE = {
   FULFILLED: 1.0,
+  EXCEEDED: 1.0,
   PARTIALLY_FULFILLED: 0.6,
   MISSED: 0.0,
   PENDING: null,
   INSUFFICIENT_EVIDENCE: null
 };
+
+// periodsMatch / normalizeFinancialValue moved to utils/financialNormalization.js
+// (shared with OutcomeEvidenceService's deterministic IndianAPI matching) —
+// re-exported here so existing imports (including tests) keep working.
+export { periodsMatch, normalizeFinancialValue };
 
 /**
  * Deterministic Promise Verification Algorithm
@@ -53,10 +71,13 @@ export const STATUS_SCORE = {
 export const calculatePromiseStatus = ({ 
   targetValue, 
   actualValue, 
+  operator = null,
   direction = null, 
   metric = '', 
   metricType = '',
-  targetPeriod = '' 
+  targetPeriod = '',
+  targetUnit = 'INR_CRORE',
+  actualUnit = targetUnit,
 }) => {
   const normMetric = String(metric || metricType || '').toUpperCase().trim();
   
@@ -74,6 +95,7 @@ export const calculatePromiseStatus = ({
   if (actualValue === null || actualValue === undefined || !Number.isFinite(Number(actualValue))) {
     // Check if targetPeriod is in future / ongoing
     const isFutureOrOngoing = targetPeriod && (
+      targetPeriod === 'GOING_FORWARD' ||
       targetPeriod.includes('2026') || 
       targetPeriod.includes('2027') || 
       targetPeriod.includes('FY26') || 
@@ -103,19 +125,57 @@ export const calculatePromiseStatus = ({
     };
   }
 
-  const target = Number(targetValue);
-  const actual = Number(actualValue);
+  const normalizedTarget = normalizeFinancialValue(targetValue, targetUnit);
+  const normalizedActual = normalizeFinancialValue(actualValue, actualUnit);
+  if (normalizedTarget === null || normalizedActual === null
+    || financialUnitFamily(targetUnit) !== financialUnitFamily(actualUnit)) {
+    return { achievementPercentage: null, status: 'INSUFFICIENT_EVIDENCE', calculationExplanation: 'Cannot calculate achievement: financial values could not be normalized.' };
+  }
+
+  const target = normalizedTarget;
+  const actual = normalizedActual;
   let achievementPercentage;
   let calculationExplanation;
+  const comparisonDirection = operator === 'RANGE' ? 'TARGET_RANGE' : resolvedDirection;
+
+  if (operator === 'GTE') {
+    achievementPercentage = Number(((actual / target) * 100).toFixed(2));
+    calculationExplanation = `Target: ${target}, Actual: ${actual}. Operator: GTE. Achievement = (${actual} / ${target}) x 100 = ${achievementPercentage}%.`;
+    return {
+      achievementPercentage,
+      status: actual >= target ? 'FULFILLED' : 'MISSED',
+      calculationExplanation
+    };
+  }
+
+  if (operator === 'LTE') {
+    achievementPercentage = actual === 0 ? 100 : Number(((target / actual) * 100).toFixed(2));
+    calculationExplanation = `Target: ${target}, Actual: ${actual}. Operator: LTE.`;
+    return {
+      achievementPercentage,
+      status: actual <= target ? 'FULFILLED' : 'MISSED',
+      calculationExplanation
+    };
+  }
+
+  if (operator === 'EQ') {
+    achievementPercentage = target === actual ? 100 : Number(((actual / target) * 100).toFixed(2));
+    calculationExplanation = `Target: ${target}, Actual: ${actual}. Operator: EQ.`;
+    return {
+      achievementPercentage,
+      status: actual === target ? 'FULFILLED' : 'MISSED',
+      calculationExplanation
+    };
+  }
 
   // Deterministic calculation based on direction
-  if (resolvedDirection === 'HIGHER_IS_BETTER') {
+  if (comparisonDirection === 'HIGHER_IS_BETTER') {
     achievementPercentage = Number(((actual / target) * 100).toFixed(2));
     calculationExplanation = `Target: ${target}, Actual: ${actual}. Direction: HIGHER_IS_BETTER. Achievement = (${actual} / ${target}) × 100 = ${achievementPercentage}%.`;
-  } else if (resolvedDirection === 'LOWER_IS_BETTER') {
+  } else if (comparisonDirection === 'LOWER_IS_BETTER') {
     achievementPercentage = Number(((target / actual) * 100).toFixed(2));
     calculationExplanation = `Target: ${target}, Actual: ${actual}. Direction: lower-is-better comparison. Achievement = (${target} / ${actual}) × 100 = ${achievementPercentage}%.`;
-  } else if (resolvedDirection === 'TARGET_RANGE') {
+  } else if (comparisonDirection === 'TARGET_RANGE') {
     achievementPercentage = Number(((actual / target) * 100).toFixed(2));
     calculationExplanation = `Target: ${target}, Actual: ${actual}. Direction: TARGET_RANGE. Achievement = ${achievementPercentage}%.`;
   } else {
@@ -125,7 +185,9 @@ export const calculatePromiseStatus = ({
 
   // Deterministic status thresholds
   let status;
-  if (achievementPercentage >= 90) {
+  if (achievementPercentage >= 110 && comparisonDirection === 'HIGHER_IS_BETTER') {
+    status = 'EXCEEDED';
+  } else if (achievementPercentage >= 90) {
     status = 'FULFILLED';
   } else if (achievementPercentage >= 60) {
     status = 'PARTIALLY_FULFILLED';
@@ -153,6 +215,7 @@ export const recencyWeight = (date) => {
  * Requires at least 3 verified promises
  */
 export const calculateReliability = (promises = []) => {
+  promises = promises.filter((promise) => promise.dataOrigin !== 'SEEDED_DEMO');
   const totalPromises = promises.length;
   const pending = promises.filter((p) => {
     const status = p.verification?.status || p.status;
@@ -161,20 +224,24 @@ export const calculateReliability = (promises = []) => {
 
   const historical = promises.filter((promise) => {
     const status = promise.verification?.status || promise.status;
-    return status === 'FULFILLED' || status === 'PARTIALLY_FULFILLED' || status === 'MISSED';
+    const confidence = promise.verification?.confidence ?? promise.confidenceScore ?? promise.confidence;
+    if (confidence != null && Number(confidence) < 0.8) return false;
+    return status === 'FULFILLED' || status === 'EXCEEDED' || status === 'PARTIALLY_FULFILLED' || status === 'MISSED';
   });
 
   const fulfilled = historical.filter(p => (p.verification?.status || p.status) === 'FULFILLED').length;
+  const exceeded = historical.filter(p => (p.verification?.status || p.status) === 'EXCEEDED').length;
   const partiallyFulfilled = historical.filter(p => (p.verification?.status || p.status) === 'PARTIALLY_FULFILLED').length;
   const missed = historical.filter(p => (p.verification?.status || p.status) === 'MISSED').length;
 
   // Requirement: at least 3 historical promises have verified outcomes
   if (historical.length < 3) {
-    return { 
+    return {
       score: null, 
       totalPromises, 
       verifiedPromises: historical.length,
       fulfilled, 
+      exceeded,
       partiallyFulfilled, 
       missed, 
       pending, 
@@ -236,6 +303,7 @@ export const calculateReliability = (promises = []) => {
     totalPromises,
     verifiedPromises: historical.length,
     fulfilled,
+    exceeded,
     partiallyFulfilled,
     missed,
     pending,
@@ -276,6 +344,7 @@ const historicalFactsPrompt = (profile, articles) => {
     sourceUrl: a.sourceUrl,
     sourceDate: a.sourceDate,
     documentType: a.documentType,
+    page: a.page ?? a.pageNumber ?? null,
     authorityLevel: a.authorityLevel,
     excerpt: a.excerpt
   })));
@@ -399,7 +468,8 @@ CRITICAL EXTRACTION RULES:
 3. Every promise MUST contain an objectively measurable numeric target (e.g. "Order book to reach ₹1,000 Cr", "Revenue growth of 20%", "EBITDA margin of 25%").
 4. Extract only statements from the provided sources. Do NOT invent, assume, or hallucinate targets.
 5. If targetValue or targetPeriod cannot be determined with certainty, DO NOT extract it.
-6. Target years to focus on: FY2021, FY2022, FY2023, FY2024, FY2025, FY2026.
+6. Use "GOING_FORWARD" when management gives a forward-looking period without a specific deadline; do not invent a deadline.
+7. Target years to focus on: FY2021, FY2022, FY2023, FY2024, FY2025, FY2026.
 
 METRIC ENUMS (must be one of):
 - REVENUE
@@ -419,6 +489,7 @@ METRIC ENUMS (must be one of):
 - MARKET_SHARE
 - CUSTOMER_COUNT
 - EMPLOYEE_COUNT
+- EMPLOYEE_PERCENTAGE
 - OTHER_QUANTIFIABLE
 
 TARGET UNITS:
@@ -434,6 +505,12 @@ DIRECTION:
 - HIGHER_IS_BETTER
 - LOWER_IS_BETTER
 - TARGET_RANGE
+
+OPERATOR:
+- GTE
+- LTE
+- EQ
+- RANGE
 
 IMPORTANCE:
 - HIGH
@@ -451,10 +528,12 @@ Return strictly valid JSON:
       "targetPeriod": "FY2025",
       "promiseDate": "2023-05-15T00:00:00.000Z",
       "direction": "HIGHER_IS_BETTER|LOWER_IS_BETTER|TARGET_RANGE",
+      "operator": "GTE|LTE|EQ|RANGE",
       "importance": "HIGH|MEDIUM|LOW",
       "sourceUrl": "https://...",
       "sourceDate": "2023-05-15T00:00:00.000Z",
       "sourceDocument": "Investor Presentation FY24",
+      "page": 13,
       "sourceExcerpt": "Exact excerpt showing guidance statement and numbers",
       "sourceAuthority": 0.95
     }
@@ -497,6 +576,103 @@ export const extractPromisesFromSources = async (profile, documents = []) => {
 };
 
 /**
+ * Search for actual outcomes from official company documents
+ */
+const searchActualOutcomesFromDocuments = async (profile, promise) => {
+  const { collectDocuments } = await import('../research/DocumentResearchService.js');
+  const targetPeriod = promise.targetPeriod;
+  const metric = promise.metric;
+  const promiseDate = promise.promiseDate || new Date();
+
+  logger.info(`[Research] Stage B (Documents): Searching official documents for ${profile.symbol} metric ${metric} in ${targetPeriod}`);
+
+  try {
+    // Collect official documents (Tier 1-2: IR, Exchange Filings)
+    const documentResult = await collectDocuments(profile.symbol);
+    const documents = documentResult.documents || [];
+
+    // Filter documents after promise date
+    const laterDocuments = documents.filter(doc => {
+      const docDate = new Date(doc.sourceDate || doc.publishedAt || doc.retrievedAt);
+      return docDate >= new Date(promiseDate);
+    });
+
+    if (!laterDocuments.length) {
+      logger.info(`[Research] No official documents found after promise date for ${profile.symbol}`);
+      return null;
+    }
+
+    logger.info(`[Research] Found ${laterDocuments.length} official documents after promise date for ${profile.symbol}`);
+
+    // Prepare document text for LLM
+    const documentsPayload = JSON.stringify(laterDocuments.slice(0, 15).map(doc => ({
+      title: doc.title,
+      sourceUrl: doc.url || doc.canonicalUrl,
+      sourceDate: doc.sourceDate || doc.publishedAt,
+      documentType: doc.sourceType,
+      page: doc.page ?? doc.pageNumber ?? null,
+      excerpt: doc.text?.substring(0, 3000) || doc.excerpt?.substring(0, 3000) || ''
+    })));
+
+    const outcomePrompt = `You are evaluating whether ${profile.companyName} (${profile.symbol}) reported actual results for metric ${metric} in official company documents.
+
+Management Guidance:
+- Target: ${promise.targetValue} ${promise.targetUnit}
+- Target Period: ${targetPeriod}
+- Metric: ${metric}
+- Statement: "${promise.exactManagementStatement || promise.statement || promise.promise?.statement}"
+
+Official Documents to examine:
+${documentsPayload}
+
+INSTRUCTIONS:
+1. Search the documents for the ACTUAL REPORTED value for ${metric} (e.g. actual employee percentage, actual revenue, actual order book).
+2. Look for statements like "we achieved", "actual was", "resulted in", "stood at", "reported".
+3. If the actual reported number is found, return actualValue as a number.
+4. If not found in the provided documents, set actualValue to null.
+5. Return strictly valid JSON:
+{
+  "actualValue": number or null,
+  "actualUnit": "${promise.targetUnit}",
+  "actualPeriod": "${targetPeriod}",
+  "outcomeStatement": "Exact quote stating the actual achieved result",
+  "outcomeSource": "Document title",
+  "outcomeSourceUrl": "https://...",
+  "outcomeSourceDate": "ISO date string",
+  "page": number or null
+}`;
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: outcomePrompt }],
+      temperature: 0.1,
+      response_format: { type: 'json_object' }
+    });
+
+    const parsed = JSON.parse(response.choices?.[0]?.message?.content || '{}');
+    const sourceUrls = new Set(laterDocuments.map((doc) => doc.url || doc.canonicalUrl).filter(Boolean));
+    const hasNumericOutcome = parsed.actualValue !== null
+      && parsed.actualValue !== undefined
+      && Number.isFinite(Number(parsed.actualValue));
+    const hasMatchingPeriod = periodsMatch(targetPeriod, parsed.actualPeriod);
+    const hasCompatibleUnit = String(parsed.actualUnit || '').toUpperCase() === String(promise.targetUnit || '').toUpperCase();
+    const hasEvidence = typeof parsed.outcomeStatement === 'string' && parsed.outcomeStatement.trim().length >= 20;
+    const hasRetrievedSource = isUsableUrl(parsed.outcomeSourceUrl) && sourceUrls.has(parsed.outcomeSourceUrl);
+    
+    if (hasNumericOutcome && hasMatchingPeriod && hasCompatibleUnit && hasEvidence && hasRetrievedSource) {
+      logger.info(`[Research] Stage B (Documents) outcome found for ${profile.symbol} ${metric} ${targetPeriod}: actual = ${parsed.actualValue}`);
+      return parsed;
+    }
+    
+    logger.warn(`[Research] Stage B (Documents) rejected unsupported outcome for ${profile.symbol} ${metric} ${targetPeriod}`);
+    return null;
+  } catch (error) {
+    logger.warn(`[Research] Stage B (Documents) outcome search error for ${profile.symbol}: ${error.message}`);
+    return null;
+  }
+};
+
+/**
  * STAGE B: Search for actual reported outcomes for an individual promise
  */
 export const searchActualOutcomes = async (profile, promise) => {
@@ -505,12 +681,18 @@ export const searchActualOutcomes = async (profile, promise) => {
     return null;
   }
 
-  const { getStockNews } = await import('./NewsAPIService.js');
   const targetPeriod = promise.targetPeriod;
   const metric = promise.metric;
+  const promiseDate = promise.promiseDate || new Date();
 
   // Check if the target period is in the future
-  const isFuture = targetPeriod.includes('FY2026') || targetPeriod.includes('FY2027') || targetPeriod.includes('FY26') || targetPeriod.includes('FY27');
+  // For GOING_FORWARD, allow document search if sufficient time has passed (e.g., 3 months)
+  const isFuture = targetPeriod === 'GOING_FORWARD'
+    ? new Date(promiseDate) > new Date(Date.now() - 90 * 24 * 60 * 60 * 1000) // Less than 3 months old
+    : targetPeriod.includes('FY2026')
+    || targetPeriod.includes('FY2027')
+    || targetPeriod.includes('FY26')
+    || targetPeriod.includes('FY27');
   if (isFuture) {
     return {
       actualValue: null,
@@ -525,7 +707,27 @@ export const searchActualOutcomes = async (profile, promise) => {
 
   logger.info(`[Research] Stage B: Searching actual outcomes for ${profile.symbol} metric ${metric} in ${targetPeriod}`);
 
+  // Deterministic tier first (structured IndianAPI financials/metrics) —
+  // preferred over LLM-based extraction whenever a confident, unit- and
+  // period-compatible field match exists. Returns null (never throws) when
+  // no such match exists, in which case the LLM-based tiers below run as
+  // before.
+  const indianApiOutcome = await searchActualOutcomesFromIndianApi(profile, promise);
+  if (indianApiOutcome) {
+    return indianApiOutcome;
+  }
+
+  // Try official documents next
+  const documentOutcome = await searchActualOutcomesFromDocuments(profile, promise);
+  if (documentOutcome) {
+    return documentOutcome;
+  }
+
+  // Fallback to NewsAPI
+  logger.info(`[Research] Stage B (NewsAPI): Searching news articles for ${profile.symbol} metric ${metric} in ${targetPeriod}`);
+
   try {
+    const { getStockNews } = await import('./NewsAPIService.js');
     const outcomeArticles = await getStockNews(profile.symbol, { days: 1825 });
     if (!outcomeArticles.length) return null;
 
@@ -563,13 +765,22 @@ INSTRUCTIONS:
     });
 
     const parsed = JSON.parse(response.choices?.[0]?.message?.content || '{}');
-    if (parsed.actualValue !== null && parsed.actualValue !== undefined) {
-      logger.info(`[Research] Stage B outcome found for ${profile.symbol} ${metric} ${targetPeriod}: actual = ${parsed.actualValue}`);
+    const sourceUrls = new Set(outcomeArticles.map((article) => article.url).filter(Boolean));
+    const hasNumericOutcome = parsed.actualValue !== null
+      && parsed.actualValue !== undefined
+      && Number.isFinite(Number(parsed.actualValue));
+    const hasMatchingPeriod = periodsMatch(targetPeriod, parsed.actualPeriod);
+    const hasCompatibleUnit = String(parsed.actualUnit || '').toUpperCase() === String(promise.targetUnit || '').toUpperCase();
+    const hasEvidence = typeof parsed.outcomeStatement === 'string' && parsed.outcomeStatement.trim().length >= 20;
+    const hasRetrievedSource = isUsableUrl(parsed.outcomeSourceUrl) && sourceUrls.has(parsed.outcomeSourceUrl);
+    if (hasNumericOutcome && hasMatchingPeriod && hasCompatibleUnit && hasEvidence && hasRetrievedSource) {
+      logger.info(`[Research] Stage B (NewsAPI) outcome found for ${profile.symbol} ${metric} ${targetPeriod}: actual = ${parsed.actualValue}`);
       return parsed;
     }
+    logger.warn(`[Research] Stage B (NewsAPI) rejected unsupported outcome for ${profile.symbol} ${metric} ${targetPeriod}`);
     return null;
   } catch (error) {
-    logger.warn(`[Research] Stage B outcome search error for ${profile.symbol}: ${error.message}`);
+    logger.warn(`[Research] Stage B (NewsAPI) outcome search error for ${profile.symbol}: ${error.message}`);
     return null;
   }
 };
@@ -617,7 +828,10 @@ INSTRUCTIONS:
     });
 
     const parsed = JSON.parse(response.choices?.[0]?.message?.content || '{}');
-    if (parsed.explanation && parsed.reasonCategory !== 'NO_EXPLANATION_FOUND') {
+    const sourceUrls = new Set(articles.map((article) => article.url).filter(Boolean));
+    if (parsed.explanation && parsed.reasonCategory !== 'NO_EXPLANATION_FOUND'
+      && typeof parsed.exactStatement === 'string' && parsed.exactStatement.trim().length >= 20
+      && isUsableUrl(parsed.sourceUrl) && sourceUrls.has(parsed.sourceUrl)) {
       return parsed;
     }
     return null;
@@ -654,6 +868,7 @@ export const refreshCompanyResearch = async (symbol, researchRunId = null, progr
     // Tier 1-4 Document Discovery
     const documentResult = await collectDocuments(normalized);
     const documents = documentResult.documents;
+    const collectedSourceUrls = new Set(documents.map((document) => document.sourceUrl).filter(Boolean));
 
     updateProgress('EXTRACTING_FACTS', `Extracting structured historical facts across 3-5 years from ${documents.length} sources...`);
     const rawFacts = await extractHistoricalFactsFromSources(profile, documents);
@@ -665,6 +880,7 @@ export const refreshCompanyResearch = async (symbol, researchRunId = null, progr
         if (!fact.title || !fact.fact || !fact.source?.url) continue;
         await CompanyHistoricalFact.updateOne(
           {
+            dataOrigin: 'REAL_RESEARCH',
             symbol: normalized,
             period: fact.period,
             title: fact.title,
@@ -703,7 +919,13 @@ export const refreshCompanyResearch = async (symbol, researchRunId = null, progr
     updateProgress('EXTRACTING_PROMISES', `Analyzing sources for measurable management guidance targets...`);
     const extractedPromises = await extractPromisesFromSources(profile, documents);
 
+    logger.info(`[Research] ${normalized} - Promise extraction summary:`, {
+      documentsAnalyzed: documents.length,
+      rawPromisesExtracted: extractedPromises.length
+    });
+
     let savedPromises = 0;
+    let skippedDuplicates = 0;
     let outcomesFound = 0;
     let explanationsFound = 0;
 
@@ -711,36 +933,83 @@ export const refreshCompanyResearch = async (symbol, researchRunId = null, progr
       const p = extractedPromises[i];
       const statement = p.exactManagementStatement || p.statement;
 
-      if (!statement) { addRejection('MISSING_STATEMENT'); continue; }
-      if (!p.metric) { addRejection('MISSING_METRIC'); continue; }
+      // Enhanced validation logging
+      const fieldStatus = {
+        statement: statement ? 'PRESENT' : 'MISSING',
+        metric: p.metric ? p.metric : 'MISSING',
+        targetValue: p.targetValue !== undefined && p.targetValue !== null ? p.targetValue : 'MISSING',
+        targetUnit: p.targetUnit ? p.targetUnit : 'MISSING',
+        targetPeriod: p.targetPeriod ? p.targetPeriod : 'MISSING',
+        sourceUrl: p.sourceUrl ? p.sourceUrl : 'MISSING',
+        sourceExcerpt: p.sourceExcerpt ? `LENGTH_${String(p.sourceExcerpt).trim().length}` : 'MISSING'
+      };
+
+      if (!statement) { 
+        logger.warn(`[PROMISE_REJECTED] ${normalized} - Candidate ${i + 1}/${extractedPromises.length}: MISSING_STATEMENT`, { fieldStatus });
+        addRejection('MISSING_STATEMENT'); 
+        continue; 
+      }
+      if (!p.metric) { 
+        logger.warn(`[PROMISE_REJECTED] ${normalized} - Candidate ${i + 1}/${extractedPromises.length}: MISSING_METRIC`, { fieldStatus, statement: statement.substring(0, 100) });
+        addRejection('MISSING_METRIC'); 
+        continue; 
+      }
       if (p.targetValue === undefined || p.targetValue === null || !Number.isFinite(Number(p.targetValue))) {
+        logger.warn(`[PROMISE_REJECTED] ${normalized} - Candidate ${i + 1}/${extractedPromises.length}: NO_NUMERIC_TARGET`, { fieldStatus, statement: statement.substring(0, 100) });
         addRejection('NO_NUMERIC_TARGET');
         continue;
       }
-      if (!p.targetPeriod) { addRejection('NO_TARGET_PERIOD'); continue; }
-      if (!p.sourceUrl) { addRejection('LOW_SOURCE_AUTHORITY'); continue; }
+      if (!p.targetPeriod) { 
+        logger.warn(`[PROMISE_REJECTED] ${normalized} - Candidate ${i + 1}/${extractedPromises.length}: NO_TARGET_PERIOD`, { fieldStatus, statement: statement.substring(0, 100) });
+        addRejection('NO_TARGET_PERIOD'); 
+        continue; 
+      }
+      if (!p.sourceUrl || !collectedSourceUrls.has(p.sourceUrl)) { 
+        logger.warn(`[PROMISE_REJECTED] ${normalized} - Candidate ${i + 1}/${extractedPromises.length}: SOURCE_NOT_COLLECTED`, { 
+          fieldStatus, 
+          statement: statement.substring(0, 100),
+          sourceUrl: p.sourceUrl,
+          sourceUrlInCollected: p.sourceUrl ? collectedSourceUrls.has(p.sourceUrl) : false,
+          collectedSourceCount: collectedSourceUrls.size
+        });
+        addRejection('SOURCE_NOT_COLLECTED'); 
+        continue; 
+      }
+      if (!p.sourceExcerpt || String(p.sourceExcerpt).trim().length < 20) { 
+        logger.warn(`[PROMISE_REJECTED] ${normalized} - Candidate ${i + 1}/${extractedPromises.length}: MISSING_SOURCE_EXCERPT`, { fieldStatus, statement: statement.substring(0, 100) });
+        addRejection('MISSING_SOURCE_EXCERPT'); 
+        continue; 
+      }
 
       updateProgress('VERIFYING_OUTCOMES', `Verifying guidance target ${i + 1}/${extractedPromises.length}: ${statement.substring(0, 45)}...`);
 
       // Stage B: Search actual outcome
       const outcome = await searchActualOutcomes(profile, p);
-      if (outcome && outcome.actualValue !== null && outcome.actualValue !== undefined) {
+      const outcomeMatchesPromise = Boolean(outcome
+        && periodsMatch(p.targetPeriod, outcome.actualPeriod || p.targetPeriod)
+        && String(outcome.actualUnit || p.targetUnit).toUpperCase() === String(p.targetUnit).toUpperCase());
+      if (outcomeMatchesPromise && outcome.actualValue !== null && outcome.actualValue !== undefined) {
         outcomesFound++;
       }
 
       // Stage C: Deterministic verification in JavaScript
       const verification = calculatePromiseStatus({
         targetValue: p.targetValue,
-        actualValue: outcome?.actualValue ?? null,
-        direction: p.direction || 'HIGHER_IS_BETTER',
+        actualValue: outcomeMatchesPromise
+          ? outcome.actualValue
+          : null,
+        direction: p.direction || (p.operator ? null : 'HIGHER_IS_BETTER'),
         metric: p.metric,
-        targetPeriod: p.targetPeriod
+        targetPeriod: p.targetPeriod,
+        targetUnit: p.targetUnit,
+        actualUnit: outcome?.actualUnit || p.targetUnit,
+        operator: p.operator || null,
       });
 
       // Stage D: Management explanation research for missed / partial
       let explanationData = null;
       if (verification.status === 'MISSED' || verification.status === 'PARTIALLY_FULFILLED') {
-        explanationData = await searchManagementExplanation(profile, { ...p, actualValue: outcome?.actualValue }, verification.status);
+        explanationData = await searchManagementExplanation(profile, { ...p, actualValue: outcomeMatchesPromise ? outcome.actualValue : null }, verification.status);
         if (explanationData) {
           explanationsFound++;
         }
@@ -760,23 +1029,40 @@ export const refreshCompanyResearch = async (symbol, researchRunId = null, progr
           targetUnit: p.targetUnit || 'INR_CRORE',
           targetPeriod: p.targetPeriod,
           promiseDate,
-          direction: p.direction || 'HIGHER_IS_BETTER',
+          direction: p.direction || (p.operator ? null : 'HIGHER_IS_BETTER'),
+          operator: p.operator || null,
           importance: p.importance || 'MEDIUM'
         },
         outcome: {
-          actualValue: outcome?.actualValue != null ? Number(outcome.actualValue) : null,
-          actualUnit: p.targetUnit || 'INR_CRORE',
-          actualPeriod: outcome?.actualPeriod || p.targetPeriod,
-          statement: outcome?.outcomeStatement || null,
-          sourceUrl: outcome?.outcomeSourceUrl || null,
-          sourceDate: toDate(outcome?.outcomeSourceDate) || null,
-          excerpt: outcome?.outcomeStatement || null
+          actualValue: outcomeMatchesPromise && outcome?.actualValue != null ? Number(outcome.actualValue) : null,
+          actualUnit: outcomeMatchesPromise ? (outcome.actualUnit || p.targetUnit) : null,
+          actualPeriod: outcomeMatchesPromise ? (outcome.actualPeriod || p.targetPeriod) : null,
+          statement: outcomeMatchesPromise ? outcome.outcomeStatement : null,
+          sourceUrl: outcomeMatchesPromise ? outcome.outcomeSourceUrl : null,
+          sourceDate: outcomeMatchesPromise ? toDate(outcome.outcomeSourceDate) : null,
+          excerpt: outcomeMatchesPromise ? outcome.outcomeStatement : null,
+          evidenceType: outcomeMatchesPromise ? (outcome.evidenceType || null) : null,
+          provider: outcomeMatchesPromise ? (outcome.provider || null) : null
         },
         verification: {
           achievementPercentage: verification.achievementPercentage,
           status: verification.status,
           calculationExplanation: verification.calculationExplanation,
-          confidence: authorityLevel
+          confidence: authorityLevel,
+          // Deterministic-provider matches (IndianAPI) without a citable
+          // per-field URL are reported at MEDIUM evidence quality; matches
+          // backed by a real source URL (documents/news) are HIGH; no
+          // matched outcome is left null rather than guessed.
+          evidenceQuality: !outcomeMatchesPromise
+            ? null
+            : outcome?.outcomeSourceUrl
+              ? 'HIGH'
+              : outcome?.provider === 'indian-api'
+                ? 'MEDIUM'
+                : 'LOW',
+          hasConflictingEvidence: false,
+          conflictDetails: null,
+          verifiedAt: new Date()
         },
         explanation: explanationData ? {
           managementExplanation: explanationData.explanation || explanationData.exactStatement,
@@ -800,12 +1086,13 @@ export const refreshCompanyResearch = async (symbol, researchRunId = null, progr
             sourceUrl: p.sourceUrl,
             sourceDate: toDate(p.sourceDate) || promiseDate,
             publicationDate: toDate(p.sourceDate) || promiseDate,
+            page: Number.isInteger(Number(p.page)) && Number(p.page) > 0 ? Number(p.page) : null,
             title: p.sourceDocument || statement,
             excerpt: p.sourceExcerpt || statement,
             documentType: p.sourceDocument || DOCUMENT_TYPES.INVESTOR_PRESENTATION,
             authorityLevel
           },
-          outcomeSource: outcome?.outcomeSourceUrl ? {
+          outcomeSource: outcomeMatchesPromise && outcome?.outcomeSourceUrl ? {
             sourceType: DOCUMENT_TYPES.NEWS_ARTICLE,
             sourceName: outcome.outcomeSource || 'Reported Results',
             sourceUrl: outcome.outcomeSourceUrl,
@@ -845,14 +1132,14 @@ export const refreshCompanyResearch = async (symbol, researchRunId = null, progr
         targetPeriod: p.targetPeriod,
         guidanceDate: promiseDate,
         announcementDate: promiseDate,
-        actualValue: outcome?.actualValue != null ? Number(outcome.actualValue) : null,
-        actualUnit: p.targetUnit || 'INR_CRORE',
-        actualPeriod: outcome?.actualPeriod || p.targetPeriod,
-        actualDate: toDate(outcome?.outcomeSourceDate) || null,
-        actualSourceUrl: outcome?.outcomeSourceUrl || null,
-        actualSourceTitle: outcome?.outcomeStatement || null,
-        actualSourceDate: toDate(outcome?.outcomeSourceDate) || null,
-        actualSourceExcerpt: outcome?.outcomeStatement || null,
+        actualValue: outcomeMatchesPromise && outcome?.actualValue != null ? Number(outcome.actualValue) : null,
+        actualUnit: outcomeMatchesPromise ? (outcome.actualUnit || p.targetUnit) : null,
+        actualPeriod: outcomeMatchesPromise ? (outcome.actualPeriod || p.targetPeriod) : null,
+        actualDate: outcomeMatchesPromise ? toDate(outcome.outcomeSourceDate) : null,
+        actualSourceUrl: outcomeMatchesPromise ? outcome.outcomeSourceUrl : null,
+        actualSourceTitle: outcomeMatchesPromise ? outcome.outcomeStatement : null,
+        actualSourceDate: outcomeMatchesPromise ? toDate(outcome.outcomeSourceDate) : null,
+        actualSourceExcerpt: outcomeMatchesPromise ? outcome.outcomeStatement : null,
         achievementPercentage: verification.achievementPercentage,
         calculationExplanation: verification.calculationExplanation,
         status: verification.status,
@@ -872,24 +1159,61 @@ export const refreshCompanyResearch = async (symbol, researchRunId = null, progr
       };
 
       if (isDbConnected()) {
-        await ManagementPromise.updateOne(
-          {
-            symbol: normalized,
-            'promise.targetPeriod': record.promise.targetPeriod,
-            'promise.metric': record.promise.metric,
-            'evidence.promiseSource.sourceUrl': record.evidence.promiseSource.sourceUrl
-          },
-          { $set: record },
-          { upsert: true }
-        );
+        // Check for existing duplicate before upsert
+        const existing = await ManagementPromise.findOne({
+          symbol: normalized,
+          'promise.statement': statement,
+          'evidence.promiseSource.sourceUrl': record.evidence.promiseSource.sourceUrl
+        });
+        
+        if (existing) {
+          skippedDuplicates++;
+          logger.info(`[Research] ${normalized} - Skipping duplicate promise: "${statement.substring(0, 50)}..."`);
+        } else {
+          await ManagementPromise.updateOne(
+            {
+              symbol: normalized,
+              'promise.targetPeriod': record.promise.targetPeriod,
+              'promise.metric': record.promise.metric,
+              'evidence.promiseSource.sourceUrl': record.evidence.promiseSource.sourceUrl
+            },
+            { $set: record },
+            { upsert: true }
+          );
+          savedPromises++;
+          logger.info(`[Research] ${normalized} - Saved promise ${i + 1}/${extractedPromises.length}: "${statement.substring(0, 50)}..." (${p.extractionMethod || 'UNKNOWN'})`);
+        }
+      } else {
+        savedPromises++;
       }
-      savedPromises += 1;
     }
+
+    logger.info(`[Research] ${normalized} - Promise persistence summary:`, {
+      rawPromisesExtracted: extractedPromises.length,
+      validationRejections: Object.keys(rejectionReasonsMap).length,
+      savedPromises,
+      skippedDuplicates,
+      outcomesFound,
+      explanationsFound
+    });
+
+    // Phase 7A: Aggregated rejection statistics
+    logger.info(`[PROMISE_PIPELINE_SUMMARY] ${normalized}`, {
+      documentsCollected: documents.length,
+      documentsProcessed: documents.length,
+      rawCandidatePromisesExtracted: extractedPromises.length,
+      validationRejectionCounts: rejectionReasonsMap,
+      validPromises: savedPromises,
+      persistenceAttempts: savedPromises + skippedDuplicates,
+      successfulDatabaseUpserts: savedPromises,
+      databaseErrors: 0,
+      finalPromiseCount: savedPromises
+    });
 
     updateProgress('CALCULATING_EXECUTION_SCORE', 'Calculating deterministic Company Execution Score & financial snapshot...');
 
-    const allDbFacts = isDbConnected() ? await CompanyHistoricalFact.find({ symbol: normalized }).lean() : verifiedFacts;
-    const allDbPromises = isDbConnected() ? await ManagementPromise.find({ symbol: normalized }).lean() : [];
+    const allDbFacts = isDbConnected() ? await CompanyHistoricalFact.find({ symbol: normalized, ...REAL_RESEARCH_FILTER }).lean() : verifiedFacts;
+    const allDbPromises = isDbConnected() ? await ManagementPromise.find({ symbol: normalized, ...REAL_RESEARCH_FILTER }).lean() : [];
 
     const executionScoreResult = calculateCompanyExecutionScore({
       facts: allDbFacts,
@@ -898,8 +1222,8 @@ export const refreshCompanyResearch = async (symbol, researchRunId = null, progr
     });
 
     const periods = [...new Set(allDbFacts.map(f => f.period).filter(Boolean))];
-    const coverageStart = periods.length ? periods[0] : 'FY2022';
-    const coverageEnd = periods.length ? periods[periods.length - 1] : 'FY2026';
+    const coverageStart = periods.length ? periods[0] : null;
+    const coverageEnd = periods.length ? periods[periods.length - 1] : null;
 
     const confidenceResult = calculateConfidence({
       facts: allDbFacts,
@@ -913,16 +1237,21 @@ export const refreshCompanyResearch = async (symbol, researchRunId = null, progr
     if (researchRunId && isDbConnected()) {
       await ResearchRun.findByIdAndUpdate(researchRunId, {
         sourceStats: documentResult.stats,
+        documentCollectionDebug: documentResult.debug, // Add detailed debug info
         extractionStats: {
           documentsAnalyzed: documents.length,
           factsExtracted: rawFacts.length,
           factsVerified: verifiedFacts.length,
           candidatePromises: extractedPromises.length,
           verifiedPromises: savedPromises,
+          skippedDuplicates,
           outcomesFound,
           explanationsFound
         },
-        providerStats: documentResult.stats.providers,
+        providerStats: documentResult.stats.providers.map(({ name, ...provider }) => ({
+          provider: name || provider.provider,
+          ...provider,
+        })),
         rejectionReasons: rejectionReasonsList,
         coverageStart,
         coverageEnd,
@@ -951,7 +1280,7 @@ export const refreshCompanyResearch = async (symbol, researchRunId = null, progr
       rejectionReasons: rejectionReasonsMap,
       executionScore: executionScoreResult,
       confidence: confidenceResult,
-      coverage: `${coverageStart}–${coverageEnd}`,
+      coverage: coverageStart && coverageEnd ? `${coverageStart}–${coverageEnd}` : 'Coverage unavailable',
       state
     };
   } catch (error) {
@@ -993,7 +1322,7 @@ export const searchCompanies = async (query = '') => {
 
 export const getCompanyPromises = async (symbol, filters = {}) => {
   if (!isDbConnected()) return [];
-  const query = { symbol: String(symbol).toUpperCase() };
+  const query = { symbol: String(symbol).toUpperCase(), ...REAL_RESEARCH_FILTER };
   if (filters.year) query.financialYear = String(filters.year);
   if (filters.status) query.status = String(filters.status).toUpperCase();
   if (filters.metric) query.metric = new RegExp(String(filters.metric), 'i');
@@ -1007,7 +1336,7 @@ export const getCompanyPromises = async (symbol, filters = {}) => {
 
 export const getCompanyFacts = async (symbol, filters = {}) => {
   if (!isDbConnected()) return [];
-  const query = { symbol: String(symbol).toUpperCase() };
+  const query = { symbol: String(symbol).toUpperCase(), ...REAL_RESEARCH_FILTER };
   if (filters.category) query.category = String(filters.category).toUpperCase();
   if (filters.year) query.period = new RegExp(String(filters.year), 'i');
   if (filters.period) query.period = String(filters.period);
@@ -1047,7 +1376,7 @@ export const getCompanySummary = async (symbol) => {
   let latestRun = null;
   if (isDbConnected()) {
     try {
-      latestRun = await ResearchRun.findOne({ companySymbol: normalized }).sort({ createdAt: -1 }).lean();
+      latestRun = await ResearchRun.findOne({ companySymbol: normalized, ...REAL_RESEARCH_FILTER }).sort({ createdAt: -1 }).lean();
     } catch (err) {
       logger.warn(`Failed to fetch research run for ${symbol}: ${err.message}`);
     }
@@ -1064,7 +1393,9 @@ export const getCompanySummary = async (symbol) => {
     const yearB = parseInt(String(b).match(/\d+/)?.[0] || '0', 10);
     return yearA - yearB;
   });
-  const coverageYears = periods.length ? `${periods[0]}–${periods[periods.length - 1]}` : (latestRun?.coverageStart ? `${latestRun.coverageStart}–${latestRun.coverageEnd}` : 'FY2022–FY2026');
+  const coverageYears = periods.length
+    ? `${periods[0]}–${periods[periods.length - 1]}`
+    : latestRun?.coverageStart ? `${latestRun.coverageStart}–${latestRun.coverageEnd}` : 'Coverage unavailable';
 
   // Count unique source documents
   const uniqueSourceUrls = new Set();
@@ -1241,9 +1572,9 @@ export const createResearchJob = async (symbol) => {
   if (!SUPPORTED_STOCKS[normalized]) throw new Error(`Unsupported company symbol: ${normalized}`);
   if (!isDbConnected()) throw new Error('Database is currently offline. Cannot create research run.');
   
-  const latest = await ResearchRun.findOne({ companySymbol: normalized }).sort({ createdAt: -1 }).lean();
+  const latest = await ResearchRun.findOne({ companySymbol: normalized, ...REAL_RESEARCH_FILTER }).sort({ createdAt: -1 }).lean();
   if (latest?.status === 'RUNNING') return { status: 'PROCESSING', jobId: String(latest._id) };
-  if (latest?.status === 'COMPLETED' && latest.completedAt && Date.now() - new Date(latest.completedAt).getTime() < 60 * 60 * 1000) {
+  if (isResearchRunCacheable(latest)) {
     return { status: 'CACHED', jobId: String(latest._id), lastResearchAt: latest.completedAt };
   }
 
@@ -1275,6 +1606,16 @@ export const createResearchJob = async (symbol) => {
 
   return { status: 'PROCESSING', jobId };
 };
+
+export const isResearchRunCacheable = (run, now = Date.now()) => Boolean(
+  run?.dataOrigin === 'REAL_RESEARCH'
+  && run.status === 'COMPLETED'
+  && run.state !== 'INSUFFICIENT_EVIDENCE'
+  && (run.promisesVerified || 0) > 0
+  && (run.sourceStats?.documentsFound || 0) > 0
+  && run.completedAt
+  && now - new Date(run.completedAt).getTime() < 60 * 60 * 1000
+);
 
 export const getResearchJob = async (jobId) => {
   if (!isDbConnected()) return { jobId, status: researchJobs.get(jobId) || 'FAILED', error: 'Database unavailable.' };
@@ -1317,9 +1658,9 @@ export const getCompanyResearchDebug = async (symbol) => {
 
   if (isDbConnected()) {
     try {
-      latestRun = await ResearchRun.findOne({ companySymbol: normalized }).sort({ createdAt: -1 }).lean();
-      facts = await CompanyHistoricalFact.find({ symbol: normalized }).lean();
-      promises = await ManagementPromise.find({ symbol: normalized }).lean();
+      latestRun = await ResearchRun.findOne({ companySymbol: normalized, ...REAL_RESEARCH_FILTER }).sort({ createdAt: -1 }).lean();
+      facts = await CompanyHistoricalFact.find({ symbol: normalized, ...REAL_RESEARCH_FILTER }).lean();
+      promises = await ManagementPromise.find({ symbol: normalized, ...REAL_RESEARCH_FILTER }).lean();
     } catch (err) {
       logger.warn(`Failed to query debug data for ${symbol}: ${err.message}`);
     }
@@ -1342,6 +1683,19 @@ export const getCompanyResearchDebug = async (symbol) => {
     });
   }
 
+  // Enhanced debug information from document collection
+  const debugInfo = latestRun?.documentCollectionDebug || {};
+  
+  // Collect TLS failure details if available
+  const tlsFailures = (debugInfo.failedUrls || [])
+    .filter(f => f.severity === 'TLS_FAILURE')
+    .map(f => ({
+      url: f.url?.split('?')[0] || f.url, // Hide query params
+      code: f.code,
+      reason: f.reason,
+      tlsDetails: f.tlsDetails
+    }));
+
   return {
     symbol: normalized,
     companyName: profile.companyName,
@@ -1356,8 +1710,152 @@ export const getCompanyResearchDebug = async (symbol) => {
     rejectionReasons: rejectionReasonsMap,
     outcomesFound: latestRun?.extractionStats?.outcomesFound || outcomesFound,
     explanationsFound: latestRun?.extractionStats?.explanationsFound || explanationsFound,
+    
+    // Enhanced debug section
+    documentCollectionDebug: {
+      urls: {
+        attempted: debugInfo.urlsAttempted?.length || 0,
+        successfullyRetrieved: debugInfo.urlsSuccessfullyRetrieved?.length || 0,
+        failed: debugInfo.failedUrls?.length || 0,
+        failureDetails: debugInfo.failedUrls?.slice(0, 20) || [] // Limit to prevent response bloat
+      },
+      documents: {
+        discovered: debugInfo.documentsDiscovered?.length || 0,
+        linksDiscovered: debugInfo.linksDiscovered || 0
+      },
+      pdfs: {
+        discovered: debugInfo.pdfsDiscovered?.length || 0,
+        successfullyExtracted: debugInfo.pdfsSuccessfullyExtracted?.length || 0,
+        failedExtractions: (debugInfo.rejectedDocuments || []).filter(d => d.reason === 'EMPTY_OR_SHORT_PDF').length
+      },
+      qualityGate: {
+        rejectedTotal: debugInfo.rejectedDocuments?.length || 0,
+        rejectionReasons: (debugInfo.rejectedDocuments || []).reduce((acc, doc) => {
+          const reason = doc.reason || 'UNKNOWN';
+          acc[reason] = (acc[reason] || 0) + 1;
+          return acc;
+        }, {})
+      },
+      tls: {
+        failureCount: debugInfo.tlsSummary?.totalTlsErrors || 0,
+        uniqueFailedUrls: debugInfo.tlsSummary?.uniqueUrlsWithTlsErrors?.length || 0,
+        failures: tlsFailures
+      },
+      stats: debugInfo.stats || {}
+    },
+    
     factRecords: facts,
-    promiseRecords: promises
+    promiseRecords: promises,
+    lastResearchRun: latestRun?.createdAt || null,
+    lastResearchStatus: latestRun?.status || 'UNKNOWN'
+  };
+};
+
+/**
+ * Phase 6: Normalized Timeline API
+ * Transforms raw ManagementPromise documents into audit-friendly timeline response
+ */
+export const getCompanyTimeline = async (symbol) => {
+  if (!isDbConnected()) {
+    return {
+      company: String(symbol).toUpperCase(),
+      summary: {
+        totalPromises: 0,
+        verified: 0,
+        missed: 0,
+        pending: 0,
+        insufficientEvidence: 0
+      },
+      promises: []
+    };
+  }
+
+  const normalized = String(symbol).toUpperCase();
+  const rawPromises = await getCompanyPromises(normalized);
+
+  // Calculate summary counts
+  const summary = {
+    totalPromises: rawPromises.length,
+    verified: 0,
+    missed: 0,
+    pending: 0,
+    insufficientEvidence: 0
+  };
+
+  // Transform each promise to normalized structure
+  const promises = rawPromises.map(p => {
+    const status = p.verification?.status || p.status || 'INSUFFICIENT_EVIDENCE';
+    
+    // Update summary counts
+    if (status === 'FULFILLED' || status === 'EXCEEDED' || status === 'PARTIALLY_FULFILLED') {
+      summary.verified++;
+    } else if (status === 'MISSED') {
+      summary.missed++;
+    } else if (status === 'PENDING') {
+      summary.pending++;
+    } else if (status === 'INSUFFICIENT_EVIDENCE') {
+      summary.insufficientEvidence++;
+    }
+
+    // Extract promise data from nested structure
+    const promiseData = p.promise || {};
+    const evidenceData = p.evidence?.promiseSource || {};
+    const outcomeData = p.outcome || {};
+    const outcomeSourceData = p.evidence?.outcomeSource || {};
+
+    return {
+      id: p._id?.toString(),
+      statement: promiseData.statement || p.promiseText || p.statement || '',
+      metric: promiseData.metric || p.metric || '',
+      targetValue: promiseData.targetValue ?? p.targetValue ?? null,
+      targetUnit: promiseData.targetUnit || p.targetUnit || '',
+      operator: promiseData.operator || null,
+      period: promiseData.targetPeriod || p.targetPeriod || '',
+      status: status,
+      confidence: p.verification?.confidence ?? p.confidenceScore ?? p.confidence ?? null,
+
+      evidence: {
+        sourceName: evidenceData.sourceName || null,
+        sourceUrl: evidenceData.sourceUrl || p.sourceUrl || null,
+        documentTitle: evidenceData.title || p.sourceTitle || null,
+        publicationDate: evidenceData.publicationDate || evidenceData.sourceDate || p.sourceDate ? 
+          new Date(evidenceData.publicationDate || evidenceData.sourceDate || p.sourceDate).toISOString() : null,
+        page: evidenceData.page || null,
+        excerpt: evidenceData.excerpt || p.sourceExcerpt || ''
+      },
+
+      outcome: {
+        actualValue: outcomeData.actualValue ?? null,
+        actualUnit: outcomeData.actualUnit ?? null,
+        actualPeriod: outcomeData.actualPeriod ?? null,
+        statement: outcomeData.statement ?? null,
+        sourceUrl: outcomeData.sourceUrl || outcomeSourceData.sourceUrl || p.actualSourceUrl || null,
+        sourceDate: outcomeData.sourceDate || outcomeSourceData.sourceDate || p.actualSourceDate ? 
+          new Date(outcomeData.sourceDate || outcomeSourceData.sourceDate || p.actualSourceDate).toISOString() : null,
+        page: outcomeSourceData.page || null,
+        excerpt: outcomeData.excerpt || outcomeSourceData.excerpt || p.actualSourceExcerpt || null,
+        evidenceType: outcomeData.evidenceType || null,
+        provider: outcomeData.provider || null
+      },
+      evidenceQuality: p.verification?.evidenceQuality || null,
+      hasConflictingEvidence: Boolean(p.verification?.hasConflictingEvidence)
+    };
+  });
+
+  // Sort by promise date descending
+  promises.sort((a, b) => {
+    const dateA = rawPromises.find(p => p._id?.toString() === a.id)?.promise?.promiseDate;
+    const dateB = rawPromises.find(p => p._id?.toString() === b.id)?.promise?.promiseDate;
+    if (!dateA && !dateB) return 0;
+    if (!dateA) return 1;
+    if (!dateB) return -1;
+    return new Date(dateB) - new Date(dateA);
+  });
+
+  return {
+    company: normalized,
+    summary,
+    promises
   };
 };
 
@@ -1374,6 +1872,7 @@ export default {
   createResearchJob,
   getResearchJob,
   getCompanyResearchDebug,
+  getCompanyTimeline,
   calculateReliability,
   calculatePromiseStatus,
   recencyWeight,

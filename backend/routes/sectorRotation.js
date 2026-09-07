@@ -6,9 +6,9 @@ const router = express.Router();
 router.get('/', async (req, res) => {
   try {
     const data = await SectorRotationService.getSectorRotation();
-    res.json({ data });
+    res.json({ data, asOf: new Date().toISOString() });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(503).json({ error: err.message });
   }
 });
 

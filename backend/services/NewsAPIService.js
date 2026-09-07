@@ -6,7 +6,7 @@ import { logger } from '../utils/logger.js';
 dotenv.config();
 
 const NEWS_API_URL = 'https://eventregistry.org/api/v1/article/getArticles';
-const CACHE_TTL_MS = 10 * 60 * 1000;
+const CACHE_TTL_MS = 10 * 60 * 1000; // documented short TTL — real articles go stale fast
 const cache = new Map();
 
 export class NewsAPIError extends Error {
@@ -30,25 +30,10 @@ export const STOCK_NEWS_QUERY_MAP = {
   SUNPHARMA: '"Sun Pharma"',
 };
 
-const COMPANY_FALLBACK_IMAGES = {
-  HDFCBANK: 'https://images.unsplash.com/photo-1556761175-b413da4baf72?auto=format&fit=crop&w=900&q=80',
-  ICICIBANK: 'https://images.unsplash.com/photo-1551836022-d5d88e9218df?auto=format&fit=crop&w=900&q=80',
-  SBIN: 'https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?auto=format&fit=crop&w=900&q=80',
-  AXISBANK: 'https://images.unsplash.com/photo-1554224155-6726b3ff858f?auto=format&fit=crop&w=900&q=80',
-  KOTAKBANK: 'https://images.unsplash.com/photo-1444653614773-995cb1ef9efa?auto=format&fit=crop&w=900&q=80',
-  RELIANCE: 'https://images.unsplash.com/photo-1565610222536-ef125c59da2e?auto=format&fit=crop&w=900&q=80',
-  TCS: 'https://images.unsplash.com/photo-1519389950473-47ba0277781c?auto=format&fit=crop&w=900&q=80',
-  INFY: 'https://images.unsplash.com/photo-1552664730-d307ca884978?auto=format&fit=crop&w=900&q=80',
-  ITC: 'https://images.unsplash.com/photo-1556740749-887f6717d7e4?auto=format&fit=crop&w=900&q=80',
-  SUNPHARMA: 'https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?auto=format&fit=crop&w=900&q=80',
-  default: 'https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?auto=format&fit=crop&w=900&q=80',
-};
-
 const stopWords = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'after', 'from', 'with', 'is', 'are', 'as', 'at', 'by']);
 const asDate = (value) => new Date(value || 0).getTime() || 0;
 const words = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9$ ]/g, ' ').split(/\s+/).filter((word) => word && !stopWords.has(word));
 const tokenSet = (value) => new Set(words(value));
-const fallbackImage = (symbol) => COMPANY_FALLBACK_IMAGES[symbol] || COMPANY_FALLBACK_IMAGES.default;
 
 const validUrl = (value) => {
   try {
@@ -57,6 +42,16 @@ const validUrl = (value) => {
   } catch {
     return null;
   }
+};
+
+// A date is "valid where supplied": absent is fine (sorts last), but a
+// value that doesn't parse to a real instant means the article is rejected
+// rather than shown with a garbled or misleading timestamp.
+const parsePublishedAt = (rawValue) => {
+  if (rawValue == null || rawValue === '') return { present: false, iso: null };
+  const time = new Date(rawValue).getTime();
+  if (!Number.isFinite(time)) return { present: true, iso: undefined }; // undefined = invalid
+  return { present: true, iso: new Date(time).toISOString() };
 };
 
 const companyNameFor = (symbol) => SUPPORTED_STOCKS[symbol]?.name || symbol;
@@ -80,6 +75,7 @@ const similarEnough = (left, right) => {
   return overlap >= 0.72 || (moneyA && moneyA === moneyB && overlap >= 0.35);
 };
 
+// Title near-duplicate dedup (same story, different outlets/URLs).
 export const deduplicate = (articles) => {
   const result = [];
   for (const article of articles) {
@@ -101,23 +97,61 @@ export const canonicalizeArticleUrl = (url) => {
   }
 };
 
-const normalize = (article, symbol, companyName, sector) => {
+// Newest-first, with articles missing a publish date sorted to the end
+// (never guessed at, never treated as "now").
+export const sortNewestFirst = (articles) => [...articles].sort((a, b) => {
+  const aTime = a.publishedAt ? asDate(a.publishedAt) : -Infinity;
+  const bTime = b.publishedAt ? asDate(b.publishedAt) : -Infinity;
+  return bTime - aTime;
+});
+
+// Real-articles-only normalization. Returns null (rejects the article)
+// rather than substituting a placeholder for any required field — a
+// fabricated title/date is exactly the kind of "fallback fact" this
+// service must never produce.
+const normalize = (article, symbol) => {
   const url = validUrl(article.url);
   if (!url) return null;
+
+  const title = String(article.title || '').trim();
+  if (!title) return null;
+
+  const { iso: publishedAt } = parsePublishedAt(article.dateTimePub || article.dateTime || article.publishedAt);
+  if (publishedAt === undefined) return null; // a date was supplied but didn't parse
+
   const imageUrl = validUrl(article.image);
+
   return {
-    title: article.title || 'Untitled article',
+    title,
     description: article.body || article.description || '',
-    source: article.source?.title || article.source?.uri || 'Unknown source',
-    publishedAt: article.dateTimePub || article.dateTime || article.publishedAt || null,
     url,
-    imageUrl: imageUrl || fallbackImage(symbol),
-    imageSource: imageUrl ? 'newsapi-ai' : 'company-fallback',
-    symbol,
-    companyName,
-    category: sector || 'Company',
+    imageUrl: imageUrl || null,
+    source: article.source?.title || article.source?.uri || 'Unknown source',
+    publishedAt: publishedAt || null,
+    symbols: [symbol],
+    fetchedAt: new Date().toISOString(),
   };
 };
+
+// Pure response-processing step, split out from the network call so it can
+// be unit-tested with fixture payloads instead of a live/mocked HTTP call.
+// Throws NewsAPIError for an Event-Registry quota/error payload (even
+// though the HTTP status was 200) rather than ever treating it as "zero
+// articles found".
+export function processArticlesResponse(responseData, { symbol, companyName }) {
+  if (typeof responseData?.error === 'string' && responseData.error.trim()) {
+    throw new NewsAPIError(`News provider quota/error: ${responseData.error}`, 429);
+  }
+
+  const results = responseData?.articles?.results || [];
+  const normalized = results
+    .map((article) => ({ article, score: relevanceScore(article, companyName) }))
+    .filter(({ score }) => score >= 2)
+    .map(({ article }) => normalize(article, symbol))
+    .filter(Boolean);
+
+  return sortNewestFirst(deduplicate(normalized));
+}
 
 const newsApiError = (error) => {
   const status = error.response?.status;
@@ -140,7 +174,6 @@ export async function getStockNews(symbol, { days = 3 } = {}) {
   if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) return cached.data;
 
   const companyName = companyNameFor(normalizedSymbol);
-  const sector = SUPPORTED_STOCKS[normalizedSymbol]?.sector;
   const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
   try {
@@ -159,27 +192,16 @@ export async function getStockNews(symbol, { days = 3 } = {}) {
       timeout: 12000,
     });
 
-    // Event Registry can return HTTP 200 with a top-level {"error": "..."}
-    // body when the daily token quota is exhausted or the request is
-    // otherwise rejected — this must be classified as a provider failure,
-    // never treated as "zero articles found" (which would then get cached
-    // as if it were a real, valid empty result).
-    if (typeof response.data?.error === 'string' && response.data.error.trim()) {
-      throw new NewsAPIError(`News provider quota/error: ${response.data.error}`, 429);
-    }
-
-    const normalized = deduplicate(response.data?.articles?.results
-      ?.map((article) => ({ article, score: relevanceScore(article, companyName) }))
-      .filter(({ score }) => score >= 2)
-      .sort((a, b) => asDate(b.article.publishedAt) - asDate(a.article.publishedAt))
-      .map(({ article }) => normalize(article, normalizedSymbol, companyName, sector))
-      .filter(Boolean) || []).slice(0, 8);
+    // processArticlesResponse throws for an Event Registry quota/error
+    // payload (even on HTTP 200) — caught below and never cached.
+    const normalized = processArticlesResponse(response.data, { symbol: normalizedSymbol, companyName }).slice(0, 8);
 
     cache.set(cacheKey, { data: normalized, fetchedAt: Date.now() });
     return normalized;
   } catch (error) {
     const normalizedError = error instanceof NewsAPIError ? error : newsApiError(error);
     logger.warn(`[NewsAPI] ${normalizedSymbol}: ${normalizedError.message}`);
+    // Never cache an error/quota response as if it were a valid empty result.
     throw normalizedError;
   }
 }

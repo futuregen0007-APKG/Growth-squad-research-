@@ -1,140 +1,260 @@
-import redisClient from '../utils/redisClient.js';
-import { SECTORS } from '../../frontend/src/data/mockData.js';
-import { INDEX_SYMBOLS } from '../utils/constants.js';
+import { getCache, setCache } from '../utils/redisClient.js';
+import { INDEX_SYMBOLS, SUPPORTED_STOCKS } from '../utils/constants.js';
 import { AngelOneProvider } from '../providers/AngelOneProvider.js';
+import { logger } from '../utils/logger.js';
+import {
+  METHODOLOGY_VERSION,
+  closesByDate,
+  intersectDates,
+  normalizeSeries,
+  buildEqualWeightIndex,
+  computeRelativeStrengthSeries,
+  computeRelativeMomentum,
+  classifyQuadrant,
+  rankSectors,
+} from '../utils/sectorMath.js';
 
-let marketProvider;
+// Normalized sector relative-strength analytics.
+//
+// Replaces the previous approach (averaging raw constituent closing prices
+// and dividing by the raw Nifty level), which was scale-distorted: a sector
+// with one ₹4,000 stock and two ₹200 stocks produced an "average" dominated
+// by the expensive stock, and dividing that by Nifty's raw index level (an
+// unrelated scale) produced a ratio with no real meaning. See
+// utils/sectorMath.js for the normalized replacement (normalize every
+// series to 100, THEN average, THEN divide by a similarly-normalized
+// benchmark).
+//
+// Every numeric field returned here is either a real computed value or the
+// sector is marked INSUFFICIENT_DATA — never a neutral/fallback number.
 
-function getMarketProvider() {
-  if (!marketProvider) marketProvider = new AngelOneProvider();
-  return marketProvider;
-}
+const HISTORY_RANGE = '3M'; // ~90 calendar days of daily closes -> real alignment history
+const MAX_CONSTITUENTS_PER_SECTOR = 6; // bounds Angel One API load per request
+const MIN_CONSTITUENTS = 3; // below this an "equal-weight index" isn't meaningful
+const MIN_COVERAGE_PCT = 0.6; // at least 60% of requested constituents must have data
+const MIN_ALIGNED_OBSERVATIONS = 10; // at least ~2 trading weeks of common dates
+const MOMENTUM_WINDOW = 5; // trailing trading days used for the momentum slope
+const CANDLE_CACHE_TTL = 21600; // 6h — matches StockService's HISTORY TTL (immutable once a day closes)
+const ROTATION_CACHE_TTL = 300; // 5 min — bounds how often the full computation re-runs
+// SmartAPI's historical-data endpoint enforces a real per-second rate limit
+// per API key; firing this in parallel across ~190 constituents produced
+// silent 429s that looked like "no data" for most sectors. Dispatching
+// requests one at a time with a floor delay between them keeps every
+// request under that limit — slower on a cold cache (~1 request every
+// 350ms), but each ticker's result is then cached for CANDLE_CACHE_TTL so
+// this cost is only paid once per cache window, not per user request.
+const MIN_REQUEST_INTERVAL_MS = 350;
 
-// JdK-style RRG backend implementation
-// Produces for each sector a time-series of points: { t, x: RS-Ratio-1, y: RS-Momentum }
-// - We fetch weekly closes for leaders and benchmark for the last N weeks
-// - sector price per week = average of leaders' close
-// - RS = sector_price / benchmark_price
-// - smoothed RS = EMA(RS, span)
-// - RS-Momentum = pct change of smoothed RS between consecutive weeks
-
-const WEEKS = 12; // number of historical weekly points (tail length)
-const EMA_SPAN = 3; // smoothing for RS series
-
-function ema(series, span = 3) {
-  const alpha = 2 / (span + 1);
-  const out = [];
-  let prev = series[0] || 0;
-  out[0] = prev;
-  for (let i = 1; i < series.length; i++) {
-    const val = series[i] * alpha + prev * (1 - alpha);
-    out[i] = val;
-    prev = val;
+/** Runs `mapper` over `items` one at a time, spaced by `intervalMs`, allSettled-shaped. */
+async function settleRateLimited(items, mapper, intervalMs) {
+  const results = new Array(items.length);
+  let lastDispatch = 0;
+  for (let index = 0; index < items.length; index++) {
+    const waitFor = lastDispatch + intervalMs - Date.now();
+    if (waitFor > 0) await new Promise((resolve) => setTimeout(resolve, waitFor));
+    lastDispatch = Date.now();
+    try {
+      results[index] = { status: 'fulfilled', value: await mapper(items[index], index) };
+    } catch (reason) {
+      results[index] = { status: 'rejected', reason };
+    }
   }
-  return out;
+  return results;
 }
 
-async function fetchWeeklyCloses(ticker, weeks = WEEKS) {
-  try {
-    const cacheKey = `hist:weekly:${ticker}:${weeks}`;
-    const cached = await redisClient.get(cacheKey);
-    if (cached) return JSON.parse(cached);
-
-    const hist = await getMarketProvider().getHistoricalData(ticker, '1W');
-    const closes = hist.slice(-weeks);
-    await redisClient.setEx(cacheKey, 300, JSON.stringify(closes));
-    return closes;
-  } catch (err) {
-    return [];
+function sectorsFromSupportedStocks() {
+  const bySector = new Map();
+  for (const [ticker, meta] of Object.entries(SUPPORTED_STOCKS)) {
+    const sector = meta.sector || 'Other';
+    if (!bySector.has(sector)) bySector.set(sector, []);
+    bySector.get(sector).push(ticker);
   }
+  return [...bySector.entries()].map(([name, tickers]) => ({
+    sector: name,
+    tickers,
+    requestedConstituentCount: Math.min(tickers.length, MAX_CONSTITUENTS_PER_SECTOR),
+    selected: tickers.slice(0, MAX_CONSTITUENTS_PER_SECTOR),
+  }));
 }
 
-async function computeJdKRotation() {
-  const benchmarkSymbol = INDEX_SYMBOLS['NIFTY 50'] || Object.values(INDEX_SYMBOLS)[0];
+function insufficientResult(sector, requestedConstituentCount, constituentCount, coveragePct, reason, source) {
+  return {
+    sector,
+    status: 'INSUFFICIENT_DATA',
+    reason,
+    relativeStrength: null,
+    relativeMomentum: null,
+    quadrant: null,
+    rank: null,
+    constituentCount,
+    requestedConstituentCount,
+    coveragePct: Number(coveragePct.toFixed(4)),
+    period: { range: HISTORY_RANGE, interval: 'ONE_DAY' },
+    source,
+    asOf: new Date().toISOString(),
+    methodologyVersion: METHODOLOGY_VERSION,
+  };
+}
 
-  // Fetch benchmark closes
-  const benchSeries = await fetchWeeklyCloses(benchmarkSymbol, WEEKS);
-  if (!benchSeries || benchSeries.length === 0) {
-    // If historical data unavailable (API disabled / Node env mismatch),
-    // produce a synthetic but stable-looking series so the frontend can render
-    // a representative RRG while real data is fixed later.
-    const synthetic = SECTORS.map((s, si) => {
-      const seed = si * 0.7 + 0.3;
-      const series = [];
-      for (let i = 0; i < WEEKS; i++) {
-        const t = Date.now() - (WEEKS - i) * 7 * 24 * 3600 * 1000;
-        const x = Math.sin((i + seed) * 0.7) * 0.06 + (s.weight || 10) / 500; // bias by weight
-        const y = Math.cos((i + seed) * 0.6) * 0.06;
-        series.push({ t, x, y });
-      }
-      const last = series[series.length - 1];
-      const prev = series[series.length - 2] || last;
-      const velocity = { dx: last.x - prev.x, dy: last.y - prev.y };
-      return { id: s.id, name: s.name, leaders: s.leaders, weight: s.weight, series, current: last, velocity };
+export function createSectorRotationService(provider = new AngelOneProvider(), { minRequestIntervalMs = MIN_REQUEST_INTERVAL_MS } = {}) {
+  // Redis is optional infrastructure (redisClient.js already degrades to a
+  // silent no-op when it isn't running) — but for THIS endpoint, a
+  // Redis-less environment would otherwise re-pay the full ~190-ticker,
+  // rate-limited fetch (~60s+) on every single request, forever. This
+  // in-process Map is a same-instance fast-path fallback so repeat requests
+  // are fast even without Redis; when Redis IS available it's used too, for
+  // cross-instance sharing behind a load balancer. Scoped per service
+  // instance (not module-level) so independent instances — e.g. different
+  // fake providers in tests — never share stale cached data.
+  const memoryCache = new Map(); // key -> { value, expiresAt }
+
+  function memoryCacheGet(key) {
+    const entry = memoryCache.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt < Date.now()) { memoryCache.delete(key); return null; }
+    return entry.value;
+  }
+
+  function memoryCacheSet(key, value, ttlSeconds) {
+    memoryCache.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
+  }
+
+  async function cacheGet(key) {
+    const cached = memoryCacheGet(key);
+    if (cached !== null) return cached;
+    return getCache(key);
+  }
+
+  async function cacheSet(key, value, ttlSeconds) {
+    memoryCacheSet(key, value, ttlSeconds);
+    await setCache(key, value, ttlSeconds);
+  }
+
+  async function fetchDailyCloses(ticker) {
+    const cacheKey = `sector-rotation:candles:v2:${ticker}:${HISTORY_RANGE}`;
+    const cached = await cacheGet(cacheKey);
+    if (cached) return cached;
+
+    let candles;
+    try {
+      candles = await provider.getHistoricalData(ticker, HISTORY_RANGE);
+    } catch (error) {
+      logger.debug(`SectorRotationService: historical data unavailable for ${ticker}: ${error.message}`);
+      candles = [];
+    }
+
+    const cleaned = (Array.isArray(candles) ? candles : [])
+      .filter((candle) => candle && Number.isFinite(candle.timestamp) && Number.isFinite(candle.close))
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .filter((candle, index, sorted) => index === 0 || candle.timestamp !== sorted[index - 1].timestamp);
+
+    if (cleaned.length) await cacheSet(cacheKey, cleaned, CANDLE_CACHE_TTL);
+    return cleaned;
+  }
+
+  async function computeSectorAnalytics() {
+    const asOf = new Date().toISOString();
+    const source = provider.providerName || 'Angel One';
+    const benchmarkSymbol = INDEX_SYMBOLS['NIFTY 50'] || Object.values(INDEX_SYMBOLS)[0];
+    const benchmarkCandles = await fetchDailyCloses(benchmarkSymbol);
+    if (!benchmarkCandles.length) {
+      throw new Error(`Sector rotation unavailable: no benchmark (${benchmarkSymbol}) historical data from ${source}.`);
+    }
+    const benchmarkCloses = closesByDate(benchmarkCandles);
+
+    const sectors = sectorsFromSupportedStocks();
+    const uniqueTickers = [...new Set(sectors.flatMap((s) => s.selected))];
+    const candlesByTicker = new Map();
+    const settled = await settleRateLimited(uniqueTickers, (ticker) => fetchDailyCloses(ticker), minRequestIntervalMs);
+    settled.forEach((result, index) => {
+      candlesByTicker.set(uniqueTickers[index], result.status === 'fulfilled' ? result.value : []);
     });
-    return synthetic;
-  }
 
-  const ptsOut = [];
-  for (const s of SECTORS) {
-    const leaders = s.leaders || [];
-    // fetch weekly closes for each leader in parallel
-    const leaderPromises = leaders.map((t) => fetchWeeklyCloses(t, WEEKS));
-    const leadersSeries = await Promise.all(leaderPromises);
+    const sufficient = [];
+    const insufficient = [];
 
-    // For each week index, compute average close across leaders that have data
-    const series = [];
-    for (let i = 0; i < benchSeries.length; i++) {
-      const benchClose = benchSeries[i]?.close;
-      // collect leader closes at same index (aligned by latest)
-      const closes = leadersSeries.map((ls) => ls[i]?.close).filter((v) => v != null);
-      let sectorClose = null;
-      if (closes.length > 0) {
-        const sum = closes.reduce((a, b) => a + b, 0);
-        sectorClose = sum / closes.length;
+    for (const { sector, requestedConstituentCount, selected } of sectors) {
+      const constituentCloses = selected
+        .map((ticker) => closesByDate(candlesByTicker.get(ticker) || []))
+        .filter((closes) => closes.size > 0);
+
+      const constituentCount = constituentCloses.length;
+      const coveragePct = requestedConstituentCount > 0 ? constituentCount / requestedConstituentCount : 0;
+
+      if (constituentCount < MIN_CONSTITUENTS || coveragePct < MIN_COVERAGE_PCT) {
+        insufficient.push(insufficientResult(sector, requestedConstituentCount, constituentCount, coveragePct, 'INSUFFICIENT_CONSTITUENT_COVERAGE', source));
+        continue;
       }
-      // fallback to sector metadata if missing
-      if (sectorClose == null || benchClose == null) {
-        series.push({ t: benchSeries[i].t, sectorClose: null, benchClose: benchClose, rs: null });
-      } else {
-        const rs = sectorClose / benchClose;
-        series.push({ t: benchSeries[i].t, sectorClose, benchClose, rs });
+
+      const alignedDates = intersectDates([...constituentCloses, benchmarkCloses]);
+      if (alignedDates.length < MIN_ALIGNED_OBSERVATIONS) {
+        insufficient.push(insufficientResult(sector, requestedConstituentCount, constituentCount, coveragePct, 'INSUFFICIENT_ALIGNED_OBSERVATIONS', source));
+        continue;
       }
+
+      const normalizedConstituents = constituentCloses
+        .map((closes) => normalizeSeries(alignedDates, closes))
+        .filter(Boolean);
+      if (normalizedConstituents.length < MIN_CONSTITUENTS) {
+        insufficient.push(insufficientResult(sector, requestedConstituentCount, constituentCount, coveragePct, 'NORMALIZATION_FAILED', source));
+        continue;
+      }
+
+      const sectorIndex = buildEqualWeightIndex(normalizedConstituents);
+      const benchmarkIndex = normalizeSeries(alignedDates, benchmarkCloses);
+      const rsSeries = computeRelativeStrengthSeries(sectorIndex, benchmarkIndex);
+      const relativeStrength = rsSeries[rsSeries.length - 1];
+      const relativeMomentum = computeRelativeMomentum(rsSeries, MOMENTUM_WINDOW);
+
+      sufficient.push({
+        sector,
+        status: 'OK',
+        relativeStrength: Number(relativeStrength.toFixed(6)),
+        relativeMomentum: Number(relativeMomentum.toFixed(6)),
+        quadrant: classifyQuadrant(relativeStrength, relativeMomentum),
+        rank: null, // assigned below, across all sufficient sectors
+        constituentCount,
+        requestedConstituentCount,
+        coveragePct: Number(coveragePct.toFixed(4)),
+        period: {
+          range: HISTORY_RANGE,
+          interval: 'ONE_DAY',
+          from: alignedDates[0],
+          to: alignedDates[alignedDates.length - 1],
+          observations: alignedDates.length,
+        },
+        source,
+        asOf,
+        methodologyVersion: METHODOLOGY_VERSION,
+      });
     }
 
-    // extract RS values and compute smoothed RS and momentum
-    const rsVals = series.map((p) => (p.rs == null ? 0 : p.rs));
-    const smoothed = ema(rsVals, EMA_SPAN);
-    const points = [];
-    for (let i = 0; i < series.length; i++) {
-      const t = series[i].t;
-      const sm = smoothed[i] || 0;
-      const prev = smoothed[i - 1] || sm;
-      const momentum = prev === 0 ? 0 : (sm - prev) / Math.abs(prev);
-      // x = smoothed RS minus 1 (so 0 => parity with benchmark), y = momentum
-      points.push({ t, x: sm - 1, y: momentum });
-    }
-
-    // compute velocity vector for last point
-    const lastPt = points[points.length - 1] || { x: 0, y: 0 };
-    const prevPt = points[points.length - 2] || lastPt;
-    const velocity = { dx: lastPt.x - prevPt.x, dy: lastPt.y - prevPt.y };
-
-    ptsOut.push({ id: s.id, name: s.name, leaders: s.leaders, weight: s.weight, series: points, current: lastPt, velocity });
+    rankSectors(sufficient);
+    return [...sufficient, ...insufficient];
   }
 
-  return ptsOut;
+  return {
+    async getSectorRotation() {
+      const cacheKey = 'sector-rotation:normalized:v2';
+      const cached = await cacheGet(cacheKey);
+      if (cached) return cached;
+      const result = await computeSectorAnalytics();
+      await cacheSet(cacheKey, result, ROTATION_CACHE_TTL);
+      return result;
+    },
+  };
 }
 
-const SectorRotationService = {
-  async getSectorRotation() {
-    const cacheKey = 'sector-rotation:jdkrgg:v1';
-    const cached = await redisClient.get(cacheKey);
-    if (cached) return JSON.parse(cached);
-    const pts = await computeJdKRotation();
-    await redisClient.setEx(cacheKey, 60, JSON.stringify(pts));
-    return pts;
-  },
-};
+// Lazily constructs the real AngelOneProvider on first use (not at module
+// load) so importing this module — e.g. from tests that inject their own
+// fake provider via createSectorRotationService() — never requires Angel
+// One credentials to be configured.
+let defaultServiceInstance = null;
+function getDefaultService() {
+  if (!defaultServiceInstance) defaultServiceInstance = createSectorRotationService();
+  return defaultServiceInstance;
+}
 
-export default SectorRotationService;
+export default {
+  getSectorRotation: (...args) => getDefaultService().getSectorRotation(...args),
+};

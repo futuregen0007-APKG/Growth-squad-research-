@@ -293,6 +293,22 @@ export function createStockRoutes(stockService) {
   });
 
   /**
+   * GET /api/stocks/:symbol/research
+   * =================================
+   * Provider-neutral company research bundle (profile, financials, key
+   * metrics, shareholding, corporate actions, analyst data, news) sourced
+   * from the configured CompanyResearchProvider (IndianAPI). Independent
+   * of Angel One live pricing — a research-provider outage never affects
+   * /details, /history, or live quotes.
+   *
+   * EXAMPLE:
+   * GET /api/stocks/TCS/research
+   */
+  router.get('/:symbol/research', (req, res, next) => {
+    return controller.getCompanyResearch(req, res, next);
+  });
+
+  /**
    * GET /api/stocks/:symbol/history?range=1Y&interval=ONE_DAY
    * ===========================================================
    * Real historical OHLCV candles for the stock detail price chart.

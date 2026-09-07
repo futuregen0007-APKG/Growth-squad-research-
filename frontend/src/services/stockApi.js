@@ -1,6 +1,4 @@
 import axios from 'axios';
-import { STOCKS, FALLBACK_STOCK_DATA } from '@/data/mockData';
-
 import API_BASE from '@/config/api';
 
 const BASE = API_BASE;
@@ -11,31 +9,29 @@ const api = axios.create({
   timeout: 10000,
 });
 
-const generateSeries = (start, length = 30) => {
-  const base = Number(start) || 0;
-  return Array.from({ length }, (_, idx) => ({
-    x: idx,
-    v: Number((base + (Math.random() - 0.5) * base * 0.02).toFixed(2)),
-  }));
-};
-
 const addSeries = (stock) => {
   if (!stock) return stock;
   return {
     ...stock,
-    series: stock.series || generateSeries(stock.price || 0),
+    series: Array.isArray(stock.series) ? stock.series : [],
   };
 };
 
 const addSeriesToList = (stocks) => stocks.map(addSeries);
 
+// A caller-initiated AbortController cancellation (component unmount, a
+// dependency changing before the previous request settled — including
+// React StrictMode's dev-only double-effect-invoke) is expected, not a
+// failure; logging it as an error is just console noise.
+const isCanceled = (error) => axios.isCancel(error) || error.code === 'ERR_CANCELED' || error.name === 'CanceledError';
+
 // Fetch all stocks
-export const fetchAllStocks = async () => {
+export const fetchAllStocks = async (options = {}) => {
   try {
-    const response = await api.get('/stocks');
+    const response = await api.get('/stocks', options);
     return addSeriesToList(response.data.data || []);
   } catch (error) {
-    console.error('Error fetching stocks:', error);
+    if (!isCanceled(error)) console.error('Error fetching stocks:', error);
     throw error;
   }
 };
@@ -86,17 +82,20 @@ export const fetchHistoricalData = async (symbol, range = '1Y', interval, option
     });
     return response.data.data;
   } catch (error) {
-    console.error(`Error fetching historical data for ${symbol}:`, error);
+    if (!isCanceled(error)) console.error(`Error fetching historical data for ${symbol}:`, error);
     throw error;
   }
 };
 
-// Real sector rotation data (JdK RRG: relative-strength ratio + momentum per
-// sector, computed server-side from live Angel One weekly candles). This is
-// NOT a %-change heatmap — each sector's `current.x` is its real relative
-// strength vs Nifty (deviation from 1, as a ratio) and `current.y` is real
-// momentum (rate of change of that ratio). Never fabricate a 1D % change
-// from this data; render x/y as what they actually are.
+// Real sector relative-strength analytics, computed server-side from live
+// Angel One daily candles: each constituent is normalized to 100 at a
+// common start date, averaged into an equal-weight sector index, then
+// divided by a similarly-normalized Nifty 50 index. `relativeStrength` is
+// that ratio (NOT a %-change/heatmap value — never label it "% gain") and
+// `relativeMomentum` is its trailing rate of change. Sectors without enough
+// constituent coverage or aligned trading days come back with
+// status: 'INSUFFICIENT_DATA' and null numeric fields — never a
+// neutral/fallback number. Render exactly what the backend returns.
 export const fetchSectorRotation = async (options = {}) => {
   const response = await api.get('/sector-rotation', options);
   return response.data.data || [];
@@ -132,7 +131,7 @@ export const searchStocks = async (query) => {
 // Get market status
 export const fetchMarketStatus = async () => {
   try {
-    const response = await api.get('/market/status');
+    const response = await api.get('/stocks/market/status');
     return response.data.data;
   } catch (error) {
     console.error('Error fetching market status:', error);
@@ -140,19 +139,19 @@ export const fetchMarketStatus = async () => {
   }
 };
 
-export const fetchIndexQuotes = async (symbols) => {
+export const fetchIndexQuotes = async (symbols, options = {}) => {
   try {
     const response = await api.get('/stocks/indices', {
       params: { symbols: symbols.join(',') },
+      ...options,
     });
     return response.data.data.map((index) => addSeries({
       ...index,
       value: index.price,
     }));
   } catch (error) {
-    console.error('Error fetching index quotes, using fallback:', error);
-    // Return empty array for now
-    return [];
+    if (!isCanceled(error)) console.error('Error fetching index quotes:', error);
+    throw error;
   }
 };
 

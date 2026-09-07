@@ -9,6 +9,7 @@ import {
   createResearchJob,
   getResearchJob,
   getCompanyResearchDebug,
+  getCompanyTimeline,
 } from '../services/ManagementPromiseService.js';
 import ManagementPromise from '../models/ManagementPromise.js';
 import CompanyHistoricalFact from '../models/CompanyHistoricalFact.js';
@@ -51,7 +52,7 @@ router.get('/search', async (req, res, next) => {
 
 router.get('/promise/:id', async (req, res, next) => {
   try {
-    const promise = await ManagementPromise.findById(req.params.id).lean();
+    const promise = await ManagementPromise.findOne({ _id: req.params.id, dataOrigin: 'REAL_RESEARCH' }).lean();
     if (!promise) return res.status(404).json({ success: false, message: 'Promise not found.' });
     return res.json({ success: true, data: promise });
   } catch (error) {
@@ -62,7 +63,7 @@ router.get('/promise/:id', async (req, res, next) => {
 
 router.get('/fact/:id', async (req, res, next) => {
   try {
-    const fact = await CompanyHistoricalFact.findById(req.params.id).lean();
+    const fact = await CompanyHistoricalFact.findOne({ _id: req.params.id, dataOrigin: 'REAL_RESEARCH' }).lean();
     if (!fact) return res.status(404).json({ success: false, message: 'Historical fact not found.' });
     return res.json({ success: true, data: fact });
   } catch (error) {
@@ -141,6 +142,24 @@ router.get('/:symbol/research-debug', async (req, res, next) => {
     res.json({ success: true, data });
   } catch (error) {
     console.error('[Earnings Intelligence] /:symbol/research-debug error:', error);
+    next(error);
+  }
+});
+
+router.get('/:symbol/timeline', async (req, res, next) => {
+  try {
+    const data = await getCompanyTimeline(req.params.symbol);
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[Earnings Intelligence] /:symbol/timeline error:', error);
+    if (error.name === 'MongooseError' || error.name === 'MongoError') {
+      return res.status(503).json({ 
+        success: false, 
+        state: 'DATABASE_ERROR', 
+        error: 'Database connection failed',
+        data: null 
+      });
+    }
     next(error);
   }
 });

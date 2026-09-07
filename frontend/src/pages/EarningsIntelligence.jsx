@@ -108,14 +108,14 @@ function RatingBadge({ rating, score }) {
 function CompanyCard({ report, onOpen }) {
   const score = report.executionScore ?? null;
   const ratingLabel = report.ratingLabel || 'Insufficient verified history';
-  const confidence = report.confidence || 'MEDIUM';
-  const coverage = report.coverage || 'FY2022–FY2026';
+  const confidence = report.confidence || 'INSUFFICIENT EVIDENCE';
+  const coverage = report.coverage || 'Coverage unavailable';
   const snapshot = report.financialSnapshot || {};
   const breakdown = report.scoreBreakdown || {};
   const trackRecord = report.managementTrackRecord || {};
   const factsCount = report.factsCount || 0;
   const sourcesCount = report.sourcesCount || 0;
-  const isResearching = report.researchState === 'RESEARCH_RUNNING';
+  const isResearching = report.researchState === 'RESEARCH_RUNNING' || report.researchState === 'RESEARCH_REQUIRED';
   const hasHistory = factsCount > 0 || score !== null;
 
   return (
@@ -250,7 +250,7 @@ function CompanyCard({ report, onOpen }) {
 
         {/* Verified Facts & Sources Metadata */}
         <div className="flex items-center justify-between text-[11px] font-mono text-gs-textDim pt-1">
-          <span>{factsCount > 0 ? `${factsCount} facts · ${sourcesCount || 4} primary sources` : 'Evidence-based'}</span>
+          <span>{factsCount > 0 ? `${factsCount} facts · ${sourcesCount} primary sources` : 'No verified evidence yet'}</span>
           <span className="capitalize">Confidence: <strong className="text-gs-text uppercase">{confidence}</strong></span>
         </div>
 
@@ -368,6 +368,195 @@ function HistoricalFactRow({ fact }) {
 }
 
 /**
+ * Timeline Promise Card Component (Phase 6)
+ */
+function TimelinePromiseCard({ promise }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const status = promise.status || 'INSUFFICIENT_EVIDENCE';
+  const hasOutcome = promise.outcome?.actualValue != null;
+
+  let statusBadge = (
+    <Badge variant="outline" className="text-[10px] font-mono border-zinc-600 text-zinc-400 bg-zinc-900/50 flex items-center gap-1">
+      <Clock3 className="w-3 h-3" /> INSUFFICIENT_EVIDENCE
+    </Badge>
+  );
+
+  if (status === 'EXCEEDED') {
+    statusBadge = (
+      <Badge variant="outline" className="text-[10px] font-mono border-emerald-500 text-emerald-300 bg-emerald-950/50 flex items-center gap-1">
+        <TrendingUp className="w-3 h-3 text-emerald-400" /> EXCEEDED
+      </Badge>
+    );
+  } else if (status === 'FULFILLED') {
+    statusBadge = (
+      <Badge variant="outline" className="text-[10px] font-mono border-emerald-500 text-emerald-300 bg-emerald-950/50 flex items-center gap-1">
+        <CheckCircle2 className="w-3 h-3 text-emerald-400" /> FULFILLED
+      </Badge>
+    );
+  } else if (status === 'PARTIALLY_FULFILLED') {
+    statusBadge = (
+      <Badge variant="outline" className="text-[10px] font-mono border-amber-500 text-amber-300 bg-amber-950/50 flex items-center gap-1">
+        <AlertTriangle className="w-3 h-3 text-amber-400" /> PARTIALLY_FULFILLED
+      </Badge>
+    );
+  } else if (status === 'MISSED') {
+    statusBadge = (
+      <Badge variant="outline" className="text-[10px] font-mono border-rose-500 text-rose-300 bg-rose-950/50 flex items-center gap-1">
+        <XCircle className="w-3 h-3 text-rose-400" /> MISSED
+      </Badge>
+    );
+  } else if (status === 'PENDING') {
+    statusBadge = (
+      <Badge variant="outline" className="text-[10px] font-mono border-amber-600 text-amber-300 bg-amber-950/50 flex items-center gap-1">
+        <Clock3 className="w-3 h-3 text-amber-400" /> PENDING
+      </Badge>
+    );
+  }
+
+  return (
+    <div className="p-4 bg-gs-panel/40 border border-gs-border/60 rounded hover:border-gs-gold/40 transition-all">
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-2 min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-mono text-xs font-bold text-gs-gold">{promise.period || 'PERIOD'}</span>
+            <span className="font-mono text-[11px] text-gs-textDim">{promise.metric || 'METRIC'}</span>
+            {statusBadge}
+            {promise.confidence != null && (
+              <span className="font-mono text-[10px] text-gs-textDim">Confidence: {(promise.confidence * 100).toFixed(0)}%</span>
+            )}
+          </div>
+          <div className="font-medium text-gs-text text-sm leading-snug">"{promise.statement}"</div>
+          
+          {/* Target Display */}
+          <div className="flex items-center gap-3 text-xs font-mono bg-gs-bg/60 p-2 rounded border border-gs-border/40 flex-wrap">
+            <div>
+              <span className="text-gs-textDim block text-[10px] uppercase">TARGET</span>
+              <span className="font-bold text-gs-text">
+                {promise.operator ? `${promise.operator} ` : ''}{promise.targetValue} {promise.targetUnit}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <button 
+          onClick={() => setExpanded(!expanded)} 
+          className="text-gs-textDim hover:text-gs-gold text-xs font-mono flex items-center gap-0.5 shrink-0"
+        >
+          {expanded ? 'Less' : 'Evidence & Outcome'}
+          <ChevronDown className={`w-3.5 h-3.5 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="mt-4 pt-4 border-t border-gs-border/40 space-y-3">
+          {/* Evidence Section */}
+          {promise.evidence && (
+            <div className="bg-gs-bg/80 p-3 rounded border border-gs-border/40 text-xs">
+              <div className="font-mono text-[10px] uppercase text-gs-textDim mb-2">SOURCE EVIDENCE</div>
+              <div className="space-y-2 text-[11px] font-mono">
+                <div className="flex items-center justify-between">
+                  <span className="text-gs-textDim">Document:</span>
+                  <span className="font-semibold text-gs-text">{promise.evidence.documentTitle || 'N/A'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gs-textDim">Source:</span>
+                  <span className="font-semibold text-gs-text">{promise.evidence.sourceName || 'N/A'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gs-textDim">Published:</span>
+                  <span className="text-gs-text">{formatDate(promise.evidence.publicationDate)}</span>
+                </div>
+                {promise.evidence.page && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-gs-textDim">Page:</span>
+                    <span className="text-gs-text">{promise.evidence.page}</span>
+                  </div>
+                )}
+                {promise.evidence.excerpt && (
+                  <div className="italic text-gs-textDim text-[10px] bg-gs-panel/50 p-2 rounded mt-2 border-l-2 border-gs-gold">
+                    "{promise.evidence.excerpt}"
+                  </div>
+                )}
+                {promise.evidence.sourceUrl && (
+                  <div className="pt-1">
+                    <a 
+                      href={promise.evidence.sourceUrl} 
+                      target="_blank" 
+                      rel="noreferrer" 
+                      className="text-gs-gold hover:underline inline-flex items-center gap-1 text-[11px]"
+                    >
+                      Open Source Document <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Outcome Section */}
+          {hasOutcome ? (
+            <div className="bg-gs-bg/80 p-3 rounded border border-gs-border/40 text-xs">
+              <div className="font-mono text-[10px] uppercase text-gs-textDim mb-2">VERIFIED OUTCOME</div>
+              <div className="space-y-2 text-[11px] font-mono">
+                <div className="flex items-center justify-between">
+                  <span className="text-gs-textDim">Actual Value:</span>
+                  <span className="font-bold text-gs-gold">{promise.outcome.actualValue} {promise.outcome.actualUnit}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gs-textDim">Period:</span>
+                  <span className="text-gs-text">{promise.outcome.actualPeriod || 'N/A'}</span>
+                </div>
+                {promise.outcome.statement && (
+                  <div className="mt-2">
+                    <span className="text-gs-textDim block text-[10px] uppercase">Outcome Statement</span>
+                    <p className="mt-0.5 text-gs-text">{promise.outcome.statement}</p>
+                  </div>
+                )}
+                {promise.outcome.sourceDate && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-gs-textDim">Outcome Date:</span>
+                    <span className="text-gs-text">{formatDate(promise.outcome.sourceDate)}</span>
+                  </div>
+                )}
+                {promise.outcome.excerpt && (
+                  <div className="italic text-gs-textDim text-[10px] bg-gs-panel/50 p-2 rounded mt-2 border-l-2 border-emerald-500">
+                    "{promise.outcome.excerpt}"
+                  </div>
+                )}
+                {promise.outcome.sourceUrl && (
+                  <div className="pt-1">
+                    <a 
+                      href={promise.outcome.sourceUrl} 
+                      target="_blank" 
+                      rel="noreferrer" 
+                      className="text-gs-gold hover:underline inline-flex items-center gap-1 text-[11px]"
+                    >
+                      Open Outcome Document <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="bg-gs-panel/30 p-3 rounded border border-gs-border/40 text-xs">
+              <div className="font-mono text-[10px] uppercase text-gs-textDim mb-1">OUTCOME STATUS</div>
+              <div className="text-gs-textMuted text-[11px]">
+                {status === 'INSUFFICIENT_EVIDENCE' 
+                  ? 'No reliable later outcome was found in official documents.'
+                  : status === 'PENDING'
+                  ? 'Outcome not yet available - target period is in the future.'
+                  : 'Outcome data not available.'}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * Management Promise Row Component
  */
 function PromiseRow({ promise }) {
@@ -388,7 +577,13 @@ function PromiseRow({ promise }) {
     </Badge>
   );
 
-  if (status === 'FULFILLED') {
+  if (status === 'EXCEEDED') {
+    statusBadge = (
+      <Badge variant="outline" className="text-[10px] font-mono border-emerald-500 text-emerald-300 bg-emerald-950/50 flex items-center gap-1">
+        <TrendingUp className="w-3 h-3 text-emerald-400" /> EXCEEDED ({achievement != null ? `${achievement}%` : ' above target'})
+      </Badge>
+    );
+  } else if (status === 'FULFILLED') {
     statusBadge = (
       <Badge variant="outline" className="text-[10px] font-mono border-emerald-500 text-emerald-300 bg-emerald-950/50 flex items-center gap-1">
         <CheckCircle2 className="w-3 h-3 text-emerald-400" /> FULFILLED ({achievement != null ? `${achievement}%` : '100%'})
@@ -520,6 +715,8 @@ function CompanyReport({ symbol, onBack }) {
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState('financials');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
+  const [timelineData, setTimelineData] = useState(null);
+  const [timelineLoading, setTimelineLoading] = useState(false);
 
   const fetchReport = useCallback(async () => {
     try {
@@ -534,9 +731,28 @@ function CompanyReport({ symbol, onBack }) {
     }
   }, [symbol]);
 
+  const fetchTimeline = useCallback(async () => {
+    try {
+      setTimelineLoading(true);
+      const res = await apiClient.get(`/api/earnings-intelligence/${symbol}/timeline`);
+      const payload = res?.data ?? res;
+      setTimelineData(payload);
+    } catch (err) {
+      console.error('Failed to load timeline data:', err);
+    } finally {
+      setTimelineLoading(false);
+    }
+  }, [symbol]);
+
   useEffect(() => {
     fetchReport();
   }, [fetchReport]);
+
+  useEffect(() => {
+    if (activeTab === 'guidance') {
+      fetchTimeline();
+    }
+  }, [activeTab, fetchTimeline]);
 
   const handleTriggerResearch = async () => {
     try {
@@ -582,8 +798,8 @@ function CompanyReport({ symbol, onBack }) {
 
   const score = report.executionScore ?? null;
   const ratingLabel = report.ratingLabel || 'Insufficient verified history';
-  const confidence = (typeof report.confidence === 'string' ? report.confidence : report.confidence?.level) || 'MEDIUM';
-  const coverage = report.coverage || 'FY2022–FY2026';
+  const confidence = (typeof report.confidence === 'string' ? report.confidence : report.confidence?.level) || 'INSUFFICIENT EVIDENCE';
+  const coverage = report.coverage || 'Coverage unavailable';
   const snapshot = report.financialSnapshot || {};
   const breakdown = report.scoreBreakdown || {};
   const promises = report.promises || [];
@@ -636,7 +852,7 @@ function CompanyReport({ symbol, onBack }) {
               <span>·</span>
               <span>{report.confidence?.verifiedFactsCount || report.historicalFacts?.length || 0} Verified Facts</span>
               <span>·</span>
-              <span>{sourceDocs.length || 5} Primary Source Documents</span>
+              <span>{sourceDocs.length} Primary Source Documents</span>
             </p>
           </div>
 
@@ -921,29 +1137,66 @@ function CompanyReport({ symbol, onBack }) {
           </div>
         )}
 
-        {/* TAB 2: SECTION B - Management Guidance Track Record */}
+        {/* TAB 2: SECTION B - Management Promise Timeline */}
         {activeTab === 'guidance' && (
           <div className="space-y-4">
+            {/* Summary Cards */}
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+              <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">
+                <div className="text-[11px] font-mono text-gs-textDim uppercase">Total Promises</div>
+                <div className="font-display text-2xl font-bold text-gs-text mt-1">{timelineData?.summary?.totalPromises || 0}</div>
+                <div className="text-[10px] font-mono text-gs-textDim mt-0.5">All Management Targets</div>
+              </Card>
+
+              <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">
+                <div className="text-[11px] font-mono text-gs-textDim uppercase">Verified</div>
+                <div className="font-display text-2xl font-bold text-emerald-400 mt-1">{timelineData?.summary?.verified || 0}</div>
+                <div className="text-[10px] font-mono text-gs-textDim mt-0.5">Fulfilled/Exceeded</div>
+              </Card>
+
+              <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">
+                <div className="text-[11px] font-mono text-gs-textDim uppercase">Missed</div>
+                <div className="font-display text-2xl font-bold text-rose-400 mt-1">{timelineData?.summary?.missed || 0}</div>
+                <div className="text-[10px] font-mono text-gs-textDim mt-0.5">Targets Not Met</div>
+              </Card>
+
+              <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">
+                <div className="text-[11px] font-mono text-gs-textDim uppercase">Pending</div>
+                <div className="font-display text-2xl font-bold text-amber-400 mt-1">{timelineData?.summary?.pending || 0}</div>
+                <div className="text-[10px] font-mono text-gs-textDim mt-0.5">Awaiting Outcome</div>
+              </Card>
+
+              <Card className="bg-gs-panel/40 border-gs-border p-3 text-center col-span-2 sm:col-span-1">
+                <div className="text-[11px] font-mono text-gs-textDim uppercase">Insufficient Evidence</div>
+                <div className="font-display text-2xl font-bold text-zinc-400 mt-1">{timelineData?.summary?.insufficientEvidence || 0}</div>
+                <div className="text-[10px] font-mono text-gs-textDim mt-0.5">No Reliable Outcome</div>
+              </Card>
+            </div>
+
+            {/* Timeline Header */}
             <div className="p-4 bg-gs-card border border-gs-border rounded flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs font-mono">
               <div>
-                <div className="text-gs-gold font-bold uppercase text-[11px]">Management Guidance vs. Verified Outcome</div>
-                <div className="text-gs-textDim mt-0.5">Measurable management statements compared against verified outcomes with source citations.</div>
-              </div>
-              <div className="text-gs-text font-semibold shrink-0 bg-gs-panel/60 px-3 py-1.5 rounded border border-gs-border/60">
-                Success Rate: <strong className="text-gs-gold">{report.guidanceSuccessRate != null ? `${report.guidanceSuccessRate}%` : 'Tracked'}</strong> · {promises.length} Targets Verified
+                <div className="text-gs-gold font-bold uppercase text-[11px]">Management Promise Timeline</div>
+                <div className="text-gs-textDim mt-0.5">Measurable management statements with source citations and verified outcomes.</div>
               </div>
             </div>
 
-            {promises.length > 0 ? (
+            {/* Loading State */}
+            {timelineLoading ? (
+              <div className="p-8 text-center space-y-4">
+                <RefreshCw className="w-8 h-8 text-gs-gold animate-spin mx-auto" />
+                <div className="font-mono text-sm text-gs-textDim">Loading promise timeline...</div>
+              </div>
+            ) : timelineData?.promises?.length > 0 ? (
               <div className="space-y-3">
-                {promises.map((promise, idx) => (
-                  <PromiseRow key={promise._id || idx} promise={promise} />
+                {timelineData.promises.map((promise, idx) => (
+                  <TimelinePromiseCard key={promise.id || idx} promise={promise} />
                 ))}
               </div>
             ) : (
               <div className="p-8 text-center bg-gs-panel/30 border border-gs-border rounded font-mono text-xs text-gs-textDim space-y-1">
-                <div className="font-semibold text-gs-text">Limited Measurable Management Guidance</div>
-                <div>Company leadership historically provides qualitative directional outlook rather than numeric point targets.</div>
+                <div className="font-semibold text-gs-text">No Management Promises Found</div>
+                <div>Run Historical AI Research to discover management guidance from official documents.</div>
               </div>
             )}
           </div>

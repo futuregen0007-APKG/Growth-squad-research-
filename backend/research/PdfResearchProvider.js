@@ -1,19 +1,12 @@
-import axios from 'axios';
 import pdfParse from 'pdf-parse';
 import { logger } from '../utils/logger.js';
-import { DOCUMENT_TYPES, SOURCE_AUTHORITY } from './DocumentResearchService.js';
+import { DOCUMENT_TYPES, SOURCE_AUTHORITY, discoverPdfLinks, fetchHtml, fetchPdf, isPdfBuffer } from './DocumentResearchService.js';
 
 // Download PDF from URL
 const downloadPdf = async (url, timeout = 30000) => {
   try {
-    const response = await axios.get(url, {
-      timeout,
-      responseType: 'arraybuffer',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-      }
-    });
-    return response.data;
+    const result = await fetchPdf(url, timeout);
+    return result.ok && isPdfBuffer(result.data) ? result.data : null;
   } catch (error) {
     logger.warn(`Failed to download PDF from ${url}: ${error.message}`);
     return null;
@@ -68,13 +61,12 @@ export class PdfResearchProvider {
         
         logger.info(`[PdfResearchProvider] Checking for PDFs at: ${baseUrl}`);
         
-        // For now, this is a placeholder implementation
-        // In a real implementation, you would:
-        // - Fetch the HTML page
-        // - Parse it to find .pdf links
-        // - Download each PDF
-        // - Extract text using pdf-parse
-        // - Create document records
+        const html = await fetchHtml(baseUrl);
+        const links = discoverPdfLinks(html, baseUrl, this.name);
+        for (const link of links) {
+          const document = await this.extractFromUrl(link.url, { title: link.title });
+          if (document) documents.push(document);
+        }
         
       } catch (error) {
         logger.warn(`[PdfResearchProvider] Failed to check ${baseUrl}: ${error.message}`);

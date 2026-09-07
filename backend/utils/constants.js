@@ -207,6 +207,8 @@ const WORKBOOK_STOCKS = [
 
 export const SUPPORTED_STOCKS = {
   ...WORKBOOK_STOCKS,
+  // IT / Software
+  'TCS': { name: 'Tata Consultancy Services', sector: 'IT / Software', currency: 'INR' },
   // Defence
   'HAL': { name: 'Hindustan Aeronautics', sector: 'Defence', currency: 'INR' },
   'BEL': { name: 'Bharat Electronics', sector: 'Defence', currency: 'INR' },

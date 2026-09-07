@@ -428,6 +428,8 @@ export const calculateCapitalAllocationScore = (snapshot, facts = []) => {
  * Overall Deterministic Company Execution Score (0-100)
  */
 export const calculateCompanyExecutionScore = ({ facts = [], promises = [], profile = {} }) => {
+  facts = facts.filter((fact) => fact.dataOrigin !== 'SEEDED_DEMO');
+  promises = promises.filter((promise) => promise.dataOrigin !== 'SEEDED_DEMO');
   const financialSnapshot = buildFinancialSnapshot(facts);
 
   // Insufficient verified history threshold:

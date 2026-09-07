@@ -1,6 +1,12 @@
 import mongoose from 'mongoose';
 
 const researchRunSchema = new mongoose.Schema({
+  dataOrigin: {
+    type: String,
+    enum: ['REAL_RESEARCH', 'SEEDED_DEMO'],
+    default: 'REAL_RESEARCH',
+    index: true,
+  },
   companySymbol: { type: String, required: true, uppercase: true, index: true },
   startedAt: { type: Date, default: Date.now },
   completedAt: { type: Date, default: null },
@@ -61,6 +67,34 @@ const researchRunSchema = new mongoose.Schema({
     documentsFound: { type: Number, default: 0 },
     error: { type: String, default: null }
   }],
+  
+  // Document collection debug information
+  documentCollectionDebug: {
+    urlsAttempted: [{ type: String }],
+    urlsSuccessfullyRetrieved: [{ type: String }],
+    failedUrls: [{
+      url: { type: String },
+      code: { type: String },
+      reason: { type: String },
+      severity: { type: String },
+      tlsDetails: mongoose.Schema.Types.Mixed
+    }],
+    documentsDiscovered: [{ type: String }],
+    linksDiscovered: { type: Number, default: 0 },
+    pdfsDiscovered: [{ type: String }],
+    pdfsSuccessfullyExtracted: [{ type: String }],
+    rejectedDocuments: [{
+      url: { type: String },
+      reason: { type: String },
+      contentLength: { type: Number }
+    }],
+    countsByProvider: mongoose.Schema.Types.Mixed,
+    tlsSummary: {
+      totalTlsErrors: { type: Number, default: 0 },
+      uniqueUrlsWithTlsErrors: [{ type: String }]
+    },
+    stats: mongoose.Schema.Types.Mixed
+  },
   
   // Rejection reasons for debugging
   rejectionReasons: [{ type: String }],

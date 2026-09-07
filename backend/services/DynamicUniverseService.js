@@ -1,5 +1,5 @@
 import { getCache, setCache } from '../utils/redisClient.js';
-import { SUPPORTED_STOCKS, FALLBACK_STOCK_DATA } from '../utils/constants.js';
+import { SUPPORTED_STOCKS } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
 
 const UNIVERSE_CACHE_KEY = 'universe:eligible_stocks';
@@ -41,25 +41,17 @@ export class DynamicUniverseService {
         allStockData = await this.stockService.getAllStocks();
       }
     } catch (err) {
-      logger.warn(`DynamicUniverseService: Failed to fetch from stockService, using fallback pool: ${err.message}`);
+      logger.warn(`DynamicUniverseService: Failed to fetch from stockService: ${err.message}`);
     }
 
     if (!allStockData || allStockData.length === 0) {
-      allStockData = Object.entries(SUPPORTED_STOCKS).map(([ticker, meta]) => {
-        const fallback = FALLBACK_STOCK_DATA[ticker] || {};
-        return {
-          ticker,
-          symbol: ticker,
-          name: meta.name || fallback.name || ticker,
-          sector: meta.sector || fallback.sector || 'General',
-          price: fallback.price || 500,
-          changePct: fallback.changePct || 0,
-          volume: fallback.volume || 100000,
-          marketCap: fallback.marketCap || '₹5000 Cr',
-          pe: fallback.pe || 22,
-          currency: 'INR',
-        };
-      });
+      allStockData = Object.entries(SUPPORTED_STOCKS).map(([ticker, meta]) => ({
+        ticker,
+        symbol: ticker,
+        name: meta.name || ticker,
+        sector: meta.sector || 'General',
+        currency: meta.currency || 'INR',
+      }));
     }
 
     // Filter by Market Cap >= minMarketCapCr (e.g. ₹1,000 Cr) and liquidity

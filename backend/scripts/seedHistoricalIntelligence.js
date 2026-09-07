@@ -1222,10 +1222,26 @@ export const seedHistoricalIntelligence = async () => {
   logger.info('Starting Verified Historical Intelligence seeding for Enterprise Stocks (FY2022–FY2026)...');
 
   for (const [symbol, data] of Object.entries(SEED_DATA)) {
+    // Legacy seed records predate provenance. Mark them as demo before writing
+    // the current seed shape so research queries cannot treat them as real.
+    await CompanyHistoricalFact.updateMany(
+      { symbol, dataOrigin: { $exists: false } },
+      { $set: { dataOrigin: 'SEEDED_DEMO' } },
+    );
+    await ManagementPromise.updateMany(
+      { symbol, dataOrigin: { $exists: false } },
+      { $set: { dataOrigin: 'SEEDED_DEMO' } },
+    );
+    await ResearchRun.updateMany(
+      { companySymbol: symbol, dataOrigin: { $exists: false } },
+      { $set: { dataOrigin: 'SEEDED_DEMO' } },
+    );
+
     // 1. Create or Update ResearchRun
     const researchRun = await ResearchRun.findOneAndUpdate(
-      { companySymbol: symbol },
+      { companySymbol: symbol, dataOrigin: 'SEEDED_DEMO' },
       {
+        dataOrigin: 'SEEDED_DEMO',
         companySymbol: symbol,
         status: 'COMPLETED',
         coverageStart: data.coverageStart,
@@ -1256,6 +1272,7 @@ export const seedHistoricalIntelligence = async () => {
         },
         {
           ...fact,
+          dataOrigin: 'SEEDED_DEMO',
           symbol,
           companyName: data.companyName,
           researchRunId: researchRun._id
@@ -1274,6 +1291,7 @@ export const seedHistoricalIntelligence = async () => {
         },
         {
           ...promise,
+          dataOrigin: 'SEEDED_DEMO',
           symbol,
           companyName: data.companyName,
           researchRunId: researchRun._id

@@ -1,6 +1,12 @@
 import mongoose from 'mongoose';
 
 const managementPromiseSchema = new mongoose.Schema({
+  dataOrigin: {
+    type: String,
+    enum: ['REAL_RESEARCH', 'SEEDED_DEMO'],
+    default: 'REAL_RESEARCH',
+    index: true,
+  },
   companyId: { type: String, required: true, trim: true },
   symbol: { type: String, required: true, uppercase: true, trim: true, index: true },
   companyName: { type: String, required: true, trim: true },
@@ -14,16 +20,18 @@ const managementPromiseSchema = new mongoose.Schema({
       enum: [
         'REVENUE', 'REVENUE_GROWTH', 'EBITDA', 'EBITDA_MARGIN', 'PAT', 'PAT_GROWTH',
         'ORDER_BOOK', 'ORDER_INTAKE', 'ARR', 'BOOKINGS', 'CAPEX', 'DEBT', 'DEBT_REDUCTION',
-        'MARGIN', 'MARKET_SHARE', 'CUSTOMER_COUNT', 'EMPLOYEE_COUNT', 'FREE_CASH_FLOW',
-        'LARGE_DEALS', 'EXPORT_REVENUE', 'OTHER_QUANTIFIABLE', 'OTHER'
+        'MARGIN', 'MARKET_SHARE', 'CUSTOMER_COUNT', 'EMPLOYEE_COUNT', 'EMPLOYEE_PERCENTAGE', 'FREE_CASH_FLOW',
+          'LARGE_DEALS', 'EXPORT_REVENUE', 'NIM', 'CREDIT_GROWTH', 'DEPOSIT_GROWTH', 'CASA',
+          'OTHER_QUANTIFIABLE', 'OTHER'
       ] 
     },
     targetValue: { type: Number, required: true },
     targetUnit: { type: String, required: true, enum: ['INR_CRORE', 'INR_LAKH', 'USD_MILLION', 'USD_BILLION', 'PERCENTAGE', 'COUNT', 'OTHER'] },
     targetPeriod: { type: String, required: true }, // e.g., "FY2026", "Q4 FY2025"
     promiseDate: { type: Date, required: true },
-    direction: { type: String, required: true, enum: ['HIGHER_IS_BETTER', 'LOWER_IS_BETTER', 'TARGET_RANGE'] },
-    importance: { type: String, required: true, enum: ['HIGH', 'MEDIUM', 'LOW'] }
+    direction: { type: String, enum: ['AT_LEAST', 'AT_MOST', 'RANGE', 'EXACT', 'GROWTH', 'OTHER', 'HIGHER_IS_BETTER', 'LOWER_IS_BETTER', 'TARGET_RANGE'], default: null },
+    operator: { type: String, enum: ['GTE', 'LTE', 'EQ', 'RANGE'], default: null },
+    importance: { type: String, required: true, enum: ['HIGH', 'MEDIUM', 'LOW'], default: 'MEDIUM' }
   },
   
   // Outcome details
@@ -34,15 +42,35 @@ const managementPromiseSchema = new mongoose.Schema({
     statement: { type: String, default: null },
     sourceUrl: { type: String, default: null },
     sourceDate: { type: Date, default: null },
-    excerpt: { type: String, default: null }
+    excerpt: { type: String, default: null },
+    // Additive, provider-neutral provenance for the outcome value itself
+    // (as opposed to evidence.outcomeSource, which describes a citable
+    // document). `provider` names a data provider (e.g. 'indian-api',
+    // 'document-research', 'news-api') — never presented as the original
+    // filing publisher. evidenceRecords holds any additional supporting
+    // OutcomeEvidence records beyond the single value used for scoring
+    // (Phase 11: "multiple outcome evidence records").
+    evidenceType: {
+      type: String,
+      enum: ['FINANCIAL_ACTUAL', 'KEY_METRIC', 'CORPORATE_ACTION', 'SHAREHOLDING_CHANGE', 'ANALYST_SNAPSHOT', 'COMPANY_NEWS', 'DOCUMENT_EVIDENCE', null],
+      default: null
+    },
+    provider: { type: String, default: null },
+    evidenceRecords: { type: [mongoose.Schema.Types.Mixed], default: undefined }
   },
-  
+
   // Verification details
   verification: {
     achievementPercentage: { type: Number, default: null },
-    status: { type: String, enum: ['FULFILLED', 'PARTIALLY_FULFILLED', 'MISSED', 'PENDING', 'INSUFFICIENT_EVIDENCE'], default: 'INSUFFICIENT_EVIDENCE' },
+    status: { type: String, enum: ['FULFILLED', 'EXCEEDED', 'PARTIALLY_FULFILLED', 'MISSED', 'PENDING', 'INSUFFICIENT_EVIDENCE', 'CONFLICTING_EVIDENCE'], default: 'INSUFFICIENT_EVIDENCE' },
     calculationExplanation: { type: String, default: null },
-    confidence: { type: Number, default: null, min: 0, max: 1 }
+    confidence: { type: Number, default: null, min: 0, max: 1 },
+    // Additive Phase 10/11 fields — optional, backward compatible with
+    // existing records (absent = not yet evaluated for these dimensions).
+    evidenceQuality: { type: String, enum: ['HIGH', 'MEDIUM', 'LOW', null], default: null },
+    hasConflictingEvidence: { type: Boolean, default: false },
+    conflictDetails: { type: String, default: null },
+    verifiedAt: { type: Date, default: null }
   },
   
   // Explanation details
@@ -71,6 +99,7 @@ const managementPromiseSchema = new mongoose.Schema({
       sourceUrl: { type: String, required: true },
       sourceDate: { type: Date, required: true },
       publicationDate: { type: Date, default: null },
+      page: { type: Number, min: 1, default: null },
       title: { type: String, required: true },
       excerpt: { type: String, required: true },
       documentType: { type: String, default: null },
@@ -128,7 +157,7 @@ const managementPromiseSchema = new mongoose.Schema({
   actualSourceExcerpt: { type: String, default: null },
   achievementPercentage: { type: Number, default: null },
   calculationExplanation: { type: String, default: null },
-  status: { type: String, enum: ['FULFILLED', 'PARTIALLY_FULFILLED', 'MISSED', 'PENDING', 'INSUFFICIENT_EVIDENCE'], default: 'INSUFFICIENT_EVIDENCE' },
+  status: { type: String, enum: ['FULFILLED', 'EXCEEDED', 'PARTIALLY_FULFILLED', 'MISSED', 'PENDING', 'INSUFFICIENT_EVIDENCE'], default: 'INSUFFICIENT_EVIDENCE' },
   importance: { type: String, enum: ['HIGH', 'MEDIUM', 'LOW'], default: 'MEDIUM' },
   sourceType: { type: String, default: null },
   sourceTitle: { type: String, default: null },

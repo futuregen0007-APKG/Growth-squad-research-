@@ -12,18 +12,13 @@ export const isValidArticleUrl = (value) => {
   }
 };
 
-export const fetchStockNews = async (symbol) => {
-  const response = await api.get(`/news/${encodeURIComponent(String(symbol).trim().toUpperCase())}`);
+export const fetchStockNews = async (symbol, options = {}) => {
+  const response = await api.get(`/news/${encodeURIComponent(String(symbol).trim().toUpperCase())}`, options);
   return (response.data.data || []).filter((article) => isValidArticleUrl(article.url));
 };
 
-export const fetchNews = async (symbols) => {
-  const response = await api.get('/news', { params: { symbols: symbols.join(',') } });
-  return (response.data.data || []).flatMap((item) => item.articles || []).filter((article) => isValidArticleUrl(article.url));
-};
-
-// Same endpoint as fetchNews, but also surfaces which symbols failed and the
-// overall provider status — for callers (like Dashboard) that need to show a
+// Surfaces which symbols failed and the overall provider status alongside
+// the merged article list — callers (Dashboard, News) use this to show a
 // partial-results / degraded-state message instead of silently dropping the
 // symbols that failed.
 export const fetchNewsWithStatus = async (symbols, options = {}) => {

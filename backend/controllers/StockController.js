@@ -49,6 +49,7 @@ import {
   createNotFoundError,
   createInvalidInputError,
 } from '../utils/errorHandler.js';
+import { getCompanyResearchBundle } from '../services/CompanyResearchService.js';
 
 /**
  * StockController - HTTP handlers for stock endpoints
@@ -486,6 +487,41 @@ export class StockController {
         success: true,
         data: details,
         message: `Company details for ${symbol}`,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * getCompanyResearch - Handler for GET /api/stocks/:symbol/research
+   *
+   * Provider-neutral company/fundamental research bundle (profile,
+   * financials, key metrics, shareholding, corporate actions, analyst
+   * data, news) sourced from the configured CompanyResearchProvider
+   * (IndianAPI today; swappable via COMPANY_RESEARCH_PROVIDER). Each
+   * section independently reports { available, data, error, asOf } so a
+   * partial provider failure never hides the sections that succeeded and
+   * never crashes this endpoint — it always resolves 200 with an honest
+   * per-section availability flag rather than a fabricated fallback.
+   *
+   * This is deliberately independent of the live-price /details endpoint
+   * (Angel One) so an IndianAPI outage can never affect live pricing.
+   *
+   * EXAMPLE:
+   * GET /api/stocks/TCS/research
+   */
+  async getCompanyResearch(req, res, next) {
+    try {
+      const { symbol } = req.params;
+      logger.debug(`[Controller] getCompanyResearch requested for: ${symbol}`);
+
+      const bundle = await getCompanyResearchBundle(symbol);
+
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        data: bundle,
+        message: `Company research for ${symbol}`,
       });
     } catch (error) {
       next(error);

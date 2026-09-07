@@ -32,11 +32,11 @@ import {
   Line,
   Legend,
 } from "recharts";
-import { getCompanyResearch, STOCKS } from "@/data/mockData";
 import ChangeBadge from "@/components/widgets/ChangeBadge";
 import RatingPanel from "@/components/widgets/RatingPanel";
 import SWOTGrid from "@/components/widgets/SWOTGrid";
 import RiskFlagsList from "@/components/widgets/RiskFlagsList";
+import CompanyResearchSection from "@/components/widgets/CompanyResearchSection";
 import LiveStockPrice from "@/components/LiveStockPrice";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { fetchStockBySymbol, fetchCompanyDetails, fetchHistoricalData } from "@/services/stockApi";
@@ -217,12 +217,12 @@ export default function StockDetail() {
     );
   }
 
-  const research = getCompanyResearch(stock);
   const isPos = (stock.changePct || 0) >= 0;
   const chartData = formatCandlesForChart(history.candles, chartRange);
 
   // Self-contained: sources real Angel One candles via its own fetch above,
-  // independent of company research data.
+  // independent of `details.research` — rendered identically whether or not
+  // company research is available.
   const priceChartCard = (
     <div className="gs-card p-5">
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
@@ -354,9 +354,30 @@ export default function StockDetail() {
     </div>
   );
 
-  const peers = STOCKS.filter(
-    (s) => s.sector === stock.sector && s.ticker !== stock.ticker,
-  ).slice(0, 4);
+  if (!details?.research) {
+    return (
+      <div className="space-y-5 animate-fade-up" data-testid="stock-detail-page">
+        <button onClick={() => navigate(-1)} className="flex items-center gap-2 text-[12px] font-mono uppercase tracking-wider text-gs-textDim hover:text-gs-text">
+          <ArrowLeft className="w-3.5 h-3.5" /> Back
+        </button>
+        <div className="gs-card p-5">
+          <div className="gs-label">Live market data</div>
+          <h1 className="font-display text-3xl font-bold text-gs-text mt-1">{stock.name || stock.ticker}</h1>
+          <div className="font-mono text-xs text-gs-textDim mt-1">NSE · {stock.ticker} · {stock.sector || 'Sector unavailable'}</div>
+          <div className="mt-6 grid grid-cols-2 gap-4">
+            <div><div className="gs-label">Current price</div><div className="font-mono text-xl text-gs-text mt-1">{stock.price == null ? 'Price unavailable' : `₹${Number(stock.price).toLocaleString('en-IN')}`}</div></div>
+            <div><div className="gs-label">Daily change</div><div className="font-mono text-xl text-gs-text mt-1">{stock.changePct == null ? 'Change unavailable' : `${Number(stock.changePct).toFixed(2)}%`}</div></div>
+          </div>
+        </div>
+        {priceChartCard}
+        <CompanyResearchSection symbol={stock.ticker} />
+      </div>
+    );
+  }
+
+  const research = details.research;
+
+  const peers = Array.isArray(details.peers) ? details.peers : [];
 
   return (
     <div className="space-y-5 animate-fade-up" data-testid="stock-detail-page">
@@ -944,6 +965,9 @@ export default function StockDetail() {
         </div>
       </div>
 
+      {/* Company Research (IndianAPI-backed, provider-neutral) */}
+      <CompanyResearchSection symbol={stock.ticker} />
+
       {/* News */}
       <div className="gs-card p-5" data-testid="related-news">
         <h3 className="font-display font-bold text-gs-text mb-3">Related News</h3>
@@ -957,7 +981,7 @@ export default function StockDetail() {
               <div className="p-3.5">
                 <div className="flex items-center justify-between mb-1.5">
                   <span className="font-mono text-[10px] uppercase tracking-wider text-gs-textDim">{article.source}</span>
-                  <span className="font-mono text-[10px] text-gs-textDim">{article.publishedAt ? new Date(article.publishedAt).toLocaleDateString('en-IN') : 'Date unavailable'}</span>
+                  <span className="font-mono text-[10px] text-gs-textDim">{article.publishedAt ? new Date(article.publishedAt).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'Date unavailable'}</span>
                 </div>
                 <p className="text-[12.5px] text-gs-text leading-snug flex items-start gap-1.5">{article.title}<ExternalLink className="w-3 h-3 text-gs-textDim group-hover:text-gs-gold shrink-0 mt-0.5" /></p>
               </div>

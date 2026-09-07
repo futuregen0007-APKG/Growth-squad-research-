@@ -19,7 +19,7 @@
  */
 
 import { getCache, setCache, deleteCache } from '../utils/redisClient.js';
-import { CACHE_TTL, SUPPORTED_STOCKS, FALLBACK_STOCK_DATA, INDEX_SYMBOLS, HISTORY_RANGES, HISTORY_INTERVALS, DEFAULT_INTERVAL_BY_RANGE } from '../utils/constants.js';
+import { CACHE_TTL, SUPPORTED_STOCKS, INDEX_SYMBOLS, HISTORY_RANGES, HISTORY_INTERVALS, DEFAULT_INTERVAL_BY_RANGE } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
 import {
   createNotFoundError,
@@ -179,28 +179,8 @@ export class StockService {
           logger.warn(`Market provider fetch encountered an issue: ${providerError.message}`);
         }
 
-        // For any symbol not returned by provider (e.g. offline/network issue/weekend), use fallback
-        for (const symbol of missingSymbols) {
-          if (!cachedMap.has(symbol)) {
-            const fallback = FALLBACK_STOCK_DATA[symbol] || {
-              ticker: symbol,
-              name: SUPPORTED_STOCKS[symbol]?.name || symbol,
-              sector: SUPPORTED_STOCKS[symbol]?.sector || 'General',
-              price: 500.0,
-              changePct: 0.0,
-              change: 0.0,
-              high: 510.0,
-              low: 490.0,
-              open: 500.0,
-              volume: 1000000,
-              marketCap: '₹10,000 Cr',
-              pe: 22.0,
-              currency: 'INR',
-            };
-            const enriched = this._enrichStockData(fallback);
-            cachedMap.set(symbol, enriched);
-          }
-        }
+        // Do not manufacture prices when a provider is unavailable. Missing
+        // symbols are omitted so callers can render an explicit unavailable state.
       }
 
       const orderedResults = validatedSymbols.map((symbol) => cachedMap.get(symbol));
@@ -542,8 +522,7 @@ export class StockService {
 
     const upperSymbol = symbol.trim().toUpperCase();
 
-    // If symbol exists in supported list or fallback data, return immediately
-    if (SUPPORTED_STOCKS[upperSymbol] || FALLBACK_STOCK_DATA[upperSymbol] || INDEX_SYMBOLS[upperSymbol]) {
+    if (SUPPORTED_STOCKS[upperSymbol] || INDEX_SYMBOLS[upperSymbol]) {
       return upperSymbol;
     }
 

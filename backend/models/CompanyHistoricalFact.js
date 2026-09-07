@@ -33,6 +33,12 @@ export const SOURCE_TYPES = [
 ];
 
 const companyHistoricalFactSchema = new mongoose.Schema({
+  dataOrigin: {
+    type: String,
+    enum: ['REAL_RESEARCH', 'SEEDED_DEMO'],
+    default: 'REAL_RESEARCH',
+    index: true,
+  },
   symbol: { 
     type: String, 
     required: true, 
