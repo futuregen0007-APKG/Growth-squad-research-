@@ -1,15 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import axios from 'axios';
 import {
   normalizeDocumentUrl,
   deduplicateUrls,
   discoverPdfLinks,
   discoverPdfsFromLandingPage,
   documentQualityGate,
+  documentMatchesCompany,
   buildDocumentProvenance,
   classifyFetchFailure,
   isPdfBuffer,
+  collectTier1InvestorRelations,
+  collectDocuments,
 } from '../research/DocumentResearchService.js';
+import { getCompanyResearchProfile } from '../research/CompanyResearchProfiles.js';
 
 test('PDF validation requires the PDF file signature', () => {
   assert.equal(isPdfBuffer(Buffer.from('%PDF-1.7\n')), true);
@@ -460,4 +465,122 @@ test('document quality gate blocks PDFs with insufficient extracted text', () =>
 
   assert.equal(documentQualityGate(emptyPdf), false);
   assert.equal(documentQualityGate(tinyPdf), false);
+});
+
+// ---------------------------------------------------------------------------
+// Company source registry -> document discovery wiring (Phase 3 / Phase 5)
+// All network calls are mocked via axios.get monkey-patching, following the
+// existing pattern used in tests/newsApi.test.js — no live websites are hit.
+// ---------------------------------------------------------------------------
+
+const mockHtmlResponse = (url, data = '<html><body>No qualifying content here.</body></html>') => ({
+  status: 200,
+  data,
+  headers: { 'content-type': 'text/html' },
+  request: {},
+  config: { url },
+});
+
+test('collectTier1InvestorRelations fetches every registry-configured IR and annual-report URL for NEWGEN', async () => {
+  const profile = getCompanyResearchProfile('NEWGEN');
+  const requestedUrls = [];
+  const originalGet = axios.get;
+  axios.get = async (url) => {
+    requestedUrls.push(url);
+    return mockHtmlResponse(url);
+  };
+
+  try {
+    await collectTier1InvestorRelations(profile);
+  } finally {
+    axios.get = originalGet;
+  }
+
+  const expectedUrls = new Set([...profile.investorRelationsUrls, ...profile.annualReportUrls]);
+  assert.ok(expectedUrls.size > 0, 'NEWGEN registry should configure at least one URL');
+  for (const expected of expectedUrls) {
+    assert.ok(requestedUrls.includes(expected), `expected registry URL to be fetched: ${expected}`);
+  }
+});
+
+test('provenance from a registry-discovered landing page retains full evidence metadata', async () => {
+  const profile = getCompanyResearchProfile('NEWGEN');
+  const targetUrl = profile.investorRelationsUrls[0];
+  const guidanceText = 'Management provided FY26 guidance on order book, order intake and revenue targets during the quarterly results call, reiterating the outlook for the coming annual report cycle and EBITDA guidance for shareholders. '.repeat(2);
+  const originalGet = axios.get;
+  axios.get = async (url) => (
+    url === targetUrl
+      ? mockHtmlResponse(url, `<html><body><p>${guidanceText}</p></body></html>`)
+      : mockHtmlResponse(url)
+  );
+
+  let documents;
+  try {
+    documents = await collectTier1InvestorRelations(profile);
+  } finally {
+    axios.get = originalGet;
+  }
+
+  const landingDoc = documents.find((doc) => doc.url === targetUrl);
+  assert.ok(landingDoc, 'expected a document sourced from the registry IR URL');
+  assert.equal(landingDoc.canonicalUrl, targetUrl);
+  assert.equal(landingDoc.provider, 'InvestorRelations');
+  assert.equal(landingDoc.sourceType, 'INVESTOR_RELATIONS');
+  assert.equal(landingDoc.extractionStatus, 'SUCCESS');
+  assert.ok(landingDoc.contentHash);
+  assert.ok(landingDoc.retrievedAt);
+  assert.ok(landingDoc.sourceTrust);
+});
+
+test('collectDocuments isolates a failed Tier 1 from Tier 2, and fabricates nothing when every source fails', async () => {
+  const originalNewsKey = process.env.NEWS_API_KEY;
+  delete process.env.NEWS_API_KEY; // Tier 3/4 short-circuits with no network call
+
+  const originalGet = axios.get;
+  axios.get = async (url) => {
+    if (url.includes('newgensoft.com')) {
+      throw Object.assign(new Error('simulated IR outage'), { code: 'ECONNREFUSED' });
+    }
+    return mockHtmlResponse(url);
+  };
+
+  try {
+    const result = await collectDocuments('NEWGEN');
+
+    // Nothing anywhere succeeded with real content, so no document may be fabricated.
+    assert.equal(result.documents.length, 0);
+    assert.equal(result.stats.documentsFound, 0);
+
+    const irStats = result.stats.providers.find((p) => p.name === 'InvestorRelations');
+    const exchangeStats = result.stats.providers.find((p) => p.name === 'ExchangeFilings');
+    assert.ok(irStats, 'Tier 1 should still report a provider entry, not be skipped entirely');
+    assert.equal(irStats.documentsFound, 0);
+    // Tier 2 must still have run despite every Tier 1 fetch failing.
+    assert.ok(exchangeStats, 'Tier 2 should run even though Tier 1 failed for every URL');
+  } finally {
+    axios.get = originalGet;
+    if (originalNewsKey === undefined) delete process.env.NEWS_API_KEY;
+    else process.env.NEWS_API_KEY = originalNewsKey;
+  }
+});
+
+test('documentMatchesCompany rejects evidence clearly attributed to a different registered company', () => {
+  const profile = getCompanyResearchProfile('NEWGEN');
+
+  const wrongCompanyDoc = {
+    title: 'TCS Q1 FY27 Earnings Call',
+    text: 'Tata Consultancy Services reported strong deal wins and margin guidance for the quarter.',
+  };
+  const rightCompanyDoc = {
+    title: 'Newgen Software Q1 FY27 Results',
+    text: 'Newgen Software Technologies reported order book growth and EBITDA guidance for FY27.',
+  };
+  const genericDoc = {
+    title: 'IT sector outlook',
+    text: 'The broader Indian IT services sector saw steady demand this quarter.',
+  };
+
+  assert.equal(documentMatchesCompany(wrongCompanyDoc, profile), false);
+  assert.equal(documentMatchesCompany(rightCompanyDoc, profile), true);
+  assert.equal(documentMatchesCompany(genericDoc, profile), true);
 });

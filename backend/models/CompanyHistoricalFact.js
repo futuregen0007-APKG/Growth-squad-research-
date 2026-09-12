@@ -133,4 +133,13 @@ companyHistoricalFactSchema.index({ symbol: 1, date: -1 });
 companyHistoricalFactSchema.index({ symbol: 1, category: 1 });
 companyHistoricalFactSchema.index({ symbol: 1, period: 1 });
 
+// Real DB-enforced dedup, formalizing the upsert key ManagementPromiseService
+// already used at the application level ({symbol, period, title, source.url}).
+// A real unique index catches a duplicate insert even from a second writer
+// (e.g. a manual backfill script run twice) that bypasses the service layer.
+companyHistoricalFactSchema.index(
+  { symbol: 1, period: 1, title: 1, 'source.url': 1 },
+  { unique: true, name: 'unique_fact_per_symbol_period_title_source' },
+);
+
 export default mongoose.models.CompanyHistoricalFact || mongoose.model('CompanyHistoricalFact', companyHistoricalFactSchema);

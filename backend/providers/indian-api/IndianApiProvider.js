@@ -35,6 +35,8 @@ export class IndianApiProvider extends CompanyResearchProvider {
     this.apiKey = apiKey || null;
     this.baseUrl = String(baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '');
     this.client = axios.create({ baseURL: this.baseUrl, timeout });
+    // Per-symbol in-flight request memoization -- see _fetchStockRaw.
+    this._inFlightStockFetches = new Map();
   }
 
   get providerName() {
@@ -84,6 +86,15 @@ export class IndianApiProvider extends CompanyResearchProvider {
    * IndianAPI documents as returning prices, financials, metrics, risk,
    * shareholding, corporate actions, and news from a single call — reused
    * by every capability method below to avoid redundant credit usage.
+   *
+   * getCompanyResearchBundle() fires 7 of those capability methods for the
+   * same symbol via one Promise.all. On a cold cache, all 7 would otherwise
+   * race the `getCache` check below simultaneously (none has written yet)
+   * and each independently hit the real upstream endpoint -- confirmed live
+   * (7x duplicate `/stock` calls per single bundle request, Sep 2026).
+   * `_inFlightStockFetches` memoizes the in-flight promise per cache key so
+   * only the first caller actually fetches; every concurrent caller for the
+   * same symbol awaits that same promise instead of starting its own.
    */
   async _fetchStockRaw(symbolOrName) {
     const query = String(symbolOrName || '').trim();
@@ -94,9 +105,24 @@ export class IndianApiProvider extends CompanyResearchProvider {
     const cached = await getCache(cacheKey);
     if (cached) return cached;
 
-    const raw = await this._get('/stock', { name: query }, { operation: 'getCompanyResearch' });
-    await setCache(cacheKey, raw, STOCK_CACHE_TTL_SECONDS);
-    return raw;
+    const inFlight = this._inFlightStockFetches.get(cacheKey);
+    if (inFlight) return inFlight;
+
+    const fetchPromise = (async () => {
+      const raw = await this._get('/stock', { name: query }, { operation: 'getCompanyResearch' });
+      await setCache(cacheKey, raw, STOCK_CACHE_TTL_SECONDS);
+      return raw;
+    })();
+
+    this._inFlightStockFetches.set(cacheKey, fetchPromise);
+    try {
+      return await fetchPromise;
+    } finally {
+      // Always release the slot once settled (success or failure) so a
+      // later, non-concurrent call re-checks the cache / retries fresh
+      // rather than being stuck replaying a stale settled promise forever.
+      this._inFlightStockFetches.delete(cacheKey);
+    }
   }
 
   async _fetchNormalized(symbolOrName) {

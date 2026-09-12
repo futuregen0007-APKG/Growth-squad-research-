@@ -10,6 +10,14 @@ const managementPromiseSchema = new mongoose.Schema({
   companyId: { type: String, required: true, trim: true },
   symbol: { type: String, required: true, uppercase: true, trim: true, index: true },
   companyName: { type: String, required: true, trim: true },
+
+  // Set only for records imported from the curated file-based dataset
+  // (backend/data/earnings-intelligence/promises/*.json) via `npm run
+  // earnings:import`. Lets that script upsert idempotently instead of
+  // blindly inserting, without disturbing any other ManagementPromise
+  // documents (e.g. ones produced by the live DocumentResearchService
+  // pipeline, which never set this field).
+  curatedRecordId: { type: String, default: null, index: true, sparse: true },
   
   // Promise details
   promise: {

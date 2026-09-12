@@ -1,0 +1,144 @@
+{
+  "_meta": {
+    "symbol": "TCS",
+    "schema": "../schemas/managementPromise.schema.json",
+    "description": "Curated, evidence-backed management promise/outcome pairs for Tata Consultancy Services. Every sourceUrl is either TCS's own official investor-relations domain (tcs.com) or the official BSE/NSE exchange corporate-filing archive that hosts the exact same regulatorily-disclosed documents (bseindia.com / nsearchives.nseindia.com) -- the latter was used for records added after tcs.com began blocking direct/automated fetching behind a Cloudflare managed challenge. See companies.json notes for why coverage is PARTIAL rather than COMPLETE."
+  },
+  "records": [
+    {
+      "id": "TCS-FY2026-001",
+      "symbol": "TCS",
+      "dataMode": "CURATED_VERIFIED",
+      "promise": {
+        "statement": "Management reiterated its long-standing aspirational operating margin band of 26%-28%, stating it would keep driving toward that band while continuing to invest.",
+        "originalExcerpt": "Growth with profitability will remain our mantra and we'll not be shy of investments but we will be driving towards the 26% to 28% (band).",
+        "category": "MARGIN",
+        "promiseDate": "2025-10-09",
+        "targetPeriod": "FY2026",
+        "targetType": "PERCENTAGE",
+        "targetValue": 26,
+        "targetUnit": "PERCENT",
+        "operator": "AT_LEAST"
+      },
+      "outcome": {
+        "status": "PARTIAL",
+        "actualValue": 25,
+        "actualUnit": "PERCENT",
+        "evaluationDate": "2026-04-09",
+        "explanation": "FY2026 full-year operating margin was reported at 25% (up 70 bps year-on-year, a four-year high), which is close to but below the low end of the reiterated 26%-28% aspirational band. Achievement = 25 / 26 = 96.2% of the target floor, which the deterministic status thresholds classify as PARTIAL (>=70% and <100% of target)."
+      },
+      "promiseEvidence": {
+        "sourceTitle": "Transcript of the Q2 2025-26 Earnings Conference Call held at 1900 hrs IST on October 9, 2025",
+        "sourceType": "EARNINGS_TRANSCRIPT",
+        "sourceUrl": "https://www.tcs.com/content/dam/tcs/investor-relations/financial-statements/2025-26/q2/Management%20Commentary/Transcript%20of%20the%20Q2%202025-26%20Earnings%20Conference%20Call%20held%20at%201900%20hrs%20IST%20on%20October%209,%202025.pdf",
+        "publishedAt": "2025-10-09",
+        "pageNumber": null,
+        "excerpt": "Growth with profitability will remain our mantra and we'll not be shy of investments but we will be driving towards the 26% to 28% (band)."
+      },
+      "outcomeEvidence": {
+        "sourceTitle": "TCS closes FY26 with Improving Sequential Growth Momentum and Strong Deal Wins (Q4 & full-year FY2025-26 results)",
+        "sourceType": "PRESS_RELEASE",
+        "sourceUrl": "https://www.tcs.com/who-we-are/newsroom/press-release/tcs-financial-results-q4-fy-2026",
+        "publishedAt": "2026-04-09",
+        "pageNumber": null,
+        "excerpt": "FY26 operating margin at 25%, up 70 bps year-on-year -- the highest operating margin in the last four years."
+      },
+      "verification": {
+        "verifiedAt": "2026-09-10",
+        "verifiedBy": "CURATED_RESEARCH",
+        "evidenceConfidence": 0.85,
+        "notes": "Both the promise and outcome figures were independently corroborated by multiple secondary reports of the same official TCS transcript/press-release language, but the exact page number within the transcript PDF was not confirmed, so pageNumber is left null rather than guessed and evidenceConfidence is set below the 0.9+ range reserved for page-verified citations."
+      }
+    },
+    {
+      "id": "TCS-FY2025-001",
+      "symbol": "TCS",
+      "dataMode": "CURATED_VERIFIED",
+      "promise": {
+        "statement": "Management characterized 12.5% LTM attrition in IT services (as of the FY2024 year-end) as being within its stated comfort range of 11%-13%, indicating an intent to keep attrition within that band going forward.",
+        "originalExcerpt": "Our LTM attrition in IT services kept trending down throughout the year and was at 12.5% at the end of Q4, down 80 bps sequentially and in our comfort range of 11% to 13%.",
+        "category": "OTHER",
+        "promiseDate": "2024-04-12",
+        "targetPeriod": "FY2025",
+        "targetType": "PERCENTAGE",
+        "targetValue": 13,
+        "targetUnit": "PERCENT",
+        "operator": "AT_MOST"
+      },
+      "outcome": {
+        "status": "PARTIAL",
+        "actualValue": 13.3,
+        "actualUnit": "PERCENT",
+        "evaluationDate": "2025-04-10",
+        "explanation": "FY2025 full-year (LTM) attrition in IT services was reported at 13.3%, 0.3 percentage points above the 13% upper bound of management's stated 11%-13% comfort range. Achievement = 13 / 13.3 = 97.7% of the ceiling target, which the deterministic status thresholds (>=70% and <100% of target) classify as PARTIAL -- a narrow miss of the stated ceiling, not a substantial one."
+      },
+      "promiseEvidence": {
+        "sourceTitle": "Transcript of the Earnings Conference Call for the Quarter and Year Ended March 31, 2024 (BSE Filing TCS/SE/19/2024-25)",
+        "sourceType": "EARNINGS_TRANSCRIPT",
+        "sourceUrl": "https://www.bseindia.com/xml-data/corpfiling/Attachhis/5c6ff602-30d9-490a-b147-1d824b5b6665.pdf",
+        "publishedAt": "2024-04-12",
+        "pageNumber": 5,
+        "excerpt": "Our LTM attrition in IT services kept trending down throughout the year and was at 12.5% at the end of Q4, down 80 bps sequentially and in our comfort range of 11% to 13%."
+      },
+      "outcomeEvidence": {
+        "sourceTitle": "Transcript of the Earnings Conference Call for the Quarter and Year Ended March 31, 2025 (BSE Filing TCS/SE/13/2025-26)",
+        "sourceType": "EARNINGS_TRANSCRIPT",
+        "sourceUrl": "https://www.bseindia.com/xml-data/corpfiling/Attachhis/d3f70d49-123f-40d6-a0a9-b584546c8c63.pdf",
+        "publishedAt": "2025-04-10",
+        "pageNumber": 7,
+        "excerpt": "Our workforce at the end of FY '25 was 607,979. ... Over LTM attrition was stable at 13.3%."
+      },
+      "verification": {
+        "verifiedAt": "2026-09-11",
+        "verifiedBy": "CURATED_RESEARCH",
+        "evidenceConfidence": 0.9,
+        "notes": "Both figures were read directly, page-by-page, from the official BSE-filed earnings-call transcript PDFs (fetched directly from bseindia.com's corpfiling archive; tcs.com itself currently returns HTTP 403 behind a Cloudflare managed challenge for any non-browser client, including this project's own DocumentResearchService pipeline). 'AT_MOST 13%' is this record's schema encoding of management's stated two-sided 11%-13% comfort range, using its upper bound as the single quantitative ceiling since the schema has no two-sided range operator with distinct bounds."
+      }
+    },
+    {
+      "id": "TCS-FY2026-002",
+      "symbol": "TCS",
+      "dataMode": "CURATED_VERIFIED",
+      "promise": {
+        "statement": "CEO K Krithivasan stated that, while TCS does not give specific numeric guidance, management was \"more optimistic\" about international revenue for the coming quarter (Q2 FY2026).",
+        "originalExcerpt": "Nitin, as you know, we don't give any specific guidance, but on the international revenue part, we are more optimistic in the coming quarter.",
+        "category": "REVENUE_GROWTH",
+        "promiseDate": "2025-07-10",
+        "targetPeriod": "Q2 FY2026",
+        "targetType": "QUALITATIVE",
+        "targetValue": null,
+        "targetUnit": null,
+        "operator": "QUALITATIVE"
+      },
+      "outcome": {
+        "status": "ACHIEVED",
+        "actualValue": 0.6,
+        "actualUnit": "PERCENT",
+        "evaluationDate": "2025-10-09",
+        "explanation": "TCS's official Q2 FY2026 results press release reported international revenue grew 0.6% QoQ in constant currency, confirming the directional optimism management expressed on the prior quarter's call. Since the original statement was explicitly qualitative/directional (management stated it does not give numeric guidance), any reported sequential growth in international revenue is classified as ACHIEVED rather than measured against a specific numeric target."
+      },
+      "promiseEvidence": {
+        "sourceTitle": "Transcript of the Earnings Conference Call for the Quarter Ended June 30, 2025 (BSE Filing TCS/SE/71/2025-26)",
+        "sourceType": "EARNINGS_TRANSCRIPT",
+        "sourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachHis/9cee0fdb-07a3-4dc6-af7a-40dce51e1348.pdf",
+        "publishedAt": "2025-07-10",
+        "pageNumber": 26,
+        "excerpt": "Nitin, as you know, we don't give any specific guidance, but on the international revenue part, we are more optimistic in the coming quarter."
+      },
+      "outcomeEvidence": {
+        "sourceTitle": "Press Release: TCS Q2 FY 2025-26 Financial Results (NSE Filing TCS/BM/SE/118/2025-26)",
+        "sourceType": "PRESS_RELEASE",
+        "sourceUrl": "https://nsearchives.nseindia.com/corporate/TCS_CORPCS_09102025155609_PressReleaseletter.pdf",
+        "publishedAt": "2025-10-09",
+        "pageNumber": 2,
+        "excerpt": "International Revenue grows 0.6% QoQ in Constant Currency"
+      },
+      "verification": {
+        "verifiedAt": "2026-09-11",
+        "verifiedBy": "CURATED_RESEARCH",
+        "evidenceConfidence": 0.85,
+        "notes": "Promise sourced from the official BSE-filed transcript; outcome sourced from the official NSE-filed press-release letter (both fetched directly from the exchange archives, since tcs.com itself currently blocks direct fetching with a Cloudflare managed challenge). This is a qualitative/directional promise -- TCS explicitly does not give numeric guidance -- so ACHIEVED reflects that the direction management expressed (optimism about improving international revenue) matched the subsequently reported direction (positive QoQ growth), not a match against a specific numeric target."
+      }
+    }
+  ]
+}

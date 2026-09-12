@@ -1,0 +1,102 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "managementPromise.schema.json",
+  "title": "Curated Management Promise Record",
+  "description": "One entry in promises/<SYMBOL>.json. Pairs a specific, dated management commitment with its later, dated, official outcome, each backed by an independent evidence citation. Validated at runtime by backend/utils/earningsIntelligenceValidation.js (business rules such as domain allowlisting, cross-company checks and unit compatibility go beyond what JSON Schema alone can express).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "symbol", "dataMode", "promise", "promiseEvidence", "outcome", "verification"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Globally unique. Convention: <SYMBOL>-<FY or period>-<sequence>, e.g. TCS-FY2026-001.",
+      "pattern": "^[A-Z0-9&.-]+-[A-Z0-9]+-[0-9]{3}$"
+    },
+    "symbol": { "type": "string", "pattern": "^[A-Z0-9&.-]+$" },
+    "dataMode": {
+      "type": "string",
+      "enum": ["CURATED_VERIFIED", "DEMO_SYNTHETIC"],
+      "description": "RESEARCH_PENDING is a company-level coverage state, never a record-level dataMode -- a pending company simply has no promise records."
+    },
+    "promise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "category", "promiseDate", "targetPeriod", "targetType", "operator"],
+      "properties": {
+        "statement": { "type": "string", "minLength": 1 },
+        "originalExcerpt": { "type": ["string", "null"] },
+        "category": {
+          "type": "string",
+          "enum": [
+            "REVENUE_GROWTH", "MARGIN", "ORDER_BOOK", "CAPEX", "DEBT_REDUCTION",
+            "PROFITABILITY", "LOAN_GROWTH", "DEPOSIT_GROWTH", "ASSET_QUALITY",
+            "GUIDANCE", "PRODUCT_LAUNCH", "EXPANSION", "OTHER"
+          ]
+        },
+        "promiseDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "targetPeriod": { "type": "string", "minLength": 1 },
+        "targetType": { "type": "string", "enum": ["PERCENTAGE", "ABSOLUTE", "QUALITATIVE"] },
+        "targetValue": { "type": ["number", "null"] },
+        "targetUnit": {
+          "type": ["string", "null"],
+          "enum": ["PERCENT", "INR_CRORE", "INR_LAKH", "USD_MILLION", "USD_BILLION", "COUNT", null]
+        },
+        "operator": { "type": "string", "enum": ["AT_LEAST", "AT_MOST", "EXACT", "RANGE", "QUALITATIVE"] }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["ACHIEVED", "PARTIAL", "MISSED", "PENDING", "INSUFFICIENT_EVIDENCE"]
+        },
+        "actualValue": { "type": ["number", "null"] },
+        "actualUnit": {
+          "type": ["string", "null"],
+          "enum": ["PERCENT", "INR_CRORE", "INR_LAKH", "USD_MILLION", "USD_BILLION", "COUNT", null]
+        },
+        "evaluationDate": { "type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "explanation": { "type": ["string", "null"] }
+      }
+    },
+    "promiseEvidence": { "$ref": "#/definitions/evidence" },
+    "outcomeEvidence": {
+      "oneOf": [{ "$ref": "#/definitions/evidence" }, { "type": "null" }]
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verifiedAt", "verifiedBy", "evidenceConfidence"],
+      "properties": {
+        "verifiedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "verifiedBy": { "type": "string", "minLength": 1 },
+        "evidenceConfidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "notes": { "type": ["string", "null"] }
+      }
+    }
+  },
+  "definitions": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceTitle", "sourceType", "sourceUrl", "publishedAt", "excerpt"],
+      "properties": {
+        "sourceTitle": { "type": "string", "minLength": 1 },
+        "sourceType": {
+          "type": "string",
+          "enum": [
+            "ANNUAL_REPORT", "FINANCIAL_RESULTS", "EARNINGS_PRESENTATION",
+            "EARNINGS_TRANSCRIPT", "EXCHANGE_FILING", "PRESS_RELEASE"
+          ]
+        },
+        "sourceUrl": { "type": "string", "format": "uri", "pattern": "^https?://" },
+        "publishedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "pageNumber": { "type": ["integer", "null"], "minimum": 1 },
+        "excerpt": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

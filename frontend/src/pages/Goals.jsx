@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Target, Plus, Trash2, TrendingUp, Calendar, DollarSign, PieChart, ArrowRight, Edit, CheckCircle, Sparkles, ShieldAlert, RefreshCw, Zap, TrendingDown, ArrowUpRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -13,6 +13,41 @@ import { getSectorAllocation } from '@/services/recommendationEngine';
 import { getWatchlists, addWatchlistSymbol } from '@/services/watchlistApi';
 import API_BASE from '@/config/api';
 import { ResponsiveContainer, LineChart, Line, Tooltip } from 'recharts';
+
+const REASON_CODE_LABELS = {
+  PROVIDER_UNAVAILABLE: 'Product data provider unavailable',
+  DATA_STALE: 'Latest product data is stale',
+  NO_HARD_FILTER_MATCH: 'No product currently matches this risk profile',
+  INSUFFICIENT_FUNDAMENTALS: 'Insufficient verified history for this category',
+};
+
+const STOCK_REJECTION_LABELS = {
+  INSUFFICIENT_HISTORY: 'lack sufficient verified historical price data',
+  AWAITING_FUNDAMENTALS: 'are awaiting verified fundamentals data',
+  STALE_DATA: 'have only stale (though still verified) fundamentals data',
+  RISK_MISMATCH: "don't fit the selected risk profile",
+  HORIZON_MISMATCH: "don't fit this goal's time horizon",
+  INVALID_METRICS: 'have invalid or incomplete identifying data',
+  PROVIDER_UNAVAILABLE: 'could not be evaluated because a data provider was unavailable',
+};
+
+/** Builds the exact, backend-driven explanation for why the Direct Stocks bucket has no (or only some) eligible stocks -- never a generic placeholder once a real request has completed. */
+const buildStockScreeningMessage = (screening, stockError) => {
+  if (stockError) return `Stock screening failed: ${stockError}`;
+  if (!screening) return 'Verified stock screening is unavailable.';
+  const { universeCount, evaluatedCount, eligibleCount, missingDataReasons, providerStatus } = screening;
+  const reasonClauses = (missingDataReasons || [])
+    .filter((r) => r.count > 0)
+    .map((r) => `${r.count} ${STOCK_REJECTION_LABELS[r.reasonCode] || r.reasonCode}`);
+  const reasonText = reasonClauses.length ? ` Of ${evaluatedCount ?? universeCount ?? 0} stocks evaluated: ${reasonClauses.join('; ')}.` : '';
+  if (screening.status === 'UNAVAILABLE') {
+    return `No stock currently passes eligibility for this goal.${reasonText}${providerStatus === 'RATE_LIMITED' ? ' The fundamentals data provider is currently rate-limited.' : ''}`;
+  }
+  if (screening.status === 'PARTIAL') {
+    return `Showing ${eligibleCount} eligible stock${eligibleCount === 1 ? '' : 's'} from a partially verified universe (${evaluatedCount ?? '?'} of ${universeCount ?? '?'} stocks evaluated).${reasonText}`;
+  }
+  return '';
+};
 
 const getPlanConfig = (goal, overrides = {}) => {
   const profile = JSON.parse(localStorage.getItem('financialProfile') || '{}');
@@ -169,6 +204,10 @@ export default function Goals() {
   const [recProfile, setRecProfile] = useState({});
   const [recRebalance, setRecRebalance] = useState(null);
   const [recUniverseStats, setRecUniverseStats] = useState(null);
+  const [recStockScreening, setRecStockScreening] = useState(null); // { status, universeCount, evaluatedCount, eligibleCount, rejectionCounts, missingDataReasons, providerStatus }
+  const [recStockError, setRecStockError] = useState(null);
+  const [recStockHasLoaded, setRecStockHasLoaded] = useState(false);
+  const recStockRequestIdRef = useRef(0);
   const [recPlan, setRecPlan] = useState(null);
   const [recPlanLoading, setRecPlanLoading] = useState(false);
   const [recPlanError, setRecPlanError] = useState(null);
@@ -198,8 +237,12 @@ export default function Goals() {
   };
 
   const loadEligibleStocks = async () => {
-    if (!recGoal) return;
+    if (!recGoal || recLoading) return; // guards against double-clicks while a request is already in flight
+    const requestId = recStockRequestIdRef.current + 1;
+    recStockRequestIdRef.current = requestId;
+
     setRecLoading(true);
+    setRecStockError(null); // clear only the previous stock-screening error -- fund/ETF/gold/debt/liquid buckets are untouched
     const profile = JSON.parse(localStorage.getItem('financialProfile') || '{}');
     const params = new URLSearchParams({
       goal: JSON.stringify({ ...recGoal, sector: recConfig.sector, enableAiAnalysis: true }),
@@ -207,13 +250,36 @@ export default function Goals() {
     });
     try {
       const response = await fetch(`${API_BASE}/api/goals/${encodeURIComponent(recGoal.id)}/recommendations?${params.toString()}`);
-      if (!response.ok) throw new Error('Eligible stock screening failed');
+      if (recStockRequestIdRef.current !== requestId) return; // a newer click superseded this response -- discard it
+      if (!response.ok) throw new Error(`Eligible stock screening failed (HTTP ${response.status})`);
       const payload = await response.json();
-      const recommendations = payload?.data?.recommendations || [];
+      if (recStockRequestIdRef.current !== requestId) return;
+
+      const data = payload?.data || {};
+      // The backend's stable "Load Eligible Stocks" contract (task 5): each
+      // item already carries symbol/companyName/score/goalFit/riskLevel/
+      // metricsUsed/missingMetrics/dataAsOf/source/reasons. `recommendations`
+      // (the richer, existing object shape used elsewhere on this page --
+      // news, projections, detail dialog) is kept as the render source so
+      // nothing else on this page regresses; `stocks` is read only for the
+      // stable status/count fields.
+      const recommendations = data.recommendations || [];
+      const screening = {
+        status: data.status || (recommendations.length ? 'AVAILABLE' : 'UNAVAILABLE'),
+        universeCount: data.universeCount ?? null,
+        evaluatedCount: data.evaluatedCount ?? null,
+        eligibleCount: data.eligibleCount ?? recommendations.length,
+        rejectionCounts: data.rejectionCounts || {},
+        missingDataReasons: data.missingDataReasons || [],
+        providerStatus: data.providerStatus || 'UNKNOWN',
+        dataAsOf: data.dataAsOf || null,
+      };
+
       setRecResults(recommendations);
       setRecAllocation(getSectorAllocation(recommendations));
-      setRecRebalance(payload?.data?.rebalanceAnalysis || null);
-      setRecUniverseStats(payload?.data?.universeStats || null);
+      setRecRebalance(data.rebalanceAnalysis || null);
+      setRecUniverseStats(data.universeStats || null);
+      setRecStockScreening(screening);
       setRecPlan((currentPlan) => currentPlan ? {
         ...currentPlan,
         productBuckets: {
@@ -222,11 +288,17 @@ export default function Goals() {
         },
       } : currentPlan);
     } catch (error) {
+      if (recStockRequestIdRef.current !== requestId) return;
       setRecResults([]);
       setRecAllocation([]);
+      setRecStockScreening(null);
+      setRecStockError(error.message || 'Verified stock screening is unavailable.');
       toast.error('Verified stock screening is unavailable. Allocation remains available.');
     } finally {
-      setRecLoading(false);
+      if (recStockRequestIdRef.current === requestId) {
+        setRecStockHasLoaded(true);
+        setRecLoading(false);
+      }
     }
   };
 
@@ -814,9 +886,26 @@ export default function Goals() {
                 </div>
 
                 <div className="bg-gs-panel border border-gs-border p-4 space-y-3">
-                  <div className="gs-label">Product Recommendations</div>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="gs-label">Product Recommendations</div>
+                    {recPlan.datasetAsOf && <div className="text-[11px] text-gs-textDim">Dataset as of {new Date(recPlan.datasetAsOf).toLocaleDateString('en-IN')} · Confidence: {recPlan.confidence || 'N/A'}</div>}
+                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 text-xs">
-                    {Object.entries(recPlan.productBuckets || {}).map(([key, bucket]) => <div key={key} className="bg-gs-bg border border-gs-border p-3"><div className="text-gs-text capitalize">{key === 'stocks' ? 'Direct Stocks' : key}</div><div className="text-gs-textDim mt-1">{bucket.status === 'VERIFIED_ELIGIBLE_STOCKS' ? `${bucket.items.length} verified eligible stocks` : 'Awaiting verified product data'}</div></div>)}
+                    {Object.entries(recPlan.productBuckets || {}).map(([key, bucket]) => (
+                      <div key={key} className="bg-gs-bg border border-gs-border p-3">
+                        <div className="text-gs-text capitalize">{key === 'stocks' ? 'Direct Stocks' : key === 'mutualFunds' ? 'Mutual Funds' : key}</div>
+                        <div className="text-gs-textDim mt-1">{bucket.items?.length ? `${bucket.items.length} verified current products` : REASON_CODE_LABELS[bucket.reasonCode] || 'Awaiting verified product data'}</div>
+                        {bucket.items?.length > 0 && (
+                          <ul className="mt-2 space-y-1">
+                            {bucket.items.slice(0, 3).map((item) => (
+                              <li key={item.productId || item.symbol} className="text-gs-textMuted truncate" title={item.name}>
+                                {item.name}{item.returns1Y != null ? ` · ${item.returns1Y}% 1Y` : ''}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    ))}
                   </div>
                   <div className="flex items-center justify-between gap-3 flex-wrap"><p className="text-[11px] text-gs-textDim">Stock screening is separate and may use provider data.</p><Button onClick={loadEligibleStocks} disabled={recLoading} className="bg-gs-gold text-gs-bg hover:bg-gs-gold/90">{recLoading ? 'Screening stocks...' : 'Load Eligible Stocks'}</Button></div>
                   <p className="text-[11px] text-gs-textDim leading-relaxed">This allocation is an educational planning estimate based on the information provided. Returns are not guaranteed. Review product documents and consult a SEBI-registered investment adviser before investing.</p>
@@ -844,9 +933,18 @@ export default function Goals() {
             {recLoading ? (
               <div className="text-sm text-gs-textDim py-8 text-center">Loading screened recommendations & live news sentiment...</div>
             ) : recResults.length === 0 ? (
-              <div className="text-sm text-gs-textDim py-8 text-center">Historical data is available, but verified fundamental coverage is insufficient. No eligible direct stocks are shown.</div>
+              <div className="text-sm text-gs-textDim py-8 text-center">
+                {!recStockHasLoaded
+                  ? 'Click "Load Eligible Stocks" to screen the verified stock universe for this goal.'
+                  : buildStockScreeningMessage(recStockScreening, recStockError)}
+              </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 items-stretch">
+                {recStockScreening?.status === 'PARTIAL' && (
+                  <div className="col-span-full text-[11px] text-gs-textDim bg-gs-panel border border-gs-border p-2">
+                    {buildStockScreeningMessage(recStockScreening, recStockError)}
+                  </div>
+                )}
                 {recResults.map((s) => (
                   <div
                     key={s.ticker || s.symbol}

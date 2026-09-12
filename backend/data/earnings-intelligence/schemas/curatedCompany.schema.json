@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "curatedCompany.schema.json",
+  "title": "Curated Earnings Intelligence Company Coverage Record",
+  "description": "One row of companies.json. Describes the curated-research coverage state for a single project stock symbol. This record never contains promise/outcome content itself -- that lives in promises/<SYMBOL>.json. A symbol with no override here still gets a synthesized RESEARCH_PENDING record from CuratedEarningsIntelligenceService, derived from the authoritative SUPPORTED_STOCKS list in utils/constants.js.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["symbol", "companyName", "sector", "dataMode", "coverageStatus"],
+  "properties": {
+    "symbol": {
+      "type": "string",
+      "description": "Must match a key in SUPPORTED_STOCKS exactly (uppercase).",
+      "pattern": "^[A-Z0-9&.-]+$"
+    },
+    "companyName": { "type": "string", "minLength": 1 },
+    "sector": { "type": "string", "minLength": 1 },
+    "dataMode": {
+      "type": "string",
+      "enum": ["CURATED_VERIFIED", "DEMO_SYNTHETIC", "RESEARCH_PENDING"]
+    },
+    "coverageStatus": {
+      "type": "string",
+      "enum": ["COMPLETE", "PARTIAL", "RESEARCH_PENDING", "STALE"]
+    },
+    "coverageStart": {
+      "type": ["string", "null"],
+      "description": "ISO date (YYYY-MM-DD) of the earliest covered reporting period.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "coverageEnd": {
+      "type": ["string", "null"],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "lastVerifiedAt": {
+      "type": ["string", "null"],
+      "description": "ISO date the curator last reviewed the underlying promise records against official sources.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "nextReviewAfter": {
+      "type": ["string", "null"],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "verifiedPromiseCount": { "type": "integer", "minimum": 0 },
+    "resolvedPromiseCount": { "type": "integer", "minimum": 0 },
+    "pendingPromiseCount": { "type": "integer", "minimum": 0 },
+    "notes": { "type": ["string", "null"] }
+  }
+}

@@ -34,7 +34,14 @@ const normalizeAllocation = (allocation) => {
   const total = keys.reduce((sum, key) => sum + integerPct(allocation[key]), 0);
   const normalized = keys.reduce((result, key) => ({ ...result, [key]: total ? (integerPct(allocation[key]) / total) * 100 : 0 }), {});
   const rounded = keys.reduce((result, key) => ({ ...result, [key]: Number(normalized[key].toFixed(2)) }), {});
-  rounded.liquidPct = 100 - keys.filter((key) => key !== 'liquidPct').reduce((sum, key) => sum + rounded[key], 0);
+  // liquidPct absorbs the rounding remainder so every row sums to exactly
+  // 100 -- but the raw subtraction can carry IEEE-754 noise (e.g.
+  // 9.150000000000006) even though every input is already a clean 2-decimal
+  // number. Round it through the same toFixed(2)->Number path as its
+  // siblings so it never displays (or gets asserted against) with more
+  // precision than the rest of the row.
+  const residual = 100 - keys.filter((key) => key !== 'liquidPct').reduce((sum, key) => sum + rounded[key], 0);
+  rounded.liquidPct = Number(residual.toFixed(2));
   return rounded;
 };
 

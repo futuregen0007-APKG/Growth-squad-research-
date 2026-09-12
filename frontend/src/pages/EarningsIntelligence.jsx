@@ -115,8 +115,21 @@ function CompanyCard({ report, onOpen }) {
   const trackRecord = report.managementTrackRecord || {};
   const factsCount = report.factsCount || 0;
   const sourcesCount = report.sourcesCount || 0;
-  const isResearching = report.researchState === 'RESEARCH_RUNNING' || report.researchState === 'RESEARCH_REQUIRED';
+  // RESEARCH_RUNNING (a live crawl is genuinely in progress right now) and
+  // RESEARCH_REQUIRED (nothing has been triggered yet) used to render as the
+  // identical animated "Researching..." label -- misleading, since nothing is
+  // actually happening for a not-yet-researched company. Kept distinct here.
+  const isActivelyResearching = report.researchState === 'RESEARCH_RUNNING';
+  const notYetResearched = report.researchState === 'RESEARCH_REQUIRED';
   const hasHistory = factsCount > 0 || score !== null;
+  const financialIntelligence = report.financialIntelligence || null;
+  const financialCoverage = report.financialCoverage || null;
+  // Never claim the full 5-year window when fewer years actually have
+  // verified facts -- label reads "3 of 5 Years" rather than a fixed
+  // "5-Year Historical Snapshot" once real coverage data is available.
+  const coverageLabel = financialCoverage
+    ? `${financialCoverage.completedYears} of ${financialCoverage.expectedYears} Years`
+    : '5-Year Historical Snapshot';
 
   return (
     <Card 
@@ -142,7 +155,7 @@ function CompanyCard({ report, onOpen }) {
 
           <div className="w-[140px] sm:w-[150px] shrink-0 text-right">
             <div className="gs-label text-[10px] text-gs-textDim uppercase tracking-wider">EXECUTION SCORE</div>
-            {isResearching ? (
+            {isActivelyResearching ? (
               <div className="font-display text-xs font-semibold text-gs-gold mt-1 animate-pulse">Researching...</div>
             ) : score !== null ? (
               <div className="flex flex-col items-end">
@@ -155,7 +168,7 @@ function CompanyCard({ report, onOpen }) {
               </div>
             ) : (
               <div className="font-mono text-[11px] font-medium text-zinc-400 mt-1 leading-tight text-right">
-                Insufficient verified history
+                {notYetResearched ? 'Not yet researched' : 'Insufficient verified history'}
               </div>
             )}
           </div>
@@ -190,11 +203,46 @@ function CompanyCard({ report, onOpen }) {
           </div>
         )}
 
+        {/* Financial Intelligence (provider-backed, broadly available -- distinct from
+            the curated/verified 5-Year Historical Snapshot below, which requires
+            manual research and is sparse today) */}
+        {financialIntelligence && (
+          <div className="space-y-2 text-xs bg-gs-panel/30 border border-gs-border/30 p-2.5 rounded">
+            <div className="flex items-center justify-between text-[11px] font-mono border-b border-gs-border/40 pb-1.5">
+              <span className="text-gs-textDim uppercase tracking-wider">Financial Intelligence</span>
+              <span className="text-gs-gold">{financialIntelligence.latestPeriod || '—'}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] font-mono">
+              <div className="flex justify-between">
+                <span className="text-gs-textDim">Revenue Growth:</span>
+                <span className="font-semibold text-gs-text">{financialIntelligence.revenueGrowth != null ? `${financialIntelligence.revenueGrowth}%` : '—'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gs-textDim">Profit Growth:</span>
+                <span className="font-semibold text-gs-pos">{financialIntelligence.netProfitGrowth != null ? `${financialIntelligence.netProfitGrowth}%` : '—'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gs-textDim">Operating Margin:</span>
+                <span className="font-semibold text-gs-gold">{financialIntelligence.operatingMargin != null ? `${financialIntelligence.operatingMargin}%` : '—'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gs-textDim">Debt Trend:</span>
+                <span className="font-semibold text-blue-300 truncate">{financialIntelligence.debtTrend || '—'}</span>
+              </div>
+            </div>
+            <div className="pt-1.5 border-t border-gs-border/30 flex items-center justify-between text-[10px] font-mono text-gs-textDim">
+              <span>Revenue: {financialIntelligence.revenue != null ? `₹${financialIntelligence.revenue} Cr` : '—'}</span>
+              <span>EPS: {financialIntelligence.eps != null ? `₹${financialIntelligence.eps}` : '—'}</span>
+            </div>
+            <div className="text-[9px] text-gs-textDim text-right">Source: {financialIntelligence.sourceProvider || 'provider'}</div>
+          </div>
+        )}
+
         {/* 5-Year Historical Snapshot */}
         {hasHistory ? (
           <div className="space-y-2 text-xs bg-gs-panel/30 border border-gs-border/30 p-2.5 rounded">
             <div className="flex items-center justify-between text-[11px] font-mono border-b border-gs-border/40 pb-1.5">
-              <span className="text-gs-textDim uppercase tracking-wider">5-Year Historical Snapshot</span>
+              <span className="text-gs-textDim uppercase tracking-wider">{coverageLabel} Historical Snapshot</span>
               <span className="text-gs-gold">{coverage}</span>
             </div>
             <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] font-mono">
@@ -257,10 +305,12 @@ function CompanyCard({ report, onOpen }) {
         {/* Card Action Footer */}
         <div className="flex items-center justify-between border-t border-gs-border/70 pt-3 text-xs">
           <span className="text-[10px] font-mono uppercase tracking-wider text-gs-textDim">
-            {isResearching
+            {isActivelyResearching
               ? 'RESEARCHING...'
               : hasHistory
               ? 'HISTORICAL INTELLIGENCE AVAILABLE'
+              : notYetResearched
+              ? 'NOT YET RESEARCHED'
               : 'RESEARCH REQUIRED'}
           </span>
           <span className="text-xs text-gs-gold hover:text-gs-gold/80 font-medium flex items-center gap-1">
@@ -557,6 +607,320 @@ function TimelinePromiseCard({ promise }) {
 }
 
 /**
+ * Curated Promise Card (Faith Score dataset shape: /api/earnings-intelligence/:symbol/timeline
+ * when dataMode is CURATED_VERIFIED or DEMO_SYNTHETIC). Distinct from TimelinePromiseCard,
+ * which renders the older, live-research-pipeline promise shape.
+ */
+function CuratedPromiseEntryCard({ entry }) {
+  const [expanded, setExpanded] = useState(false);
+  const status = entry.status || 'INSUFFICIENT_EVIDENCE';
+
+  const statusStyles = {
+    ACHIEVED: { icon: CheckCircle2, cls: 'border-emerald-500 text-emerald-300 bg-emerald-950/50' },
+    PARTIAL: { icon: AlertTriangle, cls: 'border-amber-500 text-amber-300 bg-amber-950/50' },
+    MISSED: { icon: XCircle, cls: 'border-rose-500 text-rose-300 bg-rose-950/50' },
+    PENDING: { icon: Clock3, cls: 'border-amber-600 text-amber-300 bg-amber-950/50' },
+    INSUFFICIENT_EVIDENCE: { icon: Clock3, cls: 'border-zinc-600 text-zinc-400 bg-zinc-900/50' },
+  };
+  const { icon: StatusIcon, cls } = statusStyles[status] || statusStyles.INSUFFICIENT_EVIDENCE;
+
+  return (
+    <div className="p-4 bg-gs-panel/40 border border-gs-border/60 rounded hover:border-gs-gold/40 transition-all">
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-2 min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-mono text-xs font-bold text-gs-gold">{entry.period || 'PERIOD'}</span>
+            <span className="font-mono text-[11px] text-gs-textDim">{entry.category?.replace(/_/g, ' ')}</span>
+            <Badge variant="outline" className={`text-[10px] font-mono flex items-center gap-1 ${cls}`}>
+              <StatusIcon className="w-3 h-3" /> {status}
+            </Badge>
+            {entry.dataMode === 'DEMO_SYNTHETIC' && (
+              <Badge variant="destructive" className="text-[9px] font-mono px-1 py-0 bg-purple-900/60 text-purple-200 border-purple-500/50">
+                DEMO DATA
+              </Badge>
+            )}
+          </div>
+          <div className="font-medium text-gs-text text-sm leading-snug">"{entry.statement}"</div>
+          <div className="flex items-center gap-3 text-xs font-mono bg-gs-bg/60 p-2 rounded border border-gs-border/40 flex-wrap">
+            <div>
+              <span className="text-gs-textDim block text-[10px] uppercase">TARGET</span>
+              <span className="font-bold text-gs-text">
+                {entry.target?.operator ? `${entry.target.operator} ` : ''}{entry.target?.value ?? 'Qualitative'} {entry.target?.unit || ''}
+              </span>
+            </div>
+            {entry.outcome?.actualValue != null && (
+              <div>
+                <span className="text-gs-textDim block text-[10px] uppercase">ACTUAL</span>
+                <span className="font-bold text-gs-gold">{entry.outcome.actualValue} {entry.outcome.actualUnit || ''}</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="text-gs-textDim hover:text-gs-gold text-xs font-mono flex items-center gap-0.5 shrink-0"
+        >
+          {expanded ? 'Less' : 'Evidence'}
+          <ChevronDown className={`w-3.5 h-3.5 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="mt-4 pt-4 border-t border-gs-border/40 space-y-3">
+          {entry.promiseEvidence && (
+            <div className="bg-gs-bg/80 p-3 rounded border border-gs-border/40 text-xs">
+              <div className="font-mono text-[10px] uppercase text-gs-textDim mb-2">PROMISE EVIDENCE</div>
+              <div className="space-y-1 text-[11px] font-mono">
+                <div className="flex items-center justify-between">
+                  <span className="text-gs-textDim">Source:</span>
+                  <span className="font-semibold text-gs-text text-right">{entry.promiseEvidence.sourceTitle}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gs-textDim">Published:</span>
+                  <span className="text-gs-text">{formatDate(entry.promiseEvidence.publishedAt)}{entry.promiseEvidence.pageNumber ? ` · Page ${entry.promiseEvidence.pageNumber}` : ''}</span>
+                </div>
+                {entry.promiseEvidence.excerpt && (
+                  <div className="italic text-gs-textDim text-[10px] bg-gs-panel/50 p-2 rounded mt-2 border-l-2 border-gs-gold">
+                    "{entry.promiseEvidence.excerpt}"
+                  </div>
+                )}
+                {entry.promiseEvidence.sourceUrl && (
+                  <div className="pt-1">
+                    <a href={entry.promiseEvidence.sourceUrl} target="_blank" rel="noreferrer" className="text-gs-gold hover:underline inline-flex items-center gap-1 text-[11px]">
+                      Open Source Document <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {entry.outcomeEvidence ? (
+            <div className="bg-gs-bg/80 p-3 rounded border border-gs-border/40 text-xs">
+              <div className="font-mono text-[10px] uppercase text-gs-textDim mb-2">OUTCOME EVIDENCE</div>
+              <div className="space-y-1 text-[11px] font-mono">
+                <div className="flex items-center justify-between">
+                  <span className="text-gs-textDim">Source:</span>
+                  <span className="font-semibold text-gs-text text-right">{entry.outcomeEvidence.sourceTitle}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gs-textDim">Published:</span>
+                  <span className="text-gs-text">{formatDate(entry.outcomeEvidence.publishedAt)}{entry.outcomeEvidence.pageNumber ? ` · Page ${entry.outcomeEvidence.pageNumber}` : ''}</span>
+                </div>
+                {entry.outcome?.explanation && (
+                  <div className="mt-1">
+                    <span className="text-gs-textDim block text-[10px] uppercase">Calculation Explanation</span>
+                    <p className="mt-0.5 text-gs-text">{entry.outcome.explanation}</p>
+                  </div>
+                )}
+                {entry.outcomeEvidence.excerpt && (
+                  <div className="italic text-gs-textDim text-[10px] bg-gs-panel/50 p-2 rounded mt-2 border-l-2 border-emerald-500">
+                    "{entry.outcomeEvidence.excerpt}"
+                  </div>
+                )}
+                {entry.outcomeEvidence.sourceUrl && (
+                  <div className="pt-1">
+                    <a href={entry.outcomeEvidence.sourceUrl} target="_blank" rel="noreferrer" className="text-gs-gold hover:underline inline-flex items-center gap-1 text-[11px]">
+                      Open Outcome Document <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="bg-gs-panel/30 p-3 rounded border border-gs-border/40 text-xs text-gs-textMuted">
+              {status === 'PENDING' ? 'Outcome not yet available -- target period is in the future.' : 'No reliable outcome evidence found in official documents.'}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Curated Faith Score panel: renders the /timeline response when it carries
+ * `dataMode` (CURATED_VERIFIED, DEMO_SYNTHETIC, or RESEARCH_PENDING). Handles
+ * all three states explicitly so a company with no verified research never
+ * renders a fabricated 0/100, and synthetic data is only ever shown with a
+ * prominent badge.
+ */
+function CuratedFaithScorePanel({ curated }) {
+  const { dataMode, coverageStatus, lastVerifiedAt, nextReviewAfter, summary, timeline, sources, disclaimer } = curated;
+
+  if (dataMode === 'RESEARCH_PENDING') {
+    return (
+      <div className="p-8 text-center bg-gs-panel/30 border border-gs-border rounded space-y-2">
+        <Clock3 className="w-6 h-6 text-gs-textDim mx-auto" />
+        <div className="font-mono text-sm text-gs-text font-semibold">
+          Earnings Intelligence research is being prepared for this company.
+        </div>
+        <div className="font-mono text-xs text-gs-textDim">
+          No verified management-execution score is currently available.
+        </div>
+      </div>
+    );
+  }
+
+  const score = summary.faithScore;
+  // Explicit scoreStatus enum (never inferred from score alone) -- a
+  // PROVISIONAL score is real and computed, but hasn't yet reached the
+  // 10-resolved/8-quarter bar for full VERIFIED confidence; a fabricated
+  // score is never shown for any non-numeric state.
+  const scoreStatus = summary.scoreStatus;
+  const SCORE_STATUS_LABELS = {
+    VERIFIED: 'Verified Faith Score',
+    PROVISIONAL: 'Provisional Faith Score',
+    INSUFFICIENT_EVIDENCE: 'Not enough official evidence',
+    NO_OFFICIAL_TRANSCRIPT: 'No official transcript found yet',
+    RESEARCH_PENDING: 'Research pending',
+    RESEARCH_FAILED: 'Research failed',
+  };
+
+  return (
+    <div className="space-y-4">
+      {dataMode === 'DEMO_SYNTHETIC' && (
+        <div className="p-2.5 bg-purple-950/40 border border-purple-500/50 rounded text-center font-mono text-xs font-bold text-purple-200 tracking-wider">
+          DEMO DATA — NOT REAL COMPANY RESEARCH
+        </div>
+      )}
+
+      {/* Faith Score Hero */}
+      <Card className="bg-gs-panel/60 border-gs-border p-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div>
+            <div className="gs-label text-[10px] text-gs-textDim uppercase tracking-wider">MANAGEMENT FAITH SCORE</div>
+            {score != null ? (
+              <>
+                <div className="font-display text-3xl font-bold text-gs-gold tracking-tight">
+                  {score} <span className="text-sm font-normal text-gs-textDim">/ 100</span>
+                </div>
+                <div className="text-xs font-mono text-gs-textDim mt-0.5">{SCORE_STATUS_LABELS[scoreStatus] || summary.faithScoreLabel}</div>
+              </>
+            ) : (
+              <div className="mt-1">
+                <div className="font-mono text-sm text-zinc-400 font-semibold">{SCORE_STATUS_LABELS[scoreStatus] || 'Insufficient verified history'}</div>
+                <div className="text-[10px] text-gs-textDim mt-0.5">Needs at least 3 resolved, verified promises</div>
+              </div>
+            )}
+            {summary.expectedQuarters != null && (
+              <div className="text-[10px] text-gs-textDim mt-1">
+                Coverage: {summary.completedQuarters}/{summary.expectedQuarters} quarters · {summary.promisesResolved ?? 0} resolved evidence item{summary.promisesResolved === 1 ? '' : 's'}
+              </div>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-3 text-xs font-mono">
+            <div className="text-center px-3 py-1.5 bg-gs-bg/60 rounded border border-gs-border/40">
+              <div className="text-gs-textDim text-[10px] uppercase">Evidence Confidence</div>
+              <div className="font-bold text-gs-text text-base">{summary.evidenceConfidence != null ? `${summary.evidenceConfidence}%` : 'N/A'}</div>
+            </div>
+            <div className="text-center px-3 py-1.5 bg-gs-bg/60 rounded border border-gs-border/40">
+              <div className="text-gs-textDim text-[10px] uppercase">Coverage Score</div>
+              <div className="font-bold text-gs-text text-base">{summary.coverageScore}/100</div>
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap text-[11px] font-mono text-gs-textDim mt-3 pt-3 border-t border-gs-border/40">
+          <span>Coverage: <strong className="text-gs-text uppercase">{coverageStatus}</strong></span>
+          <span>Last Verified: <strong className="text-gs-text">{formatDate(lastVerifiedAt)}</strong></span>
+          {nextReviewAfter && <span>Next Review: <strong className="text-gs-text">{formatDate(nextReviewAfter)}</strong></span>}
+        </div>
+      </Card>
+
+      {/* Outcome Counts */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">
+          <div className="text-[11px] font-mono text-gs-textDim uppercase">Achieved</div>
+          <div className="font-display text-2xl font-bold text-emerald-400 mt-1">{summary.achieved}</div>
+        </Card>
+        <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">
+          <div className="text-[11px] font-mono text-gs-textDim uppercase">Partial</div>
+          <div className="font-display text-2xl font-bold text-amber-400 mt-1">{summary.partial}</div>
+        </Card>
+        <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">
+          <div className="text-[11px] font-mono text-gs-textDim uppercase">Missed</div>
+          <div className="font-display text-2xl font-bold text-rose-400 mt-1">{summary.missed}</div>
+        </Card>
+        <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">
+          <div className="text-[11px] font-mono text-gs-textDim uppercase">Pending</div>
+          <div className="font-display text-2xl font-bold text-zinc-400 mt-1">{summary.pending}</div>
+        </Card>
+      </div>
+
+      {/* Calculation Breakdown */}
+      {summary.scoreBreakdown?.length > 0 && (
+        <Card className="bg-gs-panel/40 border-gs-border p-4 font-mono text-xs space-y-2">
+          <div className="flex items-center gap-2 text-gs-gold font-bold uppercase tracking-wider text-[11px]">
+            <Calculator className="w-4 h-4" /> Faith Score Calculation Breakdown
+          </div>
+          <div className="text-[10px] text-gs-textDim">weightedResult = statusValue (Achieved=1.0, Partial=0.5, Missed=0.0) × evidenceConfidence</div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px] text-left mt-1">
+              <thead>
+                <tr className="text-gs-textDim border-b border-gs-border/40">
+                  <th className="py-1 pr-3">Period</th>
+                  <th className="py-1 pr-3">Status</th>
+                  <th className="py-1 pr-3">Confidence</th>
+                  <th className="py-1 pr-3">Weighted</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.scoreBreakdown.map((row) => (
+                  <tr key={row.id} className="border-b border-gs-border/20">
+                    <td className="py-1 pr-3 text-gs-text">{row.period || '-'}</td>
+                    <td className="py-1 pr-3">{row.status}</td>
+                    <td className="py-1 pr-3">{(row.evidenceConfidence * 100).toFixed(0)}%</td>
+                    <td className="py-1 pr-3 font-semibold text-gs-gold">{row.weightedResult.toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {/* Promise Cards */}
+      {timeline.length > 0 ? (
+        <div className="space-y-3">
+          {timeline.map((entry) => (
+            <CuratedPromiseEntryCard key={entry.id} entry={entry} />
+          ))}
+        </div>
+      ) : (
+        <div className="p-8 text-center bg-gs-panel/30 border border-gs-border rounded font-mono text-xs text-gs-textDim">
+          No curated promise records yet for this company.
+        </div>
+      )}
+
+      {/* Source Library */}
+      {sources.length > 0 && (
+        <Card className="bg-gs-card border-gs-border p-4 space-y-2">
+          <div className="font-mono text-[11px] uppercase text-gs-gold font-bold tracking-wider mb-1">Primary Sources</div>
+          {sources.map((source) => (
+            <a
+              key={source.url}
+              href={source.url}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center justify-between gap-2 p-2 bg-gs-panel/40 border border-gs-border/40 rounded text-xs font-mono hover:border-gs-gold/40"
+            >
+              <span className="truncate text-gs-text">{source.title}</span>
+              <ExternalLink className="w-3.5 h-3.5 text-gs-gold shrink-0" />
+            </a>
+          ))}
+        </Card>
+      )}
+
+      {/* Disclaimer */}
+      <div className="p-3 bg-gs-panel/20 border border-gs-border/40 rounded text-[11px] font-mono text-gs-textDim text-center">
+        {disclaimer}
+      </div>
+    </div>
+  );
+}
+
+/**
  * Management Promise Row Component
  */
 function PromiseRow({ promise }) {
@@ -754,17 +1118,45 @@ function CompanyReport({ symbol, onBack }) {
     }
   }, [activeTab, fetchTimeline]);
 
+  // Polls the real job-status endpoint until it actually finishes (COMPLETED
+  // or FAILED), rather than a single blind re-fetch after a fixed delay --
+  // a real research run can take well over 3 seconds, so the old single
+  // re-fetch left the card showing "Researching..." indefinitely once the
+  // job outlived that one check. Capped at 30 polls (~2 minutes) so a
+  // genuinely stuck/orphaned job still stops polling rather than running
+  // forever client-side.
+  const pollResearchJob = useCallback(async (jobId, attempt = 0) => {
+    const MAX_ATTEMPTS = 30;
+    const POLL_INTERVAL_MS = 4000;
+    try {
+      const res = await apiClient.get(`/api/earnings-intelligence/jobs/${jobId}`);
+      const job = res?.data ?? res;
+      if (job?.status === 'COMPLETED' || job?.status === 'FAILED' || attempt >= MAX_ATTEMPTS) {
+        await fetchReport();
+        setRefreshing(false);
+        return;
+      }
+    } catch (err) {
+      console.error('Job poll error:', err);
+      setRefreshing(false);
+      return;
+    }
+    setTimeout(() => pollResearchJob(jobId, attempt + 1), POLL_INTERVAL_MS);
+  }, [fetchReport]);
+
   const handleTriggerResearch = async () => {
     try {
       setRefreshing(true);
       const res = await apiClient.post(`/api/earnings-intelligence/${symbol}/research`);
       const payload = res?.data ?? res;
-      if (payload) {
-        setTimeout(fetchReport, 3000);
+      if (payload?.jobId && payload.status !== 'CACHED') {
+        pollResearchJob(payload.jobId);
+      } else {
+        await fetchReport();
+        setRefreshing(false);
       }
     } catch (err) {
       console.error('Research error:', err);
-    } finally {
       setRefreshing(false);
     }
   };
@@ -801,6 +1193,7 @@ function CompanyReport({ symbol, onBack }) {
   const confidence = (typeof report.confidence === 'string' ? report.confidence : report.confidence?.level) || 'INSUFFICIENT EVIDENCE';
   const coverage = report.coverage || 'Coverage unavailable';
   const snapshot = report.financialSnapshot || {};
+  const financialIntelligence = report.financialIntelligence || null;
   const breakdown = report.scoreBreakdown || {};
   const promises = report.promises || [];
   const sourceDocs = report.sourceDocuments || [];
@@ -1014,6 +1407,64 @@ function CompanyReport({ symbol, onBack }) {
               </div>
             </div>
 
+            {/* Financial Intelligence (provider-backed, broadly available -- distinct
+                from the curated/verified 5-Year Historical Snapshot above, which
+                requires manual research and is sparse today). Missing fields render
+                as "—", never fabricated or shown as 0. */}
+            <Card className="bg-gs-panel/40 border-gs-border p-4 space-y-3">
+              <div className="flex items-center justify-between border-b border-gs-border/60 pb-2">
+                <h3 className="font-semibold text-gs-text text-sm">Financial Intelligence</h3>
+                <Badge variant="outline" className="font-mono text-[10px] uppercase">
+                  {financialIntelligence ? (financialIntelligence.sourceProvider || 'Provider Data') : 'Unavailable'}
+                </Badge>
+              </div>
+              {financialIntelligence ? (
+                <>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono text-xs">
+                    <div>
+                      <div className="text-gs-textDim text-[10px] uppercase">Latest Period</div>
+                      <div className="font-bold text-gs-text mt-0.5">{financialIntelligence.latestPeriod ?? '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-gs-textDim text-[10px] uppercase">Revenue Growth</div>
+                      <div className="font-bold text-gs-text mt-0.5">{financialIntelligence.revenueGrowth != null ? `${financialIntelligence.revenueGrowth}%` : '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-gs-textDim text-[10px] uppercase">Profit Growth</div>
+                      <div className="font-bold text-gs-pos mt-0.5">{financialIntelligence.netProfitGrowth != null ? `${financialIntelligence.netProfitGrowth}%` : '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-gs-textDim text-[10px] uppercase">Operating Margin</div>
+                      <div className="font-bold text-gs-gold mt-0.5">{financialIntelligence.operatingMargin != null ? `${financialIntelligence.operatingMargin}%` : '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-gs-textDim text-[10px] uppercase">Revenue</div>
+                      <div className="font-bold text-gs-text mt-0.5">{financialIntelligence.revenue != null ? `₹${financialIntelligence.revenue} Cr` : '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-gs-textDim text-[10px] uppercase">Net Profit</div>
+                      <div className="font-bold text-gs-text mt-0.5">{financialIntelligence.netProfit != null ? `₹${financialIntelligence.netProfit} Cr` : '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-gs-textDim text-[10px] uppercase">EPS</div>
+                      <div className="font-bold text-gs-text mt-0.5">{financialIntelligence.eps != null ? `₹${financialIntelligence.eps}` : '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-gs-textDim text-[10px] uppercase">Debt Trend</div>
+                      <div className="font-bold text-blue-300 mt-0.5 truncate">{financialIntelligence.debtTrend ?? '—'}</div>
+                    </div>
+                  </div>
+                  <div className="text-[10px] font-mono text-gs-textDim pt-1 border-t border-gs-border/40">
+                    As of {formatDate(financialIntelligence.fetchedAt)} · Sourced from company-reported financial statements, not management guidance or promises.
+                  </div>
+                </>
+              ) : (
+                <div className="text-xs font-mono text-gs-textMuted py-2">
+                  Financial data is currently unavailable for this company.
+                </div>
+              )}
+            </Card>
+
             {/* Exact Mathematical Formula Breakdown */}
             <Card className="bg-gs-panel/40 border-gs-border p-4 font-mono text-xs space-y-2">
               <div className="flex items-center gap-2 text-gs-gold font-bold uppercase tracking-wider text-[11px]">
@@ -1137,8 +1588,23 @@ function CompanyReport({ symbol, onBack }) {
           </div>
         )}
 
-        {/* TAB 2: SECTION B - Management Promise Timeline */}
-        {activeTab === 'guidance' && (
+        {/* TAB 2: SECTION B - Management Promise Timeline / Curated Faith Score */}
+        {activeTab === 'guidance' && timelineLoading && (
+          <div className="p-8 text-center space-y-4">
+            <RefreshCw className="w-8 h-8 text-gs-gold animate-spin mx-auto" />
+            <div className="font-mono text-sm text-gs-textDim">Loading promise timeline...</div>
+          </div>
+        )}
+
+        {/* Curated Faith Score dataset (new): the /timeline response carries `dataMode` for
+            CURATED_VERIFIED, DEMO_SYNTHETIC and RESEARCH_PENDING companies. */}
+        {activeTab === 'guidance' && !timelineLoading && timelineData?.dataMode && (
+          <CuratedFaithScorePanel curated={timelineData} />
+        )}
+
+        {/* Legacy live-research-pipeline dataset (unchanged): no `dataMode` on the payload
+            means this came from the existing Mongo-backed getCompanyTimeline(). */}
+        {activeTab === 'guidance' && !timelineLoading && !timelineData?.dataMode && (
           <div className="space-y-4">
             {/* Summary Cards */}
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">

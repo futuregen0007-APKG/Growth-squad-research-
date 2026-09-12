@@ -192,6 +192,72 @@ test('IndianApiProvider throws INVALID_RESPONSE for a non-JSON-object payload', 
   );
 });
 
+test('IndianApiProvider deduplicates concurrent requests for the same symbol into a single upstream call (regression: getCompanyResearchBundle fired 7 duplicate /stock calls on a cold cache)', async () => {
+  const provider = new IndianApiProvider({ apiKey: 'test-key' });
+  let callCount = 0;
+  withMockedClient(provider, async () => {
+    callCount += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20)); // simulate real network latency
+    return { data: SAMPLE_STOCK_RESPONSE };
+  });
+
+  // Mirrors getCompanyResearchBundle's Promise.all of 7 capability calls for one symbol.
+  const [profile, financials, keyMetrics, shareholding, corporateActions, analyst, news] = await Promise.all([
+    provider.getCompanyProfile('DEDUPTEST'),
+    provider.getFinancials('DEDUPTEST'),
+    provider.getKeyMetrics('DEDUPTEST'),
+    provider.getShareholding('DEDUPTEST'),
+    provider.getCorporateActions('DEDUPTEST'),
+    provider.getAnalystData('DEDUPTEST'),
+    provider.getCompanyNews('DEDUPTEST'),
+  ]);
+
+  assert.equal(callCount, 1, 'all 7 concurrent capability calls for the same symbol should share one upstream /stock fetch');
+  assert.equal(profile.data.identity.companyName, 'Tata Consultancy Services Limited');
+  assert.equal(financials.data.length, 1);
+  assert.ok(shareholding.data.length >= 0);
+  assert.ok(corporateActions.data.length >= 0);
+  assert.ok(news.data.length >= 0);
+  assert.ok(keyMetrics.data);
+  // SAMPLE_STOCK_RESPONSE carries no analystView/recosBar field, so an honest
+  // null here (not a fabricated analyst opinion) is the correct result.
+  assert.equal(analyst.data, null);
+});
+
+test('IndianApiProvider releases the in-flight slot after settling, so a later call re-fetches instead of hanging on a stale promise', async () => {
+  const provider = new IndianApiProvider({ apiKey: 'test-key' });
+  let callCount = 0;
+  withMockedClient(provider, async () => {
+    callCount += 1;
+    return { data: SAMPLE_STOCK_RESPONSE };
+  });
+
+  await provider.getCompanyProfile('DEDUPTEST2');
+  assert.equal(provider._inFlightStockFetches.size, 0, 'in-flight map must be empty once the request settles');
+
+  await provider.getCompanyProfile('DEDUPTEST2');
+  // No Redis in this test environment, so getCache always misses -- a second,
+  // separate (non-concurrent) call must trigger its own fresh fetch, not reuse
+  // a promise that already settled.
+  assert.equal(callCount, 2);
+});
+
+test('IndianApiProvider still propagates an error to every concurrent waiter, and clears the in-flight slot so a retry is possible', async () => {
+  const provider = new IndianApiProvider({ apiKey: 'test-key' });
+  withMockedClient(provider, async () => {
+    const error = new Error('Internal Server Error');
+    error.response = { status: 500 };
+    throw error;
+  });
+
+  const results = await Promise.allSettled([
+    provider.getCompanyProfile('DEDUPTEST3'),
+    provider.getFinancials('DEDUPTEST3'),
+  ]);
+  assert.ok(results.every((r) => r.status === 'rejected'));
+  assert.equal(provider._inFlightStockFetches.size, 0);
+});
+
 test('IndianApiProvider getOutcomeEvidence returns typed, dated, provider-tagged candidates', async () => {
   const provider = new IndianApiProvider({ apiKey: 'test-key' });
   withMockedClient(provider, async () => ({ data: SAMPLE_STOCK_RESPONSE }));

@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import { ArrowUpRight, Sparkles, Newspaper, AlertCircle, TrendingUp, TrendingDown } from "lucide-react";
 import KPITile from "@/components/widgets/KPITile";
+import PopularStocksRail from "@/components/widgets/PopularStocksRail";
 import { fetchAllStocks, fetchIndexQuotes, fetchHistoricalData, fetchSectorRotation } from "@/services/stockApi";
 import { fetchNewsWithStatus } from "@/services/newsApi";
 import API_BASE from "@/config/api";
@@ -89,6 +90,11 @@ export default function Dashboard() {
   const [sectorState, setSectorState] = useState({ loading: true, data: [], error: null });
 
   const stocks = stockState.data;
+  const popularSymbols = ['RELIANCE', 'TCS', 'HDFCBANK', 'ICICIBANK', 'INFY', 'HAL', 'LT', 'BHEL'];
+  const popularStocks = stocks.filter((stock) => {
+    const symbol = (stock?.symbol || stock?.ticker || '').toUpperCase();
+    return popularSymbols.includes(symbol);
+  });
   const dynamicIndexData = indexState.data.reduce((map, index) => {
     map[index.symbol] = index;
     return map;
@@ -231,6 +237,15 @@ export default function Dashboard() {
         {indexState.loading ? <div className="col-span-full text-sm text-gs-textMuted">Loading market indices...</div>
           : indices.length ? indices.map((idx) => <KPITile key={idx.symbol} {...idx} />)
             : <div className="col-span-full"><SectionError message={indexState.error || 'No market index data available.'} /></div>}
+      </div>
+
+      <div className="space-y-4">
+        <PopularStocksRail
+          stocks={popularStocks.length ? popularStocks : []}
+          watchlistSymbols={[]}
+          onToggleWatchlist={() => {}}
+          onSelectSymbol={(symbol) => navigate(`/stock/${encodeURIComponent(String(symbol || '').trim().toUpperCase())}`)}
+        />
       </div>
 
       {/* Main Grid */}
@@ -427,7 +442,7 @@ export default function Dashboard() {
                 gainers.map((s) => (
                   <button
                     key={s.symbol || s.ticker}
-                    onClick={() => navigate(`/stock/${s.symbol || s.ticker}`)}
+                    onClick={() => navigate(`/stock/${encodeURIComponent(String(s.symbol || s.ticker || '').trim().toUpperCase())}`)}
                     className="w-full flex items-center justify-between py-1.5 border-b border-gs-border last:border-b-0 hover:bg-gs-cardHover transition-colors px-1 -mx-1 rounded-sm"
                   >
                     <div className="text-left">
@@ -472,7 +487,7 @@ export default function Dashboard() {
                 losers.map((s) => (
                   <button
                     key={s.symbol || s.ticker}
-                    onClick={() => navigate(`/stock/${s.symbol || s.ticker}`)}
+                    onClick={() => navigate(`/stock/${encodeURIComponent(String(s.symbol || s.ticker || '').trim().toUpperCase())}`)}
                     className="w-full flex items-center justify-between py-1.5 border-b border-gs-border last:border-b-0 hover:bg-gs-cardHover transition-colors px-1 -mx-1 rounded-sm"
                   >
                     <div className="text-left">

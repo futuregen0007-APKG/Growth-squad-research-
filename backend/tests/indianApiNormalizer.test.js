@@ -68,3 +68,49 @@ test('normalizeCompanyResearch preserves fiscal period/date and real financial l
   assert.equal(result.financials[0].lineItems[0].value, 250000);
   assert.equal(result.financials[0].raw.FiscalYear, 2025);
 });
+
+test('normalizeCompanyResearch extracts real keyMetrics from the confirmed array-of-line-items shape (regression: a flat-object assumption previously made every category come back empty)', () => {
+  // This is IndianAPI's REAL keyMetrics shape (confirmed live against TCS/HDFCBANK,
+  // Sep 2026): each category is an ARRAY of {displayName, key, value} objects, the
+  // same "line item" convention already used by financials[].stockFinancialMap.
+  const result = normalizeCompanyResearch({
+    keyMetrics: {
+      margins: [
+        { displayName: 'Operating margin - trailing 12 month', key: 'operatingMarginTrailing12Month', value: '23.11' },
+        { displayName: 'Gross Margin - 5 year average', key: 'grossMargin5YearAverage', value: null },
+      ],
+      mgmtEffectiveness: [
+        { displayName: 'Return on average equity - 5 year average', key: 'returnOnAverageEquity5YearAverage', value: '48.55' },
+      ],
+    },
+  });
+
+  assert.equal(result.keyMetrics.categories.length, 2);
+  const margins = result.keyMetrics.categories.find((c) => c.category === 'margins');
+  assert.ok(margins, 'margins category should be present');
+  assert.equal(margins.label, 'Margins');
+  assert.equal(margins.metrics.length, 1); // the null-value entry is dropped, never fabricated
+  assert.equal(margins.metrics[0].name, 'Operating margin - trailing 12 month');
+  assert.equal(margins.metrics[0].value, 23.11);
+
+  const mgmt = result.keyMetrics.categories.find((c) => c.category === 'mgmtEffectiveness');
+  assert.equal(mgmt.metrics[0].value, 48.55);
+
+  // The raw, unprocessed object survives untouched regardless of the above extraction.
+  assert.ok(Array.isArray(result.keyMetrics.raw.margins));
+});
+
+test('normalizeCompanyResearch keyMetrics falls back safely (never throws) if a category is a flat object instead of the confirmed array shape', () => {
+  const result = normalizeCompanyResearch({
+    keyMetrics: { margins: { operatingMargin: '23.11' } },
+  });
+  assert.equal(result.keyMetrics.categories.length, 1);
+  assert.equal(result.keyMetrics.categories[0].metrics[0].name, 'operatingMargin');
+  assert.equal(result.keyMetrics.categories[0].metrics[0].value, 23.11);
+});
+
+test('normalizeCompanyResearch keyMetrics never crashes and returns empty categories for missing/malformed input', () => {
+  assert.deepEqual(normalizeCompanyResearch({}).keyMetrics, { categories: [], raw: null });
+  assert.deepEqual(normalizeCompanyResearch({ keyMetrics: 'not an object' }).keyMetrics, { categories: [], raw: null });
+  assert.deepEqual(normalizeCompanyResearch({ keyMetrics: {} }).keyMetrics.categories, []);
+});

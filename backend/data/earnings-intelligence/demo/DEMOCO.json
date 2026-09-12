@@ -1,0 +1,203 @@
+{
+  "_meta": {
+    "symbol": "DEMOCO",
+    "schema": "../schemas/managementPromise.schema.json",
+    "description": "DEMO DATA -- NOT REAL COMPANY RESEARCH. 'DEMOCO' is a fictional pseudo-symbol, not a real listed company and not present in SUPPORTED_STOCKS. It exists only to exercise the Faith Score UI/API end-to-end when EARNINGS_DEMO_MODE=true is explicitly set, and is unreachable through any normal (non-demo) request path.",
+    "company": {
+      "companyName": "Demo Company Pvt. Ltd. (Fictional Sample Data)",
+      "sector": "Demo / Sample Data",
+      "dataMode": "DEMO_SYNTHETIC",
+      "coverageStatus": "COMPLETE",
+      "coverageStart": "2023-04-01",
+      "coverageEnd": "2026-03-31",
+      "lastVerifiedAt": "2026-09-10",
+      "nextReviewAfter": null,
+      "verifiedPromiseCount": 4,
+      "resolvedPromiseCount": 4,
+      "pendingPromiseCount": 0,
+      "notes": "Entirely fictional demonstration data. Never presented as real company research."
+    }
+  },
+  "records": [
+    {
+      "id": "DEMOCO-FY2024-001",
+      "symbol": "DEMOCO",
+      "dataMode": "DEMO_SYNTHETIC",
+      "promise": {
+        "statement": "[DEMO] Management guided for at least 18% revenue growth in FY2024.",
+        "originalExcerpt": "[DEMO] We expect revenue growth of at least 18% in FY2024.",
+        "category": "REVENUE_GROWTH",
+        "promiseDate": "2023-05-10",
+        "targetPeriod": "FY2024",
+        "targetType": "PERCENTAGE",
+        "targetValue": 18,
+        "targetUnit": "PERCENT",
+        "operator": "AT_LEAST"
+      },
+      "outcome": {
+        "status": "ACHIEVED",
+        "actualValue": 21,
+        "actualUnit": "PERCENT",
+        "evaluationDate": "2024-05-08",
+        "explanation": "[DEMO] Fictional actual growth of 21% exceeds the 18% target."
+      },
+      "promiseEvidence": {
+        "sourceTitle": "[DEMO] Sample Earnings Call Transcript",
+        "sourceType": "EARNINGS_TRANSCRIPT",
+        "sourceUrl": "https://example.com/demo/democo-fy2024-guidance.pdf",
+        "publishedAt": "2023-05-10",
+        "pageNumber": 4,
+        "excerpt": "[DEMO] We expect revenue growth of at least 18% in FY2024."
+      },
+      "outcomeEvidence": {
+        "sourceTitle": "[DEMO] Sample Financial Results",
+        "sourceType": "FINANCIAL_RESULTS",
+        "sourceUrl": "https://example.com/demo/democo-fy2024-results.pdf",
+        "publishedAt": "2024-05-08",
+        "pageNumber": 2,
+        "excerpt": "[DEMO] Revenue grew 21% year-on-year in FY2024."
+      },
+      "verification": {
+        "verifiedAt": "2026-09-10",
+        "verifiedBy": "DEMO_FIXTURE",
+        "evidenceConfidence": 0.9,
+        "notes": "Fictional demo record."
+      }
+    },
+    {
+      "id": "DEMOCO-FY2025-001",
+      "symbol": "DEMOCO",
+      "dataMode": "DEMO_SYNTHETIC",
+      "promise": {
+        "statement": "[DEMO] Management targeted an EBITDA margin of at least 22% for FY2025.",
+        "originalExcerpt": "[DEMO] We are targeting an EBITDA margin of at least 22% this year.",
+        "category": "MARGIN",
+        "promiseDate": "2024-05-15",
+        "targetPeriod": "FY2025",
+        "targetType": "PERCENTAGE",
+        "targetValue": 22,
+        "targetUnit": "PERCENT",
+        "operator": "AT_LEAST"
+      },
+      "outcome": {
+        "status": "PARTIAL",
+        "actualValue": 20,
+        "actualUnit": "PERCENT",
+        "evaluationDate": "2025-05-12",
+        "explanation": "[DEMO] Fictional actual margin of 20% is below the 22% target but within the deterministic PARTIAL band."
+      },
+      "promiseEvidence": {
+        "sourceTitle": "[DEMO] Sample Investor Presentation",
+        "sourceType": "EARNINGS_PRESENTATION",
+        "sourceUrl": "https://example.com/demo/democo-fy2025-guidance.pdf",
+        "publishedAt": "2024-05-15",
+        "pageNumber": 6,
+        "excerpt": "[DEMO] We are targeting an EBITDA margin of at least 22% this year."
+      },
+      "outcomeEvidence": {
+        "sourceTitle": "[DEMO] Sample Annual Report",
+        "sourceType": "ANNUAL_REPORT",
+        "sourceUrl": "https://example.com/demo/democo-fy2025-annual-report.pdf",
+        "publishedAt": "2025-05-12",
+        "pageNumber": 10,
+        "excerpt": "[DEMO] EBITDA margin for FY2025 was 20%."
+      },
+      "verification": {
+        "verifiedAt": "2026-09-10",
+        "verifiedBy": "DEMO_FIXTURE",
+        "evidenceConfidence": 0.85,
+        "notes": "Fictional demo record."
+      }
+    },
+    {
+      "id": "DEMOCO-FY2025-002",
+      "symbol": "DEMOCO",
+      "dataMode": "DEMO_SYNTHETIC",
+      "promise": {
+        "statement": "[DEMO] Management guided order book growth of at least 15% for FY2025.",
+        "originalExcerpt": "[DEMO] We expect the order book to grow at least 15% in FY2025.",
+        "category": "ORDER_BOOK",
+        "promiseDate": "2024-08-20",
+        "targetPeriod": "FY2025",
+        "targetType": "PERCENTAGE",
+        "targetValue": 15,
+        "targetUnit": "PERCENT",
+        "operator": "AT_LEAST"
+      },
+      "outcome": {
+        "status": "MISSED",
+        "actualValue": 6,
+        "actualUnit": "PERCENT",
+        "evaluationDate": "2025-05-12",
+        "explanation": "[DEMO] Fictional actual order book growth of 6% falls well short of the 15% target."
+      },
+      "promiseEvidence": {
+        "sourceTitle": "[DEMO] Sample Earnings Call Transcript",
+        "sourceType": "EARNINGS_TRANSCRIPT",
+        "sourceUrl": "https://example.com/demo/democo-fy2025-orderbook-guidance.pdf",
+        "publishedAt": "2024-08-20",
+        "pageNumber": 5,
+        "excerpt": "[DEMO] We expect the order book to grow at least 15% in FY2025."
+      },
+      "outcomeEvidence": {
+        "sourceTitle": "[DEMO] Sample Annual Report",
+        "sourceType": "ANNUAL_REPORT",
+        "sourceUrl": "https://example.com/demo/democo-fy2025-annual-report.pdf",
+        "publishedAt": "2025-05-12",
+        "pageNumber": 11,
+        "excerpt": "[DEMO] Order book grew 6% year-on-year in FY2025."
+      },
+      "verification": {
+        "verifiedAt": "2026-09-10",
+        "verifiedBy": "DEMO_FIXTURE",
+        "evidenceConfidence": 0.8,
+        "notes": "Fictional demo record."
+      }
+    },
+    {
+      "id": "DEMOCO-FY2026-001",
+      "symbol": "DEMOCO",
+      "dataMode": "DEMO_SYNTHETIC",
+      "promise": {
+        "statement": "[DEMO] Management guided debt reduction to below 500 (fictional units) crore by FY2026.",
+        "originalExcerpt": "[DEMO] We plan to bring net debt below 500 crore by FY2026.",
+        "category": "DEBT_REDUCTION",
+        "promiseDate": "2025-05-12",
+        "targetPeriod": "FY2026",
+        "targetType": "ABSOLUTE",
+        "targetValue": 500,
+        "targetUnit": "INR_CRORE",
+        "operator": "AT_MOST"
+      },
+      "outcome": {
+        "status": "ACHIEVED",
+        "actualValue": 410,
+        "actualUnit": "INR_CRORE",
+        "evaluationDate": "2026-05-11",
+        "explanation": "[DEMO] Fictional actual net debt of 410 crore beats the 500 crore ceiling."
+      },
+      "promiseEvidence": {
+        "sourceTitle": "[DEMO] Sample Financial Results",
+        "sourceType": "FINANCIAL_RESULTS",
+        "sourceUrl": "https://example.com/demo/democo-fy2026-guidance.pdf",
+        "publishedAt": "2025-05-12",
+        "pageNumber": 3,
+        "excerpt": "[DEMO] We plan to bring net debt below 500 crore by FY2026."
+      },
+      "outcomeEvidence": {
+        "sourceTitle": "[DEMO] Sample Annual Report",
+        "sourceType": "ANNUAL_REPORT",
+        "sourceUrl": "https://example.com/demo/democo-fy2026-annual-report.pdf",
+        "publishedAt": "2026-05-11",
+        "pageNumber": 9,
+        "excerpt": "[DEMO] Net debt reduced to 410 crore in FY2026."
+      },
+      "verification": {
+        "verifiedAt": "2026-09-10",
+        "verifiedBy": "DEMO_FIXTURE",
+        "evidenceConfidence": 0.9,
+        "notes": "Fictional demo record."
+      }
+    }
+  ]
+}

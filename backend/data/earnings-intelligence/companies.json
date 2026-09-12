@@ -1,0 +1,23 @@
+{
+  "_meta": {
+    "description": "Sparse coverage overrides for the curated Earnings Intelligence dataset. Only symbols with curated research beyond the default appear here. The authoritative stock list is SUPPORTED_STOCKS in backend/utils/constants.js -- CuratedEarningsIntelligenceService merges that list with this file at load time, so every supported stock always resolves to a coverage record (RESEARCH_PENDING when absent here) without this file needing to duplicate all ~150 symbols by hand.",
+    "schema": "./schemas/curatedCompany.schema.json"
+  },
+  "companies": [
+    {
+      "symbol": "TCS",
+      "companyName": "Tata Consultancy Services Limited",
+      "sector": "IT / Software",
+      "dataMode": "CURATED_VERIFIED",
+      "coverageStatus": "PARTIAL",
+      "coverageStart": "2024-04-12",
+      "coverageEnd": "2026-04-09",
+      "lastVerifiedAt": "2026-09-11",
+      "nextReviewAfter": "2026-12-31",
+      "verifiedPromiseCount": 3,
+      "resolvedPromiseCount": 3,
+      "pendingPromiseCount": 0,
+      "notes": "Three promise/outcome pairs have been verified against primary sources (operating-margin aspiration vs FY26 actual; attrition comfort-range vs FY25 actual; international-revenue directional outlook vs Q2 FY26 actual), meeting the >= 3 resolved-verified-promise threshold for a public Faith Score. Coverage remains intentionally PARTIAL, not COMPLETE -- only a small sample of TCS's many quarterly commitments has been curated so far."
+    }
+  ]
+}

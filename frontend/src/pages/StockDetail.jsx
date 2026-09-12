@@ -1,994 +1,132 @@
-import { useParams, useNavigate, Link, useLocation } from "react-router-dom";
-import { useState, useEffect } from "react";
-import {
-  ArrowLeft,
-  Sparkles,
-  ExternalLink,
-  Star,
-  Building,
-  Users,
-  Calendar,
-  MapPin,
-  Briefcase,
-  Quote,
-  TrendingUp,
-  TrendingDown,
-  Award,
-  AlertCircle,
-  BarChart3,
-  LineChart as LineChartIcon,
-} from "lucide-react";
-import {
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-  BarChart,
-  Bar,
-  LineChart,
-  Line,
-  Legend,
-} from "recharts";
-import ChangeBadge from "@/components/widgets/ChangeBadge";
-import RatingPanel from "@/components/widgets/RatingPanel";
-import SWOTGrid from "@/components/widgets/SWOTGrid";
-import RiskFlagsList from "@/components/widgets/RiskFlagsList";
-import CompanyResearchSection from "@/components/widgets/CompanyResearchSection";
-import LiveStockPrice from "@/components/LiveStockPrice";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { fetchStockBySymbol, fetchCompanyDetails, fetchHistoricalData } from "@/services/stockApi";
-import CandlestickChart from "@/components/charts/CandlestickChart";
-import { fetchStockNews } from "@/services/newsApi";
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { AlertCircle, ArrowLeft, Building2, CalendarClock, ExternalLink, Star, TrendingDown, TrendingUp } from 'lucide-react';
+import StockDirectory from '@/components/widgets/StockDirectory';
+import { fetchAllStocks, fetchCompanyDetails, fetchHistoricalData, fetchStockBySymbol } from '@/services/stockApi';
+import { fetchStockNews } from '@/services/newsApi';
 
-const CHART_RANGES = ["1D", "5D", "1M", "6M", "1Y", "5Y"];
-const INTRADAY_RANGES = new Set(["1D", "5D"]);
+const tabs = [['overview', 'Overview'], ['financials', 'Financials'], ['keyMetrics', 'Key Metrics'], ['shareholding', 'Shareholding'], ['corporateActions', 'Corporate Actions'], ['analystView', 'Analyst View'], ['news', 'News']];
+const first = (...values) => values.find((value) => value !== null && value !== undefined && value !== '');
+const safeText = (value) => first(value, '—');
+const safeNumber = (value) => (value === null || value === undefined || value === '' || Number.isNaN(Number(value)) ? null : Number(value));
+const formatMoney = (value) => safeNumber(value) === null ? '—' : `₹${safeNumber(value).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+const formatPercent = (value) => safeNumber(value) === null ? '—' : `${safeNumber(value) >= 0 ? '+' : ''}${safeNumber(value).toFixed(2)}%`;
+const normalizeStocks = (stocks) => (Array.isArray(stocks) ? stocks : []).map((item) => ({ ...item, symbol: String(first(item?.symbol, item?.ticker, '')).trim().toUpperCase(), name: first(item?.name, item?.companyName, item?.symbol, item?.ticker, '—') })).filter((item) => item.symbol);
 
-// Real Angel One candles -> recharts-ready points. Intraday ranges label by
-// time-of-day; daily-candle ranges label by date. Labels are always
-// formatted in IST (the exchange's timezone) regardless of the viewer's
-// browser locale/timezone — otherwise a candle timestamped e.g. midnight
-// IST can render as the wrong calendar day for a non-IST viewer.
-const formatCandlesForChart = (candles, range) => {
-  const intraday = INTRADAY_RANGES.has(range);
-  return (candles || []).map((candle) => ({
-    x: intraday
-      ? new Date(candle.timestamp).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" })
-      : new Date(candle.timestamp).toLocaleDateString("en-IN", { day: "2-digit", month: "short", timeZone: "Asia/Kolkata" }),
-    v: candle.close,
-    open: candle.open,
-    high: candle.high,
-    low: candle.low,
-    close: candle.close,
-  }));
-};
+function StateMessage({ children }) {
+  return <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-gs-textMuted"><AlertCircle className="h-4 w-4 text-gs-textDim" />{children}</div>;
+}
 
-const ChartTooltip = ({ active, payload }) => {
-  if (!active || !payload?.length) return null;
-  const p = payload[0].payload;
-  return (
-    <div className="bg-gs-card border border-gs-border rounded-sm px-3 py-2 shadow-lg">
-      <div className="font-mono text-[10px] uppercase tracking-wider text-gs-textDim">
-        {p.period || `Tick ${p.x}`}
-      </div>
-      {payload.map((it, i) => (
-        <div
-          key={i}
-          className="font-mono text-[12px] mt-0.5 tabular-nums flex items-center gap-2"
-          style={{ color: it.color }}
-        >
-          <span>{it.name || it.dataKey}</span>
-          <span className="text-gs-text">
-            {Number(it.value).toLocaleString("en-IN", { maximumFractionDigits: 2 })}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-};
+function Metric({ label, value }) {
+  return <div className="min-w-0 border-l border-gs-border pl-3 first:border-0 first:pl-0"><div className="gs-label truncate">{label}</div><div className="mt-1 truncate font-mono text-sm font-semibold tabular-nums text-gs-text">{safeText(value)}</div></div>;
+}
 
-const StatBox = ({ label, value, sub }) => (
-  <div>
-    <div className="gs-label">{label}</div>
-    <div className="font-mono text-sm text-gs-text mt-1 tabular-nums">{value}</div>
-    {sub && <div className="text-[10px] text-gs-textDim mt-0.5">{sub}</div>}
-  </div>
-);
+function Field({ label, value }) {
+  return <div className="flex justify-between gap-3 border-b border-gs-border/70 py-2 last:border-0"><span className="text-[11px] text-gs-textDim">{label}</span><span className="truncate text-right font-mono text-[11px] text-gs-text">{safeText(value)}</span></div>;
+}
 
-const ValuationRow = ({ name, value, sectorAvg, hint }) => {
-  const numericValue = parseFloat(String(value));
-  const numericSector = parseFloat(String(sectorAvg));
-  const diff = numericValue - numericSector;
-  const cheaper = diff < 0;
-  return (
-    <div className="flex items-center justify-between py-2 border-b border-gs-border last:border-b-0">
-      <div>
-        <div className="text-[12.5px] text-gs-text">{name}</div>
-        {hint && <div className="text-[10.5px] text-gs-textDim mt-0.5">{hint}</div>}
-      </div>
-      <div className="text-right">
-        <div className="font-mono text-[13px] text-gs-text tabular-nums">{value}</div>
-        <div
-          className={`font-mono text-[10px] tabular-nums ${
-            cheaper ? "text-gs-pos" : "text-gs-neg"
-          }`}
-        >
-          vs sector {sectorAvg}
-        </div>
-      </div>
-    </div>
-  );
-};
+function DataRows({ data, label }) {
+  if (!Array.isArray(data) || !data.length) return <StateMessage>No {label} data reported by the provider.</StateMessage>;
+  return <div className="divide-y divide-gs-border">{data.slice(0, 10).map((entry, index) => <div key={`${entry.period || entry.title || index}`} className="flex justify-between gap-4 py-3"><div className="text-sm text-gs-text">{safeText(entry.title || entry.period || entry.name)}<div className="mt-1 text-[10px] text-gs-textDim">{safeText(entry.date || entry.asOf || entry.period)}</div></div><div className="text-right font-mono text-[11px] text-gs-textMuted">{entry.value ?? entry.status ?? entry.note ?? '—'}</div></div>)}</div>;
+}
 
 export default function StockDetail() {
   const { ticker } = useParams();
   const navigate = useNavigate();
-  const location = useLocation();
-  const goalContext = location.state?.goal;
-  const goalRecommendation = location.state?.goalRecommendation;
+  const symbol = useMemo(() => String(ticker || '').trim().toUpperCase(), [ticker]);
   const [stock, setStock] = useState(null);
   const [details, setDetails] = useState(null);
+  const [stocks, setStocks] = useState([]);
+  const [news, setNews] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [news, setNews] = useState([]);
-  const [newsLoading, setNewsLoading] = useState(true);
-  const [newsError, setNewsError] = useState(false);
-  const [chartType, setChartType] = useState('area'); // 'area' or 'candlestick'
-  const [chartRange, setChartRange] = useState('1Y');
-  const [history, setHistory] = useState({ candles: [], loading: true, error: null, meta: null });
-  const [historyRetryToken, setHistoryRetryToken] = useState(0);
+  const [activeTab, setActiveTab] = useState('overview');
+  const [watchlisted, setWatchlisted] = useState(false);
 
-  // Independent of stock/details/research — the chart must render (or show
-  // its own error/empty state) even when company research is unavailable.
   useEffect(() => {
-    if (!ticker) return undefined;
+    if (!symbol) { setLoading(false); return undefined; }
     let active = true;
-    setHistory((prev) => ({ ...prev, loading: true, error: null }));
-    fetchHistoricalData(ticker.toUpperCase(), chartRange)
-      .then((result) => {
-        if (!active) return;
-        setHistory({ candles: result?.candles || [], loading: false, error: null, meta: result });
-      })
-      .catch((historyError) => {
-        if (!active) return;
-        console.error('Error loading historical data:', historyError);
-        setHistory({ candles: [], loading: false, error: historyError, meta: null });
-      });
+    setLoading(true);
+    Promise.allSettled([fetchStockBySymbol(symbol), fetchCompanyDetails(symbol), fetchAllStocks(), fetchStockNews(symbol)]).then(([stockResult, detailsResult, stocksResult, newsResult]) => {
+      if (!active) return;
+      const nextStock = stockResult.status === 'fulfilled' ? stockResult.value : null;
+      const nextDetails = detailsResult.status === 'fulfilled' ? detailsResult.value : {};
+      setStock(nextStock || { symbol, ticker: symbol, name: symbol });
+      setDetails(nextDetails || {});
+      setStocks(normalizeStocks(stocksResult.status === 'fulfilled' ? stocksResult.value : []));
+      setNews(newsResult.status === 'fulfilled' && Array.isArray(newsResult.value) ? newsResult.value : []);
+      if (!nextStock && !nextDetails) setError('Stock data is temporarily unavailable.');
+      setLoading(false);
+    });
     return () => { active = false; };
-  }, [ticker, chartRange, historyRetryToken]);
+  }, [symbol]);
 
-  useEffect(() => {
-    const loadStock = async () => {
-      try {
-        setLoading(true);
-        const [stockData, detailsData] = await Promise.all([
-          fetchStockBySymbol(ticker?.toUpperCase()),
-          fetchCompanyDetails(ticker?.toUpperCase()),
-        ]);
-        setStock(stockData);
-        setDetails(detailsData);
-        setError(null);
-      } catch (err) {
-        console.error('Error loading stock:', err);
-        // Don't set error - fallback data should be available from API
-        // Only set error if truly no data available
-        setError(null);
-      } finally {
-        setLoading(false);
-      }
+  const company = useMemo(() => {
+    const source = details?.company || details?.profile || details || {};
+    return {
+      name: first(source.companyName, source.name, stock?.companyName, stock?.name, symbol),
+      description: first(source.companyDescription, source.description, details?.overview?.description),
+      industry: first(source.mgIndustry, source.industry, source.sector, stock?.industry, stock?.sector),
+      sector: first(source.sector, stock?.sector),
+      isin: first(source.isinId, source.isin, stock?.isin),
+      bse: first(source.exchangeCodeBse, source.bseCode, stock?.bseCode),
+      nse: first(source.exchangeCodeNse, source.nseCode, stock?.nseCode, symbol),
+      provider: first(details?.provider, details?.dataProvider, details?.source, 'Market data provider'),
+      timestamp: first(details?.updatedAt, details?.lastUpdated, stock?.updatedAt, stock?.lastUpdated),
     };
-    if (ticker) loadStock();
-  }, [ticker]);
+  }, [details, stock, symbol]);
 
-  useEffect(() => {
-    if (!ticker) return undefined;
-    let active = true;
-    setNewsLoading(true);
-    setNewsError(false);
-    fetchStockNews(ticker)
-      .then((articles) => { if (active) setNews(articles); })
-      .catch((newsLoadError) => {
-        console.error('Error loading stock news:', newsLoadError);
-        if (active) { setNews([]); setNewsError(true); }
-      })
-      .finally(() => { if (active) setNewsLoading(false); });
-    return () => { active = false; };
-  }, [ticker]);
+  const selected = useMemo(() => ({ ...stock, ...stocks.find((item) => item.symbol === symbol) }), [stock, stocks, symbol]);
+  const research = details?.research || {};
+  const tabData = {
+    financials: research.financials?.rows,
+    keyMetrics: research.keyMetrics?.entries,
+    shareholding: research.shareholding?.data,
+    corporateActions: research.corporateActions?.data,
+    analystView: research.analystData,
+  };
+  const selectStock = (nextSymbol) => navigate(`/stock/${encodeURIComponent(String(nextSymbol).trim().toUpperCase())}`);
 
-  if (error || !stock) {
-    return (
-      <div className="space-y-6 animate-fade-up">
-        <button
-          onClick={() => navigate(-1)}
-          className="flex items-center gap-2 text-[12px] font-mono uppercase tracking-wider text-gs-textDim hover:text-gs-text"
-        >
-          <ArrowLeft className="w-3.5 h-3.5" /> Back
-        </button>
-        <div className="bg-gs-card border border-gs-neg/30 rounded-lg p-4 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-gs-neg flex-shrink-0 mt-0.5" />
-          <div>
-            <h3 className="font-semibold text-gs-text">Unable to Load Stock Data</h3>
-            <p className="text-sm text-gs-textMuted mt-1">{error || 'Stock not found'}</p>
-          </div>
-        </div>
+  if (!symbol) return <StateMessage>No stock selected. Choose a symbol from the directory.</StateMessage>;
+  if (loading && !stock && !details) return <div className="space-y-4 animate-pulse" data-testid="stock-detail-loading"><div className="h-36 rounded-sm border border-gs-border bg-gs-card" /><div className="h-[560px] rounded-sm border border-gs-border bg-gs-card" /></div>;
+
+  return <div className="space-y-4" data-testid="stock-detail-page">
+    <button type="button" onClick={() => navigate(-1)} className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] text-gs-textDim hover:text-gs-text"><ArrowLeft className="h-3.5 w-3.5" /> Back to research</button>
+    <header className="gs-card overflow-hidden border-t-2 border-t-gs-gold/60">
+      <div className="flex flex-col gap-5 p-4 sm:p-5 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="font-mono text-2xl font-bold tracking-[0.12em] text-gs-text">{symbol}</span><span className="border border-gs-border bg-gs-panel px-2 py-1 font-mono text-[9px] text-gs-textDim">NSE / BSE</span><span className="text-[11px] text-gs-textDim">{safeText(company.industry || company.sector)}</span></div><h1 className="mt-1 truncate font-display text-lg font-semibold text-gs-text sm:text-xl">{safeText(company.name)}</h1><div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] text-gs-textDim"><span>NSE {safeText(company.nse)}</span><span>BSE {safeText(company.bse)}</span><span>ISIN {safeText(company.isin)}</span></div></div>
+        <div className="flex items-center gap-5"><div><div className="gs-label">Current price</div><div className="mt-1 font-mono text-2xl font-semibold tabular-nums text-gs-text">{formatMoney(first(selected.price, selected.lastPrice))}</div><div className={`mt-1 flex items-center gap-1 font-mono text-xs ${safeNumber(first(selected.changePct, selected.percentageChange)) >= 0 ? 'text-gs-pos' : 'text-gs-neg'}`}>{safeNumber(first(selected.changePct, selected.percentageChange)) >= 0 ? <TrendingUp className="h-3.5 w-3.5" /> : <TrendingDown className="h-3.5 w-3.5" />}{formatPercent(first(selected.changePct, selected.percentageChange))}</div></div><button type="button" onClick={() => setWatchlisted((value) => !value)} className={`flex h-9 items-center gap-2 border px-3 font-mono text-[10px] uppercase tracking-wider ${watchlisted ? 'border-gs-gold text-gs-gold' : 'border-gs-border text-gs-textDim'}`}><Star className={`h-3.5 w-3.5 ${watchlisted ? 'fill-current' : ''}`} />{watchlisted ? 'Watching' : 'Watchlist'}</button></div>
       </div>
-    );
-  }
+      <div className="grid gap-2 border-t border-gs-border bg-gs-panel/40 px-4 py-2.5 text-[10px] text-gs-textDim sm:grid-cols-3 sm:px-5"><div className="flex items-center gap-2"><Building2 className="h-3.5 w-3.5" />Provider: <span className="text-gs-text">{safeText(company.provider)}</span></div><div className="flex items-center gap-2"><CalendarClock className="h-3.5 w-3.5" />Updated: <span className="text-gs-text">{company.timestamp ? new Date(company.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '—'}</span></div><div className="sm:text-right">{error || 'Live quote and research view'}</div></div>
+    </header>
 
-  const isPos = (stock.changePct || 0) >= 0;
-  const chartData = formatCandlesForChart(history.candles, chartRange);
-
-  // Self-contained: sources real Angel One candles via its own fetch above,
-  // independent of `details.research` — rendered identically whether or not
-  // company research is available.
-  const priceChartCard = (
-    <div className="gs-card p-5">
-      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-        <div className="gs-label">Price · {chartRange}</div>
-        <div className="flex items-center gap-2">
-          <div className="flex items-center bg-gs-panel border border-gs-border rounded-sm">
-            <button
-              onClick={() => setChartType('area')}
-              className={`p-1.5 rounded-sm ${chartType === 'area' ? 'bg-gs-card text-gs-gold' : 'text-gs-textDim hover:text-gs-text'}`}
-              title="Area Chart"
-            >
-              <LineChartIcon className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => setChartType('candlestick')}
-              className={`p-1.5 rounded-sm ${chartType === 'candlestick' ? 'bg-gs-card text-gs-gold' : 'text-gs-textDim hover:text-gs-text'}`}
-              title="Candlestick Chart"
-            >
-              <BarChart3 className="w-3.5 h-3.5" />
-            </button>
-          </div>
-          <div className="flex items-center gap-1">
-            {CHART_RANGES.map((r) => (
-              <button
-                key={r}
-                onClick={() => setChartRange(r)}
-                className={`font-mono text-[11px] px-2 py-1 rounded-sm border ${
-                  r === chartRange
-                    ? "bg-gs-card text-gs-gold border-gs-gold/40"
-                    : "bg-transparent text-gs-textDim border-gs-border hover:text-gs-text hover:border-gs-textDim/50"
-                }`}
-                data-testid={`chart-range-${r}`}
-              >
-                {r}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-      <div style={{ height: 280 }} data-testid="price-chart">
-        {history.loading ? (
-          <div className="h-full grid place-items-center text-sm text-gs-textDim" data-testid="chart-loading">
-            Loading {chartRange} price history…
-          </div>
-        ) : history.error ? (
-          <div className="h-full grid place-items-center text-center px-4" data-testid="chart-error">
-            <div>
-              <div className="text-sm text-gs-textMuted">Historical data is currently unavailable.</div>
-              <button
-                onClick={() => setHistoryRetryToken((n) => n + 1)}
-                className="mt-2 text-[11px] font-mono uppercase tracking-wider text-gs-gold hover:underline"
-                data-testid="chart-retry"
-              >
-                Retry
-              </button>
+    <div className="grid items-start gap-4 lg:grid-cols-[280px_minmax(0,1fr)]"><aside className="lg:sticky lg:top-4"><StockDirectory stocks={stocks.length ? stocks : [selected]} selectedSymbol={symbol} onSelect={selectStock} sortMode="name" onSortModeChange={() => {}} /></aside><main className="min-w-0 space-y-4">
+      <div className="gs-card grid grid-cols-2 gap-4 p-4 sm:grid-cols-4 lg:grid-cols-7"><Metric label="Market cap" value={selected.marketCap || details?.marketCap} /><Metric label="P/E" value={safeNumber(first(selected.pe, details?.pe)) === null ? '—' : `${safeNumber(first(selected.pe, details?.pe)).toFixed(1)}x`} /><Metric label="52W high" value={formatMoney(first(selected.fiftyTwoWeekHigh, selected.week52High, details?.fiftyTwoWeekHigh))} /><Metric label="52W low" value={formatMoney(first(selected.fiftyTwoWeekLow, selected.week52Low, details?.fiftyTwoWeekLow))} /><Metric label="1Y return" value={formatPercent(first(details?.annualizedReturn, details?.oneYearReturn))} /><Metric label="Volatility" value={formatPercent(details?.volatility)} /><Metric label="Max drawdown" value={formatPercent(details?.maxDrawdown)} /></div>
+      <div className="gs-card overflow-hidden"><div className="flex gap-1 overflow-x-auto border-b border-gs-border bg-gs-panel/40 p-2">{tabs.map(([value, label]) => <button type="button" key={value} onClick={() => setActiveTab(value)} className={`shrink-0 px-3 py-2 font-mono text-[10px] uppercase tracking-wider ${activeTab === value ? 'bg-gs-card text-gs-gold' : 'text-gs-textDim hover:text-gs-text'}`}>{label}</button>)}</div><div className="p-4 sm:p-5">
+        {activeTab === 'overview' && <div className="space-y-4"><div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_250px]"><section className="border-l-2 border-l-gs-gold/60 pl-4"><div className="gs-label">About Company</div><p className="mt-2 line-clamp-4 max-w-3xl text-sm leading-6 text-gs-textMuted">{safeText(company.description)}</p><button type="button" className="mt-2 text-[11px] font-mono text-gs-gold hover:underline">Read more</button></section><section className="border border-gs-border bg-gs-panel/30 p-3"><Field label="Industry" value={company.industry} /><Field label="Sector" value={company.sector} /><Field label="ISIN" value={company.isin} /><Field label="NSE Symbol" value={company.nse} /><Field label="BSE Code" value={company.bse} /></section></div><StateMessage>Price history is available from the provider on the live chart surface.</StateMessage></div>}
+        {activeTab === 'financials' && <DataRows data={tabData.financials} label="financial" />}
+        {activeTab === 'keyMetrics' && <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{(tabData.keyMetrics || []).slice(0, 24).map((entry) => <Metric key={entry.label} label={entry.label} value={entry.value} />)}{!(tabData.keyMetrics || []).length && <StateMessage>No key metrics data reported by the provider.</StateMessage>}</div>}
+        {activeTab === 'shareholding' && <DataRows data={tabData.shareholding} label="shareholding" />}
+        {activeTab === 'corporateActions' && <DataRows data={tabData.corporateActions} label="corporate action" />}
+        {activeTab === 'analystView' && <div className="space-y-4">
+          <section className="border border-gs-border bg-gs-panel/30 p-3">
+            <div className="gs-label">This project's growth potential &amp; quality score</div>
+            {tabData.analystView?.ownScore?.score != null
+              ? <div className="mt-3 flex flex-wrap items-baseline gap-4"><div className="font-mono text-3xl font-semibold text-gs-gold">{tabData.analystView.ownScore.score}<span className="text-sm text-gs-textDim">/100</span></div><div className="text-sm text-gs-text">{tabData.analystView.ownScore.scoreLabel}</div></div>
+              : <StateMessage>Insufficient verified metrics to compute a score for this stock yet.</StateMessage>}
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <Field label="Risk level" value={tabData.analystView?.ownScore?.riskLabel} />
+              <Field label="Data coverage" value={tabData.analystView?.ownScore?.dataCoveragePct != null ? `${tabData.analystView.ownScore.dataCoveragePct}%` : null} />
+              <Field label="Confidence" value={tabData.analystView?.ownScore?.confidence} />
+              <Field label="Verified metrics used" value={(tabData.analystView?.ownScore?.availableMetrics || []).join(', ')} />
             </div>
-          </div>
-        ) : chartData.length === 0 ? (
-          <div className="h-full grid place-items-center text-sm text-gs-textMuted" data-testid="chart-empty">
-            No historical data available for {chartRange}.
-          </div>
-        ) : chartType === 'area' ? (
-          <ResponsiveContainer>
-            <AreaChart data={chartData} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
-              <defs>
-                <linearGradient id="stockGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={isPos ? "#059669" : "#DC2626"} stopOpacity={0.3} />
-                  <stop offset="100%" stopColor={isPos ? "#059669" : "#DC2626"} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="#1E222A" strokeDasharray="2 4" />
-              <XAxis
-                dataKey="x"
-                stroke="#475569"
-                tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }}
-                tickLine={false}
-                axisLine={{ stroke: "#1E222A" }}
-              />
-              <YAxis
-                stroke="#475569"
-                tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }}
-                tickLine={false}
-                axisLine={{ stroke: "#1E222A" }}
-                domain={["dataMin - 5", "dataMax + 5"]}
-                width={60}
-              />
-              <Tooltip content={<ChartTooltip />} cursor={{ stroke: "#D4AF37", strokeDasharray: "3 3" }} />
-              <Area
-                type="monotone"
-                dataKey="v"
-                stroke={isPos ? "#059669" : "#DC2626"}
-                strokeWidth={1.8}
-                fill="url(#stockGrad)"
-                isAnimationActive={false}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        ) : (
-          <CandlestickChart data={chartData} isPositive={isPos} />
-        )}
-      </div>
-      {history.meta && (
-        <div className="mt-2 text-[10px] text-gs-textDim font-mono">
-          Source: {history.meta.source} · {history.meta.count} candles · as of {new Date(history.meta.asOf).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}
-          {history.meta.fromCache ? ' · cached' : ''}
-        </div>
-      )}
-      {history.meta?.metrics && (
-        <div className="mt-3 pt-3 border-t border-gs-border grid grid-cols-1 sm:grid-cols-3 gap-3" data-testid="deterministic-metrics">
-          {[
-            { label: '1Y Return', metric: history.meta.metrics.oneYearReturn, format: (v) => `${v >= 0 ? '+' : ''}${v}%` },
-            { label: 'Annualized Volatility', metric: history.meta.metrics.volatility, format: (v) => `${v}%` },
-            { label: 'Maximum Drawdown', metric: history.meta.metrics.maxDrawdown, format: (v) => `${v}%` },
-          ].map(({ label, metric, format }) => (
-            <div key={label} data-testid={`metric-${label.replace(/\s+/g, '-').toLowerCase()}`}>
-              <div className="gs-label">{label}</div>
-              {metric?.available ? (
-                <div className="font-mono text-sm text-gs-text mt-1 tabular-nums">{format(metric.value)}</div>
-              ) : (
-                <>
-                  <div className="font-mono text-sm text-gs-textDim mt-1">N/A</div>
-                  <div className="text-[10px] text-gs-textDim mt-0.5">{metric?.missingReason || 'Unavailable'}</div>
-                </>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-
-  if (!details?.research) {
-    return (
-      <div className="space-y-5 animate-fade-up" data-testid="stock-detail-page">
-        <button onClick={() => navigate(-1)} className="flex items-center gap-2 text-[12px] font-mono uppercase tracking-wider text-gs-textDim hover:text-gs-text">
-          <ArrowLeft className="w-3.5 h-3.5" /> Back
-        </button>
-        <div className="gs-card p-5">
-          <div className="gs-label">Live market data</div>
-          <h1 className="font-display text-3xl font-bold text-gs-text mt-1">{stock.name || stock.ticker}</h1>
-          <div className="font-mono text-xs text-gs-textDim mt-1">NSE · {stock.ticker} · {stock.sector || 'Sector unavailable'}</div>
-          <div className="mt-6 grid grid-cols-2 gap-4">
-            <div><div className="gs-label">Current price</div><div className="font-mono text-xl text-gs-text mt-1">{stock.price == null ? 'Price unavailable' : `₹${Number(stock.price).toLocaleString('en-IN')}`}</div></div>
-            <div><div className="gs-label">Daily change</div><div className="font-mono text-xl text-gs-text mt-1">{stock.changePct == null ? 'Change unavailable' : `${Number(stock.changePct).toFixed(2)}%`}</div></div>
-          </div>
-        </div>
-        {priceChartCard}
-        <CompanyResearchSection symbol={stock.ticker} />
-      </div>
-    );
-  }
-
-  const research = details.research;
-
-  const peers = Array.isArray(details.peers) ? details.peers : [];
-
-  return (
-    <div className="space-y-5 animate-fade-up" data-testid="stock-detail-page">
-      <button
-        onClick={() => navigate(-1)}
-        className="flex items-center gap-2 text-[12px] font-mono uppercase tracking-wider text-gs-textDim hover:text-gs-text"
-      >
-        <ArrowLeft className="w-3.5 h-3.5" /> Back
-      </button>
-
-      {/* Header */}
-      <div className="gs-card p-5">
-        <div className="flex items-start justify-between flex-wrap gap-4">
-          <div>
-            <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="font-display text-3xl font-bold text-gs-text tracking-tight">
-                {stock.ticker}
-              </h1>
-              <span className="font-mono text-[10px] uppercase tracking-wider text-gs-textDim bg-gs-panel border border-gs-border px-2 py-1 rounded-sm">
-                NSE · {stock.sector}
-              </span>
-              <span
-                className={`font-display font-extrabold text-[12px] tracking-wider px-2 py-1 rounded-sm border ${
-                  research.rating.verdict === "BUY"
-                    ? "bg-gs-posBg text-gs-pos border-gs-pos/40"
-                    : research.rating.verdict === "ACCUMULATE"
-                      ? "bg-gs-posBg text-gs-pos border-gs-pos/40"
-                      : research.rating.verdict === "HOLD"
-                        ? "bg-gs-goldMuted text-gs-gold border-gs-gold/40"
-                        : "bg-gs-negBg text-gs-neg border-gs-neg/40"
-                }`}
-              >
-                {research.rating.verdict}
-              </span>
-              <button className="text-gs-textDim hover:text-gs-gold">
-                <Star className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="text-sm text-gs-textMuted mt-1">{stock.name}</div>
-          </div>
-          <div className="grid grid-cols-3 gap-4 sm:gap-6 text-right">
-            <StatBox label="Mkt Cap" value={stock.marketCap} />
-            <StatBox label="P/E TTM" value={`${stock.pe?.toFixed(1)}x`} sub={`Sector ${research.valuation.peSector}x`} />
-            <StatBox label="Target" value={`₹${research.rating.target.toLocaleString("en-IN")}`} sub={`${research.rating.upside >= 0 ? "+" : ""}${research.rating.upside}% upside`} />
-          </div>
-        </div>
-      </div>
-
-      {goalRecommendation && goalContext && (
-        <div className="gs-card p-5 border-l-2 border-l-gs-gold space-y-4" data-testid="goal-stock-suggestion">
-          <div className="flex items-start justify-between gap-4 flex-wrap">
-            <div>
-              <div className="flex items-center gap-2 text-gs-gold">
-                <Sparkles className="w-4 h-4" />
-                <span className="gs-label text-gs-gold">Goal suggestion</span>
-              </div>
-              <h2 className="font-display text-xl font-bold text-gs-text mt-2">{goalContext.name}: why {stock.ticker} fits</h2>
-              <p className="text-sm text-gs-textMuted mt-1">This view combines the stock research with the selected goal's horizon, contribution, and risk requirements.</p>
-            </div>
-            <div className="text-right shrink-0">
-              <div className="gs-label">Goal fit</div>
-              <div className="font-display text-2xl font-bold text-gs-gold">{goalRecommendation.goalFitScore ?? 0}<span className="text-sm text-gs-textDim">/100</span></div>
-              <div className="text-[10px] uppercase text-gs-textDim">{goalRecommendation.recommendation || 'CONSIDER'}</div>
-            </div>
-          </div>
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-            <div className="lg:col-span-2 space-y-3">
-              <div className="bg-gs-panel border border-gs-border p-3">
-                <div className="gs-label mb-1">Why this stock</div>
-                <p className="text-sm text-gs-textMuted leading-relaxed">{goalRecommendation.whyRecommended || 'Selected for its fit with this goal.'}</p>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-                {[['History', goalRecommendation.history], ['Present', goalRecommendation.present], ['Future', goalRecommendation.future]].map(([label, text]) => (
-                  <div key={label} className="bg-gs-panel border border-gs-border p-3">
-                    <div className="gs-label mb-1">{label}</div>
-                    {typeof text === 'string' ? (
-                      <p className="text-xs text-gs-textMuted leading-relaxed">{text}</p>
-                    ) : label === 'Present' ? (
-                      <div className="space-y-1 text-xs text-gs-textMuted">
-                        <div>Price: ₹{Number(text?.price || stock.price || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
-                        <div>Day change: {text?.dayChangePct ?? stock.changePct ?? 'Data unavailable'}%</div>
-                        <div>Day high / low: {text?.high ?? 'Data unavailable'} / {text?.low ?? 'Data unavailable'}</div>
-                        <div className="text-[10px] text-gs-textDim">Source: {text?.source || 'Data unavailable'}</div>
-                      </div>
-                    ) : (
-                      <div className="space-y-2 text-xs text-gs-textMuted">
-                        <p>{text?.label || 'Evidence-based outlook only; no future return is guaranteed.'}</p>
-                        {Array.isArray(text?.growthDrivers) && text.growthDrivers.length > 0 && (
-                          <ul className="list-disc pl-4 space-y-1">
-                            {text.growthDrivers.map((driver, index) => <li key={`${driver}-${index}`}>{driver}</li>)}
-                          </ul>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="bg-gs-panel border border-gs-border p-3 space-y-3">
-              <div>
-                <div className="gs-label">Investment plan</div>
-                <div className="font-mono text-lg text-gs-text mt-1">₹{Number(goalRecommendation.investmentPlan?.monthly || 0).toLocaleString('en-IN')} / month</div>
-                <div className="text-xs text-gs-textDim mt-1">₹{Number(goalRecommendation.investmentPlan?.annual || 0).toLocaleString('en-IN')} annually</div>
-              </div>
-              <div>
-                <div className="gs-label">Projection</div>
-                <div className="text-sm text-gs-text mt-1">₹{Number(goalRecommendation.projection?.projectedAmount || 0).toLocaleString('en-IN')}</div>
-                <div className="text-xs text-gs-textDim">Funding gap: ₹{Number(goalRecommendation.projection?.fundingGap || 0).toLocaleString('en-IN')}</div>
-              </div>
-              <div>
-                <div className="gs-label">Risks</div>
-                <ul className="list-disc pl-4 mt-1 space-y-1 text-xs text-gs-textMuted">
-                  {(goalRecommendation.risks || []).map((risk, index) => <li key={`${risk}-${index}`}>{risk}</li>)}
-                </ul>
-              </div>
-            </div>
-          </div>
-          <div className="text-[11px] text-gs-textDim border-t border-gs-border pt-3">Returns are market-dependent and not guaranteed. This is informational analysis, not personalized financial advice.</div>
-        </div>
-      )}
-
-      <LiveStockPrice
-        symbol={stock.ticker}
-        companyName={details?.name || stock.name}
-        initialData={{
-          price: stock.price,
-          open: stock.open,
-          high: stock.high,
-          low: stock.low,
-          previousClose: stock.previousClose,
-          volume: stock.volume,
-          change: stock.change,
-          percentage: stock.changePct,
-          timestamp: stock.lastUpdate,
-        }}
-      />
-
-      {/* Institutional Rating Panel */}
-      <RatingPanel rating={research.rating} currentPrice={stock.price} />
-
-      {/* Main Grid: Chart + Tabs (left) | Overview + Sector Pos + Valuation (right) */}
-      <div className="grid grid-cols-12 gap-4">
-        <div className="col-span-12 lg:col-span-8 space-y-4">
-          {priceChartCard}
-
-          {/* Financial Tabs */}
-          <Tabs defaultValue="financials">
-            <TabsList className="bg-gs-panel border border-gs-border rounded-sm h-auto p-1 flex-wrap">
-              {[
-                { v: "financials", l: "Financials" },
-                { v: "margins", l: "Margins" },
-                { v: "debt", l: "Debt Analysis" },
-                { v: "ai", l: "AI Outlook", icon: Sparkles },
-              ].map((t) => (
-                <TabsTrigger
-                  key={t.v}
-                  value={t.v}
-                  className="rounded-sm data-[state=active]:bg-gs-card data-[state=active]:text-gs-text text-gs-textMuted px-3 py-1.5 text-[12px]"
-                  data-testid={`tab-${t.v}`}
-                >
-                  {t.icon && <t.icon className="w-3.5 h-3.5 mr-1.5 text-gs-gold" />}
-                  {t.l}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-
-            {/* Financials Tab — Revenue + Profitability */}
-            <TabsContent value="financials" className="mt-4 space-y-4">
-              <div className="gs-card p-5">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="gs-label">Revenue · ₹ Cr · 5Y</div>
-                  <span className="font-mono text-[10px] text-gs-pos">
-                    +{(((research.profitability[4].eps - research.profitability[0].eps) / research.profitability[0].eps) * 100).toFixed(0)}% EPS CAGR
-                  </span>
-                </div>
-                <div style={{ height: 220 }}>
-                  <ResponsiveContainer>
-                    <BarChart data={[
-                      { period: "FY22", value: 24618 },
-                      { period: "FY23", value: 26928 },
-                      { period: "FY24", value: 30381 },
-                      { period: "FY25E", value: 36500 },
-                      { period: "FY26E", value: 43800 },
-                    ]}>
-                      <CartesianGrid stroke="#1E222A" strokeDasharray="2 4" vertical={false} />
-                      <XAxis dataKey="period" stroke="#475569" tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }} tickLine={false} axisLine={{ stroke: "#1E222A" }} />
-                      <YAxis stroke="#475569" tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }} tickLine={false} axisLine={{ stroke: "#1E222A" }} />
-                      <Tooltip content={<ChartTooltip />} cursor={{ fill: "rgba(212,175,55,0.05)" }} />
-                      <Bar dataKey="value" name="Revenue" fill="#D4AF37" radius={[2, 2, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              <div className="gs-card p-5">
-                <div className="gs-label mb-3">Profitability · EPS / ROE / ROCE</div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-gs-border bg-gs-panel/50">
-                        <th className="gs-label text-left px-2 py-2">Period</th>
-                        <th className="gs-label text-right px-2 py-2">EPS (₹)</th>
-                        <th className="gs-label text-right px-2 py-2">ROE %</th>
-                        <th className="gs-label text-right px-2 py-2">ROCE %</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {research.profitability.map((p) => (
-                        <tr key={p.period} className="border-b border-gs-border last:border-b-0">
-                          <td className="px-2 py-2.5 font-mono text-[12px] text-gs-text">{p.period}</td>
-                          <td className="px-2 py-2.5 text-right font-mono text-[12px] text-gs-text tabular-nums">{p.eps}</td>
-                          <td className="px-2 py-2.5 text-right font-mono text-[12px] text-gs-pos tabular-nums">{p.roe}%</td>
-                          <td className="px-2 py-2.5 text-right font-mono text-[12px] text-gs-pos tabular-nums">{p.roce}%</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </TabsContent>
-
-            {/* Margins Tab */}
-            <TabsContent value="margins" className="mt-4">
-              <div className="gs-card p-5">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="gs-label">Margin Analysis · Gross / EBITDA / Net</div>
-                  <span className="font-mono text-[10px] text-gs-pos">
-                    +{(research.margins[4].ebitda - research.margins[0].ebitda).toFixed(1)} bps EBITDA expansion
-                  </span>
-                </div>
-                <div style={{ height: 260 }}>
-                  <ResponsiveContainer>
-                    <LineChart data={research.margins}>
-                      <CartesianGrid stroke="#1E222A" strokeDasharray="2 4" />
-                      <XAxis dataKey="period" stroke="#475569" tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }} tickLine={false} axisLine={{ stroke: "#1E222A" }} />
-                      <YAxis stroke="#475569" tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }} tickLine={false} axisLine={{ stroke: "#1E222A" }} />
-                      <Tooltip content={<ChartTooltip />} cursor={{ stroke: "#D4AF37", strokeDasharray: "3 3" }} />
-                      <Legend wrapperStyle={{ fontSize: 11, fontFamily: "JetBrains Mono", color: "#94A3B8" }} />
-                      <Line type="monotone" dataKey="gross" name="Gross" stroke="#D4AF37" strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
-                      <Line type="monotone" dataKey="ebitda" name="EBITDA" stroke="#059669" strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
-                      <Line type="monotone" dataKey="net" name="Net" stroke="#2563EB" strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            </TabsContent>
-
-            {/* Debt Tab */}
-            <TabsContent value="debt" className="mt-4">
-              <div className="gs-card p-5">
-                <div className="gs-label mb-4">Debt Analysis · Capital Structure</div>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  {[
-                    { l: "Debt / Equity", v: research.debt.debtEquity, hint: research.debt.debtEquity < 0.3 ? "Conservative" : "Moderate" },
-                    { l: "Interest Coverage", v: `${research.debt.interestCoverage}x`, hint: research.debt.interestCoverage > 10 ? "Excellent" : "Adequate" },
-                    { l: "Net Cash", v: research.debt.netCash, hint: "FY24" },
-                    { l: "Credit Rating", v: research.debt.creditRating, hint: "External" },
-                    { l: "Current Ratio", v: research.debt.currentRatio, hint: "Liquidity" },
-                    { l: "Cash Conversion", v: research.debt.cashConversion, hint: "OCF / EBITDA" },
-                  ].map((m) => (
-                    <div key={m.l} className="gs-card p-3.5 bg-gs-bg/50">
-                      <div className="gs-label">{m.l}</div>
-                      <div className="font-mono text-[16px] font-semibold text-gs-text mt-1 tabular-nums">
-                        {m.v}
-                      </div>
-                      <div className="text-[10.5px] text-gs-textDim mt-0.5">{m.hint}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </TabsContent>
-
-            {/* AI Outlook Tab */}
-            <TabsContent value="ai" className="mt-4">
-              <div className="gs-card p-5 border-l-2 border-l-gs-gold">
-                <div className="flex items-center gap-2 mb-2">
-                  <Sparkles className="w-3.5 h-3.5 text-gs-gold" />
-                  <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-gs-gold">
-                    AI Investment Lens · {research.aiOutlook.conviction} conviction · {research.aiOutlook.score}/100
-                  </span>
-                </div>
-                <h3 className="font-display text-lg font-bold text-gs-text mb-2">
-                  {stock.name} · {research.aiOutlook.verdict} thesis
-                </h3>
-                <p className="text-[13px] text-gs-textMuted leading-relaxed mb-5">
-                  {research.aiOutlook.thesis}
-                </p>
-
-                <div className="grid grid-cols-3 gap-3 mb-5">
-                  {[
-                    { label: "Bull case", data: research.aiOutlook.bullCase, color: "text-gs-pos", border: "border-gs-pos/40", bg: "bg-gs-posBg" },
-                    { label: "Base case", data: research.aiOutlook.baseCase, color: "text-gs-gold", border: "border-gs-gold/40", bg: "bg-gs-goldMuted" },
-                    { label: "Bear case", data: research.aiOutlook.bearCase, color: "text-gs-neg", border: "border-gs-neg/40", bg: "bg-gs-negBg" },
-                  ].map((c) => (
-                    <div key={c.label} className={`gs-card p-3.5 border ${c.border}`}>
-                      <div className="flex items-center justify-between">
-                        <span className={`font-mono text-[10px] uppercase tracking-wider ${c.color}`}>
-                          {c.label}
-                        </span>
-                        <span className={`font-mono text-[10px] tabular-nums ${c.bg} ${c.color} px-1.5 py-0.5 rounded-sm`}>
-                          {c.data.prob}%
-                        </span>
-                      </div>
-                      <div className="font-display text-xl font-bold text-gs-text tabular-nums mt-2">
-                        ₹{c.data.target.toLocaleString("en-IN")}
-                      </div>
-                      <div className={`font-mono text-[11px] tabular-nums mt-0.5 ${c.color}`}>
-                        {c.data.upside >= 0 ? "+" : ""}
-                        {c.data.upside}%
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div>
-                  <div className="gs-label mb-2">Key catalysts to watch</div>
-                  <ul className="space-y-1.5">
-                    {research.aiOutlook.catalysts.map((c, i) => (
-                      <li
-                        key={i}
-                        className="flex items-start gap-2 text-[12.5px] text-gs-textMuted leading-relaxed"
-                      >
-                        <span className="mt-1.5 w-1 h-1 rounded-full bg-gs-gold shrink-0" />
-                        <span>{c}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            </TabsContent>
-          </Tabs>
-        </div>
-
-        {/* Right column: Overview + Sector Positioning + Valuation */}
-        <div className="col-span-12 lg:col-span-4 space-y-4">
-          {/* Company Overview */}
-          <div className="gs-card p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <Building className="w-3.5 h-3.5 text-gs-textDim" />
-              <h3 className="font-display font-bold text-gs-text">Company Overview</h3>
-            </div>
-            <p className="text-[12.5px] text-gs-textMuted leading-relaxed">
-              {research.overview.description}
-            </p>
-            <div className="mt-4 pt-4 border-t border-gs-border space-y-2.5 text-[12px]">
-              {[
-                { icon: Calendar, label: "Founded", value: research.overview.founded },
-                { icon: MapPin, label: "Headquarters", value: research.overview.hq },
-                { icon: Users, label: "Employees", value: research.overview.employees },
-                { icon: Briefcase, label: "CEO", value: research.overview.ceo },
-              ].map((row) => (
-                <div key={row.label} className="flex items-center justify-between">
-                  <span className="flex items-center gap-2 text-gs-textMuted">
-                    <row.icon className="w-3 h-3 text-gs-textDim" />
-                    {row.label}
-                  </span>
-                  <span className="font-mono text-[11.5px] text-gs-text">{row.value}</span>
-                </div>
-              ))}
-              <div className="flex items-start justify-between gap-2">
-                <span className="text-gs-textMuted">Indices</span>
-                <div className="flex flex-wrap gap-1 justify-end">
-                  {research.overview.indices.map((idx) => (
-                    <span
-                      key={idx}
-                      className="font-mono text-[9.5px] uppercase tracking-wider px-1.5 py-0.5 bg-gs-panel border border-gs-border rounded-sm text-gs-text"
-                    >
-                      {idx}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Sector Positioning */}
-          <div className="gs-card p-5">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <Award className="w-3.5 h-3.5 text-gs-gold" />
-                <h3 className="font-display font-bold text-gs-text">Sector Positioning</h3>
-              </div>
-              <span className="font-mono text-[10px] uppercase tracking-wider text-gs-pos bg-gs-posBg border border-gs-pos/30 rounded-sm px-1.5 py-0.5">
-                Rank #{research.sectorPositioning.rank} / {research.sectorPositioning.total}
-              </span>
-            </div>
-            <div className="space-y-2.5">
-              {research.sectorPositioning.metrics.map((m) => (
-                <div key={m.name} className="flex items-center justify-between py-2 border-b border-gs-border last:border-b-0">
-                  <div>
-                    <div className="text-[12.5px] text-gs-text">{m.name}</div>
-                    <div className="text-[10.5px] text-gs-textDim">Sector avg {m.sectorAvg}</div>
-                  </div>
-                  <div className="text-right">
-                    <div className="font-mono text-[12.5px] text-gs-text tabular-nums">{m.value}</div>
-                    <div className="font-mono text-[10px] text-gs-gold">#{m.rank}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Valuation */}
-          <div className="gs-card p-5">
-            <h3 className="font-display font-bold text-gs-text mb-3">Valuation Overview</h3>
-            <ValuationRow name="P/E (TTM)" value={`${research.valuation.pe}x`} sectorAvg={`${research.valuation.peSector}x`} />
-            <ValuationRow name="P/B" value={`${research.valuation.pb}x`} sectorAvg={`${research.valuation.pbSector}x`} />
-            <ValuationRow name="EV / EBITDA" value={`${research.valuation.evEbitda}x`} sectorAvg={`${research.valuation.evEbitdaSector}x`} />
-            <ValuationRow name="PEG Ratio" value={research.valuation.pegRatio} sectorAvg="1.20" hint="Growth-adjusted" />
-            <ValuationRow name="Dividend Yield" value={`${research.valuation.dividendYield}%`} sectorAvg="1.0%" />
-            <div className="mt-3 pt-3 border-t border-gs-border bg-gs-bg/30 -mx-5 -mb-5 px-5 py-3">
-              <div className="flex items-start gap-2">
-                <Sparkles className="w-3 h-3 text-gs-gold mt-0.5 shrink-0" />
-                <p className="text-[11.5px] text-gs-textMuted leading-relaxed italic">
-                  {research.valuation.verdict}
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Earnings Highlights — last 4 quarters */}
-      <div className="gs-card p-5" data-testid="earnings-highlights">
-        <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-          <div>
-            <div className="gs-label">// Quarterly Performance</div>
-            <h3 className="font-display font-bold text-gs-text mt-1 text-lg">
-              Earnings Highlights · Last 4 Quarters
-            </h3>
-          </div>
-        </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          {research.earningsQuarters.map((q) => (
-            <div key={q.period} className="gs-card p-4 bg-gs-bg/40">
-              <div className="flex items-center justify-between mb-2">
-                <span className="font-mono text-[11px] uppercase tracking-wider text-gs-text font-semibold">
-                  {q.period}
-                </span>
-                <span
-                  className={`font-mono text-[10px] tabular-nums px-1.5 py-0.5 rounded-sm border ${
-                    q.surprise >= 0
-                      ? "bg-gs-posBg text-gs-pos border-gs-pos/30"
-                      : "bg-gs-negBg text-gs-neg border-gs-neg/30"
-                  }`}
-                >
-                  {q.surprise >= 0 ? "Beat +" : "Miss "}
-                  {q.surprise}%
-                </span>
-              </div>
-              <div className="grid grid-cols-2 gap-2 mt-3">
-                <div>
-                  <div className="gs-label">Revenue</div>
-                  <div className="font-mono text-[13px] text-gs-text mt-1">₹{q.revenue.toLocaleString("en-IN")}</div>
-                  <div className={`font-mono text-[10.5px] tabular-nums mt-0.5 ${q.revGrowth >= 0 ? "text-gs-pos" : "text-gs-neg"}`}>
-                    {q.revGrowth >= 0 ? "+" : ""}{q.revGrowth}% YoY
-                  </div>
-                </div>
-                <div>
-                  <div className="gs-label">PAT</div>
-                  <div className="font-mono text-[13px] text-gs-text mt-1">₹{q.pat.toLocaleString("en-IN")}</div>
-                  <div className={`font-mono text-[10.5px] tabular-nums mt-0.5 ${q.patGrowth >= 0 ? "text-gs-pos" : "text-gs-neg"}`}>
-                    {q.patGrowth >= 0 ? "+" : ""}{q.patGrowth}% YoY
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* SWOT */}
-      <div data-testid="swot-section">
-        <div className="flex items-center gap-2 mb-3">
-          <span className="gs-label">// SWOT Snapshot</span>
-        </div>
-        <SWOTGrid swot={research.swot} />
-      </div>
-
-      {/* Risk Flags + Management Commentary */}
-      <div className="grid grid-cols-12 gap-4">
-        <div className="col-span-12 lg:col-span-7">
-          <div className="flex items-center gap-2 mb-3">
-            <span className="gs-label">// Risk Flags</span>
-          </div>
-          <RiskFlagsList risks={research.risks} />
-        </div>
-        <div className="col-span-12 lg:col-span-5">
-          <div className="flex items-center gap-2 mb-3">
-            <span className="gs-label">// Management Commentary</span>
-          </div>
-          <div className="space-y-2.5">
-            {research.management.map((m, i) => {
-              const sentColor =
-                m.sentiment === "positive"
-                  ? "border-l-gs-pos"
-                  : m.sentiment === "negative"
-                    ? "border-l-gs-neg"
-                    : "border-l-gs-textDim";
-              return (
-                <div
-                  key={i}
-                  className={`gs-card p-4 border-l-2 ${sentColor}`}
-                  data-testid={`mgmt-quote-${i}`}
-                >
-                  <Quote className="w-3.5 h-3.5 text-gs-gold mb-2 opacity-70" />
-                  <p className="text-[12.5px] text-gs-text leading-relaxed font-display font-medium">
-                    {m.quote}
-                  </p>
-                  <div className="mt-3 pt-3 border-t border-gs-border flex items-center justify-between">
-                    <div>
-                      <div className="font-mono text-[11px] text-gs-text">{m.author}</div>
-                      <div className="font-mono text-[9.5px] uppercase tracking-wider text-gs-textDim mt-0.5">
-                        {m.role}
-                      </div>
-                    </div>
-                    <span className="font-mono text-[9.5px] uppercase tracking-wider text-gs-textDim">
-                      {m.source}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* Peer Comparison */}
-      <div data-testid="peer-comparison">
-        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-          <span className="gs-label">// Peer Comparison · {stock.sector}</span>
-          <span className="font-mono text-[10px] uppercase tracking-wider text-gs-textDim">
-            {peers.length} peers
-          </span>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-          {peers.map((p) => (
-            <Link
-              to={`/stock/${p.ticker}`}
-              key={p.ticker}
-              className="gs-card p-4 hover:bg-gs-cardHover transition-colors group"
-              data-testid={`peer-card-${p.ticker}`}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <span className="font-mono text-[12.5px] font-semibold text-gs-text tracking-wider">
-                  {p.ticker}
-                </span>
-                {p.changePct >= 0 ? (
-                  <TrendingUp className="w-3.5 h-3.5 text-gs-pos" />
-                ) : (
-                  <TrendingDown className="w-3.5 h-3.5 text-gs-neg" />
-                )}
-              </div>
-              <div className="text-[11px] text-gs-textMuted truncate">{p.name}</div>
-              <div className="mt-3 pt-3 border-t border-gs-border grid grid-cols-2 gap-2">
-                <div>
-                  <div className="gs-label">Price</div>
-                  <div className="font-mono text-[12px] text-gs-text mt-0.5 tabular-nums">
-                    ₹{p.price.toFixed(2)}
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="gs-label">1D</div>
-                  <div
-                    className={`font-mono text-[12px] mt-0.5 tabular-nums ${
-                      p.changePct >= 0 ? "text-gs-pos" : "text-gs-neg"
-                    }`}
-                  >
-                    {p.changePct >= 0 ? "+" : ""}{p.changePct.toFixed(2)}%
-                  </div>
-                </div>
-                <div>
-                  <div className="gs-label">Mkt Cap</div>
-                  <div className="font-mono text-[11px] text-gs-text mt-0.5">{p.marketCap}</div>
-                </div>
-                <div className="text-right">
-                  <div className="gs-label">P/E</div>
-                  <div className="font-mono text-[11px] text-gs-text mt-0.5 tabular-nums">
-                    {p.pe?.toFixed(1)}x
-                  </div>
-                </div>
-              </div>
-            </Link>
-          ))}
-        </div>
-      </div>
-
-      {/* Company Research (IndianAPI-backed, provider-neutral) */}
-      <CompanyResearchSection symbol={stock.ticker} />
-
-      {/* News */}
-      <div className="gs-card p-5" data-testid="related-news">
-        <h3 className="font-display font-bold text-gs-text mb-3">Related News</h3>
-        {newsLoading && <div className="text-sm text-gs-textDim">Loading news...</div>}
-        {newsError && !newsLoading && <div className="text-sm text-gs-textMuted">Unable to load news. Retry from the News page.</div>}
-        {!newsLoading && !newsError && !news.length && <div className="text-sm text-gs-textMuted">No relevant news available.</div>}
-        {!newsLoading && !newsError && news.length > 0 && <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {news.slice(0, 4).map((article) => (
-            <a key={article.url} href={article.url} target="_blank" rel="noopener noreferrer" className="gs-card overflow-hidden bg-gs-bg/40 hover:bg-gs-cardHover transition-colors group">
-              <div className="h-28 bg-gs-panel">{article.imageUrl ? <img src={article.imageUrl} alt="" className="w-full h-full object-cover" onError={(event) => { event.currentTarget.style.display = 'none'; }} /> : <div className="h-full grid place-items-center text-[10px] uppercase tracking-wider text-gs-textDim">Image unavailable</div>}</div>
-              <div className="p-3.5">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="font-mono text-[10px] uppercase tracking-wider text-gs-textDim">{article.source}</span>
-                  <span className="font-mono text-[10px] text-gs-textDim">{article.publishedAt ? new Date(article.publishedAt).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'Date unavailable'}</span>
-                </div>
-                <p className="text-[12.5px] text-gs-text leading-snug flex items-start gap-1.5">{article.title}<ExternalLink className="w-3 h-3 text-gs-textDim group-hover:text-gs-gold shrink-0 mt-0.5" /></p>
-              </div>
-            </a>
-          ))}
+            <p className="mt-3 text-[11px] leading-5 text-gs-textDim">{tabData.analystView?.ownScore?.methodology}</p>
+          </section>
+          {tabData.analystView?.providerAnalystData?.available && <section className="border border-gs-border bg-gs-panel/30 p-3"><div className="gs-label">Third-party analyst data (provider)</div><p className="mt-2 text-[11px] text-gs-textDim">{tabData.analystView.providerAnalystData.data?.note}</p></section>}
+          {!tabData.analystView?.providerAnalystData?.available && <StateMessage>No third-party analyst data reported by the provider.</StateMessage>}
         </div>}
-      </div>
-    </div>
-  );
+        {activeTab === 'news' && <div className="grid gap-3 md:grid-cols-2">{news.length ? news.slice(0, 8).map((article, index) => <a key={article.url || article.sourceUrl || index} href={article.url || article.sourceUrl} target="_blank" rel="noreferrer" className="border border-gs-border bg-gs-panel/30 p-3 hover:border-gs-gold/50"><div className="mb-2 flex justify-between text-[10px] text-gs-textDim">News <ExternalLink className="h-3 w-3" /></div><div className="text-sm text-gs-text">{safeText(article.title || article.headline)}</div></a>) : <StateMessage>No recent news available.</StateMessage>}</div>}
+      </div></div>
+    </main></div>
+  </div>;
 }

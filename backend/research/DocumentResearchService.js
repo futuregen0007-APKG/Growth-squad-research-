@@ -2,7 +2,7 @@ import axios from 'axios';
 import crypto from 'node:crypto';
 import { logger } from '../utils/logger.js';
 import { getStockNews } from '../services/NewsAPIService.js';
-import { getCompanyResearchProfile } from './CompanyResearchProfiles.js';
+import { getCompanyResearchProfile, COMPANY_RESEARCH_PROFILES } from './CompanyResearchProfiles.js';
 import { SUPPORTED_STOCKS } from '../utils/constants.js';
 
 export const SOURCE_AUTHORITY = {
@@ -372,6 +372,33 @@ export const documentQualityGate = (document = {}) => {
   return true;
 };
 
+/**
+ * Conservative cross-company guard: rejects a document only when its text/title
+ * clearly names a *different* registered company and never mentions the one
+ * being researched. It never rejects for silence about the target company alone
+ * (sector/market commentary legitimately may not repeat the ticker), so it only
+ * catches the detectable case of evidence attributed to the wrong company.
+ */
+export const documentMatchesCompany = (document = {}, profile = {}) => {
+  const symbol = String(profile.symbol || '').trim().toUpperCase();
+  const knownNames = [profile.companyName, ...(profile.aliases || [])].filter(Boolean).map((n) => String(n).toLowerCase());
+  if (!symbol && !knownNames.length) return true;
+
+  const haystack = `${document.title || ''} ${document.text || document.excerpt || ''}`.toLowerCase();
+  if (!haystack.trim()) return true;
+
+  const mentionsTarget = (symbol && haystack.includes(symbol.toLowerCase())) || knownNames.some((name) => haystack.includes(name));
+  if (mentionsTarget) return true;
+
+  for (const [otherSymbol, otherProfile] of Object.entries(COMPANY_RESEARCH_PROFILES)) {
+    if (otherSymbol === symbol) continue;
+    const otherNames = [otherProfile.companyName, ...(otherProfile.aliases || [])].filter(Boolean).map((n) => String(n).toLowerCase());
+    if (otherNames.some((name) => haystack.includes(name))) return false;
+  }
+
+  return true;
+};
+
 const fetchWithMetadata = async (url, timeout = DEFAULT_TIMEOUT, responseType = 'text') => {
   try {
     const response = await axios.get(url, {
@@ -681,27 +708,35 @@ export const collectTier2ExchangeFilings = async (profile, debugState = null) =>
   const nseSymbol = profile.exchangeSymbols?.NSE || profile.symbol;
   const bseCode = profile.exchangeSymbols?.BSE || '';
 
+  // Registry-sourced (CompanyResearchProfiles.sourceRegistry.exchangeFilings) URLs are
+  // merged in and deduplicated alongside the always-present, symbol-parametrized ones
+  // below, so a curated registry entry can extend exchange discovery without replacing it.
+  const registryNseLinks = Array.isArray(profile.sourceRegistry?.exchangeFilings?.nse) ? profile.sourceRegistry.exchangeFilings.nse : [];
+  const registryBseLinks = Array.isArray(profile.sourceRegistry?.exchangeFilings?.bse) ? profile.sourceRegistry.exchangeFilings.bse : [];
+
   const exchangeTargets = [
     {
       name: 'NSE Corporate Announcements',
       url: `https://www.nseindia.com/get-quotes/equity?symbol=${encodeURIComponent(nseSymbol)}`,
       type: DOCUMENT_TYPES.EXCHANGE_FILING,
       authority: SOURCE_AUTHORITY.NSE_FILING,
-      secondaryLinks: [
+      secondaryLinks: deduplicateUrls([
         `https://www.nseindia.com/companies-listing/corporate-filings-announcements?symbol=${encodeURIComponent(nseSymbol)}`,
         `https://www.nseindia.com/companies-listing/corporate-filings-financial-results?symbol=${encodeURIComponent(nseSymbol)}`,
-        `https://www.nseindia.com/companies-listing/corporate-filings-board-meetings?symbol=${encodeURIComponent(nseSymbol)}`
-      ]
+        `https://www.nseindia.com/companies-listing/corporate-filings-board-meetings?symbol=${encodeURIComponent(nseSymbol)}`,
+        ...registryNseLinks
+      ])
     },
     {
       name: 'BSE Corporate Announcements',
       url: bseCode ? `https://www.bseindia.com/stock-share-price/${encodeURIComponent(profile.companyName.toLowerCase().replace(/\s+/g, '-'))}/${encodeURIComponent(nseSymbol.toLowerCase())}/${bseCode}/` : `https://www.bseindia.com/corporates/ann.html?scrip=${nseSymbol}`,
       type: DOCUMENT_TYPES.EXCHANGE_FILING,
       authority: SOURCE_AUTHORITY.BSE_FILING,
-      secondaryLinks: [
+      secondaryLinks: deduplicateUrls([
         `https://www.bseindia.com/corporates/ann.html?scrip=${nseSymbol}`,
-        `https://www.bseindia.com/corporates/announcements.aspx?scrip=${bseCode}`
-      ]
+        `https://www.bseindia.com/corporates/announcements.aspx?scrip=${bseCode}`,
+        ...registryBseLinks
+      ])
     }
   ];
 
@@ -935,7 +970,12 @@ export const collectTier3And4HistoricalSources = async (profile) => {
       normalizedDoc.symbol = profile.symbol;
       normalizedDoc.companyName = profile.companyName;
       normalizedDoc.fiscalYear = matchedFiscalYear;
-      
+
+      if (!documentMatchesCompany(normalizedDoc, profile)) {
+        logger.debug(`[DocumentResearch] Rejected article attributed to a different company for ${profile.symbol}: ${article.url}`);
+        continue;
+      }
+
       documents.push(normalizedDoc);
     }
   } catch (err) {
@@ -1112,6 +1152,7 @@ export default {
   discoverPdfLinks,
   discoverPdfsFromLandingPage,
   documentQualityGate,
+  documentMatchesCompany,
   buildDocumentProvenance,
   classifyFetchFailure,
   fetchHtml,

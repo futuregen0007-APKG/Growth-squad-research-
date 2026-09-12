@@ -11,6 +11,7 @@ import {
   getCompanyResearchDebug,
   getCompanyTimeline,
 } from '../services/ManagementPromiseService.js';
+import * as CuratedEarningsIntelligenceService from '../services/CuratedEarningsIntelligenceService.js';
 import ManagementPromise from '../models/ManagementPromise.js';
 import CompanyHistoricalFact from '../models/CompanyHistoricalFact.js';
 
@@ -148,16 +149,37 @@ router.get('/:symbol/research-debug', async (req, res, next) => {
 
 router.get('/:symbol/timeline', async (req, res, next) => {
   try {
-    const data = await getCompanyTimeline(req.params.symbol);
-    res.json({ success: true, data });
+    const symbol = req.params.symbol;
+    const filters = { year: req.query.year, category: req.query.category, status: req.query.status };
+
+    // Fallback order (Step 9): curated verified dataset -> existing persisted
+    // verified records -> honest RESEARCH_PENDING response. Live document
+    // research is never triggered from this read path.
+    const curated = await CuratedEarningsIntelligenceService.getCompanyTimeline(symbol, filters);
+
+    if (curated?.dataMode === 'CURATED_VERIFIED') {
+      return res.json({ success: true, data: curated });
+    }
+
+    const legacy = await getCompanyTimeline(symbol);
+    if (legacy?.promises?.length > 0) {
+      return res.json({ success: true, data: legacy });
+    }
+
+    if (curated) {
+      // Supported stock, but neither curated nor legacy research exists yet.
+      return res.json({ success: true, data: curated });
+    }
+
+    return res.status(404).json({ success: false, message: `Unsupported or unknown symbol: ${symbol}` });
   } catch (error) {
     console.error('[Earnings Intelligence] /:symbol/timeline error:', error);
     if (error.name === 'MongooseError' || error.name === 'MongoError') {
-      return res.status(503).json({ 
-        success: false, 
-        state: 'DATABASE_ERROR', 
+      return res.status(503).json({
+        success: false,
+        state: 'DATABASE_ERROR',
         error: 'Database connection failed',
-        data: null 
+        data: null
       });
     }
     next(error);

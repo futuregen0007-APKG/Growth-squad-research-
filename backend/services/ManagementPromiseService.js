@@ -17,11 +17,23 @@ import openai from './openaiClient.js';
 import { logger } from '../utils/logger.js';
 import { periodsMatch, normalizeFinancialValue, financialUnitFamily } from '../utils/financialNormalization.js';
 import { searchActualOutcomesFromIndianApi } from './OutcomeEvidenceService.js';
+import { getCompanyResearchBundle } from './CompanyResearchService.js';
+import { buildFinancialIntelligenceSnapshot } from './FinancialIntelligenceService.js';
+import { getCompanyTimeline as getCuratedCompanyTimeline, computeFaithScoreCoverage } from './CuratedEarningsIntelligenceService.js';
 
 const isDbConnected = () => mongoose.connection?.readyState === 1;
 
 const researchJobs = new Map();
 const REAL_RESEARCH_FILTER = { dataOrigin: 'REAL_RESEARCH' };
+
+// A ResearchRun stuck at status:'RUNNING' with no progress update for this
+// long is treated as orphaned (the process that owned it is gone -- e.g. a
+// server restart mid-crawl) rather than genuinely in-progress. 30 minutes is
+// not an arbitrary guess: it is set above this project's own observed
+// worst-case live-research duration for a slow, NSE/BSE-heavy company
+// (~21 minutes, confirmed via a real end-to-end dry run), with margin, so a
+// genuinely slow-but-alive run is never mistaken for orphaned.
+const RESEARCH_RUN_STALE_MS = 30 * 60 * 1000;
 
 const companyFor = (symbol) => {
   const normalized = String(symbol || '').toUpperCase().trim();
@@ -1366,12 +1378,50 @@ export const getCompanyHistory = async (symbol, options = {}) => {
   };
 };
 
+/**
+ * getFinancialIntelligence - broadly-available, IndianAPI-backed financial
+ * snapshot (revenue/profit growth, margin, EPS, debt trend) for ONE symbol.
+ * Distinct from executionScore/managementTrackRecord (Mongo-backed
+ * live-research pipeline) and the curated Faith Score -- this is "what do
+ * the company's own reported statements show right now," available for any
+ * symbol IndianAPI recognizes, without requiring any manual research.
+ *
+ * Never throws: a missing/unconfigured provider, a provider error, or a
+ * company with no recognizable financial line items all resolve to `null`
+ * (never a fabricated snapshot). Callers are expected to render `null` as an
+ * honest "unavailable" state, never as 0.
+ */
+const getFinancialIntelligence = async (symbol) => {
+  const normalized = String(symbol || '').toUpperCase();
+  try {
+    const bundle = await getCompanyResearchBundle(normalized);
+    if (!bundle?.configured) return null;
+
+    const financialsSection = bundle.sections?.financials;
+    if (!financialsSection?.available) return null;
+
+    const keyMetricsSection = bundle.sections?.keyMetrics;
+    const snapshot = buildFinancialIntelligenceSnapshot({
+      financials: financialsSection.data,
+      keyMetricsCategories: keyMetricsSection?.available ? keyMetricsSection.data?.categories : [],
+      provider: bundle.provider,
+      fetchedAt: financialsSection.asOf || bundle.generatedAt,
+    });
+
+    return snapshot.available ? snapshot : null;
+  } catch (err) {
+    logger.warn(`[ManagementPromiseService] financialIntelligence lookup failed for ${normalized}: ${err.message}`);
+    return null;
+  }
+};
+
 export const getCompanySummary = async (symbol) => {
   const normalized = String(symbol).toUpperCase();
   const profile = getCompanyResearchProfile(normalized, companyFor(normalized), SUPPORTED_STOCKS[normalized]?.sector);
   const facts = await getCompanyFacts(normalized);
   const promises = await getCompanyPromises(normalized);
   const reliability = calculateReliability(promises);
+  const financialIntelligence = await getFinancialIntelligence(normalized);
 
   let latestRun = null;
   if (isDbConnected()) {
@@ -1410,7 +1460,7 @@ export const getCompanySummary = async (symbol) => {
   });
 
   let researchState = 'RESEARCH_REQUIRED';
-  if (latestRun?.status === 'RUNNING') {
+  if (latestRun?.status === 'RUNNING' && !isResearchRunStale(latestRun)) {
     researchState = 'RESEARCH_RUNNING';
   } else if (latestRun?.status === 'FAILED') {
     researchState = 'API_ERROR';
@@ -1433,6 +1483,7 @@ export const getCompanySummary = async (symbol) => {
     ratingLabel: executionScoreResult.ratingLabel,
     scoreBreakdown: executionScoreResult.scoreBreakdown,
     financialSnapshot: executionScoreResult.financialSnapshot,
+    financialIntelligence,
     guidanceSuccessRate: executionScoreResult.guidanceSuccessRate,
     confidence: confidence.level,
     confidenceReason: confidence.reason,
@@ -1511,6 +1562,48 @@ export const getCompanyReport = async (symbol) => {
 
   const sourceDocuments = Array.from(sourceMap.values());
 
+  // 5 most recent COMPLETED Indian fiscal years (FY ends March 31) as of
+  // right now -- e.g. run in Sep 2026, the current FY (2027) is still open,
+  // so the target window is FY2022-FY2026. Recomputed on every call so it
+  // never drifts as the calendar advances.
+  const now = new Date();
+  const latestCompletedFy = now.getUTCMonth() >= 3 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
+  const expectedFiscalYears = Array.from({ length: 5 }, (_, i) => latestCompletedFy - 4 + i);
+  const coveredYears = new Set((summary.financialSnapshot?.annualSeries || []).map((row) => row.year));
+  const financialCoverage = {
+    expectedYears: 5,
+    completedYears: expectedFiscalYears.filter((y) => coveredYears.has(y)).length,
+    years: expectedFiscalYears.filter((y) => coveredYears.has(y)).map((y) => `FY${y}`),
+    missingYears: expectedFiscalYears.filter((y) => !coveredYears.has(y)).map((y) => `FY${y}`),
+  };
+
+  // promiseCoverage / managementFaithScore: sourced from the curated system
+  // (CuratedEarningsIntelligenceService), which is the one place a promise's
+  // targetPeriod/outcome/evidenceConfidence are fully structured -- the
+  // legacy flat `promises` array here uses different field names entirely
+  // and is never reshaped into this calculation, to avoid silently
+  // misreading it. Falls back to a research-state-aware empty coverage
+  // object if the curated system has nothing for this symbol at all.
+  const researchFailed = summary.researchState === 'API_ERROR' || summary.researchState === 'RESEARCH_FAILED';
+  const curatedTimeline = await getCuratedCompanyTimeline(normalized).catch(() => null);
+  const promiseCoverage = curatedTimeline
+    ? {
+      scoreStatus: curatedTimeline.summary.scoreStatus,
+      confidence: curatedTimeline.summary.confidence,
+      expectedQuarters: curatedTimeline.summary.expectedQuarters,
+      completedQuarters: curatedTimeline.summary.completedQuarters,
+      promisesTotal: curatedTimeline.summary.promisesTotal,
+      promisesResolved: curatedTimeline.summary.promisesResolved,
+      achieved: curatedTimeline.summary.achieved,
+      partial: curatedTimeline.summary.partial,
+      missed: curatedTimeline.summary.missed,
+      pending: curatedTimeline.summary.pending,
+      missingQuarters: curatedTimeline.summary.missingQuarters,
+      dataAsOf: curatedTimeline.summary.dataAsOf,
+    }
+    : computeFaithScoreCoverage([], { coverageStatus: 'RESEARCH_PENDING', researchFailed });
+  const managementFaithScore = curatedTimeline?.summary.managementFaithScore ?? null;
+
   return {
     company: {
       symbol: normalized,
@@ -1520,10 +1613,13 @@ export const getCompanyReport = async (symbol) => {
       exchangeSymbols: profile.exchangeSymbols,
       sectorMetrics: profile.sectorMetrics
     },
-    executionScore: summary.executionScore,
+    executionScore: summary.executionScore, // kept for backward compatibility -- financialPerformanceScore is the canonical name going forward
+    financialPerformanceScore: summary.executionScore,
+    managementFaithScore,
     ratingLabel: summary.ratingLabel,
     guidanceSuccessRate: summary.guidanceSuccessRate,
     scoreBreakdown: summary.scoreBreakdown,
+    financialIntelligence: summary.financialIntelligence,
     confidence: {
       level: summary.confidence,
       reason: summary.confidenceReason,
@@ -1531,7 +1627,20 @@ export const getCompanyReport = async (symbol) => {
       verifiedSourcesCount: sourceDocuments.length,
       verifiedPromisesCount: summary.managementTrackRecord.totalTargets
     },
+    // Explicit split (rule: never conflate "how many facts" with "how many
+    // promises" with "how much evidence in total") -- financialFactsCount
+    // and promisesCount are each independently meaningful; totalEvidenceItems
+    // is the sum used only for an overall "how much do we have" signal, never
+    // in place of the two specific counts.
+    financialFactsCount: facts.length,
+    promisesCount: promises.length,
+    totalEvidenceItems: facts.length + promises.length,
     coverage: summary.coverage,
+    // Never label a partial window as the full 5-year snapshot: completedYears
+    // is always reported alongside expectedYears so a 3-year result reads as
+    // "3 of 5 years", not "5-year snapshot".
+    financialCoverage,
+    promiseCoverage,
     financialSnapshot: summary.financialSnapshot,
     historicalFacts: facts,
     timeline: facts, // Full chronological verified events
@@ -1573,8 +1682,22 @@ export const createResearchJob = async (symbol) => {
   if (!isDbConnected()) throw new Error('Database is currently offline. Cannot create research run.');
   
   const latest = await ResearchRun.findOne({ companySymbol: normalized, ...REAL_RESEARCH_FILTER }).sort({ createdAt: -1 }).lean();
-  if (latest?.status === 'RUNNING') return { status: 'PROCESSING', jobId: String(latest._id) };
-  if (isResearchRunCacheable(latest)) {
+  if (latest?.status === 'RUNNING') {
+    if (!isResearchRunStale(latest)) {
+      return { status: 'PROCESSING', jobId: String(latest._id) };
+    }
+    // Orphaned: no progress update in over RESEARCH_RUN_STALE_MS, so the
+    // process that owned this run is gone and it will never update its own
+    // status. Mark it FAILED so it stops permanently blocking Refresh, then
+    // fall through to start a genuinely new run below.
+    logger.warn(`[ManagementPromiseService] Marking orphaned RUNNING research run ${latest._id} for ${normalized} as FAILED (started ${latest.startedAt}, no update since).`);
+    await ResearchRun.findByIdAndUpdate(latest._id, {
+      status: 'FAILED',
+      completedAt: new Date(),
+      error: `Orphaned: no progress update received for over ${Math.round(RESEARCH_RUN_STALE_MS / 60000)} minutes.`,
+      state: 'RESEARCH_FAILED'
+    }).catch((err) => logger.warn(`Failed to mark orphaned research run ${latest._id} as FAILED: ${err.message}`));
+  } else if (isResearchRunCacheable(latest)) {
     return { status: 'CACHED', jobId: String(latest._id), lastResearchAt: latest.completedAt };
   }
 
@@ -1606,6 +1729,18 @@ export const createResearchJob = async (symbol) => {
 
   return { status: 'PROCESSING', jobId };
 };
+
+/**
+ * isResearchRunStale - a RUNNING run whose `startedAt` is older than
+ * RESEARCH_RUN_STALE_MS with no completion is treated as orphaned. See the
+ * constant's definition for why 30 minutes was chosen from this project's
+ * own observed behavior rather than guessed.
+ */
+export const isResearchRunStale = (run, now = Date.now()) => Boolean(
+  run?.status === 'RUNNING'
+  && run.startedAt
+  && now - new Date(run.startedAt).getTime() > RESEARCH_RUN_STALE_MS
+);
 
 export const isResearchRunCacheable = (run, now = Date.now()) => Boolean(
   run?.dataOrigin === 'REAL_RESEARCH'

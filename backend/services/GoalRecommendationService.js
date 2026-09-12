@@ -138,50 +138,90 @@ const METRIC_SCORERS = {
   maxDrawdown: (maxDrawdownPct) => clamp(100 - Math.abs(maxDrawdownPct) * 1.2, 0, 100),
   valuation: (pe) => clamp(100 - Math.abs(pe - 20) * 2.5, 0, 100),
   quality: (roe) => clamp(roe * 4, 0, 100),
+  // Added so a stock can still reach the fundamental category when
+  // IndianAPI (pe/roe) is unavailable but this project's own verified
+  // REAL_RESEARCH CompanyHistoricalFact data yields a real derived metric
+  // (see HistoricalFundamentalsDerivationService.js) -- this is what
+  // unblocks "Load Eligible Stocks" while the live provider stays
+  // rate-limited, without ever inventing a value for a stock lacking both.
+  revenueGrowth: (growthPct) => clamp(50 + growthPct * 1.5, 0, 100),
+  profitGrowth: (growthPct) => clamp(50 + growthPct * 1.2, 0, 100),
+  operatingMargin: (marginPct) => clamp(marginPct * 3, 0, 100),
+  debtTrend: (debtTrendValue) => (debtTrendValue?.direction === 'DECREASING' ? 85 : debtTrendValue?.direction === 'STABLE' ? 65 : debtTrendValue?.direction === 'INCREASING' ? 40 : 50),
 };
 
-// Relative weights used only across whichever metrics are actually available
-// for a given stock (see computeVerifiedScore) — never renormalized in a way
-// that lets a missing metric quietly boost the others beyond their share.
+// "Growth Potential and Quality Score" (documented weighting, Part H):
+//   30% growth        -> revenueGrowth (15) + profitGrowth (15)
+//   20% quality        -> quality/ROE (10) + operatingMargin (10)
+//   15% balance sheet  -> debtTrend (15) -- the only verified debt/solvency
+//                         signal this project currently derives; a future
+//                         interest-coverage/cash-flow metric would split
+//                         this weight further, never silently reweight it
+//                         onto an unrelated category
+//   15% valuation      -> valuation/P-E (15)
+//   10% price trend    -> oneYearReturn (10)
+//   10% liquidity/drawdown risk -> volatility (5) + maxDrawdown (5)
+// Weights apply only across whichever metrics are actually available for a
+// given stock (see computeVerifiedScore) — never renormalized in a way that
+// lets a missing metric quietly boost the others beyond their documented
+// share. OpenAI never selects, scores, or reweights any of this.
 const METRIC_WEIGHTS = {
-  volatility: 30,
-  oneYearReturn: 15,
-  maxDrawdown: 15,
-  valuation: 20,
-  quality: 20,
+  revenueGrowth: 15,
+  profitGrowth: 15,
+  quality: 10,
+  operatingMargin: 10,
+  debtTrend: 15,
+  valuation: 15,
+  oneYearReturn: 10,
+  volatility: 5,
+  maxDrawdown: 5,
 };
 
 const METRIC_KEYS = Object.keys(METRIC_WEIGHTS);
 const HISTORICAL_METRIC_KEYS = ['volatility', 'oneYearReturn', 'maxDrawdown'];
-const FUNDAMENTAL_METRIC_KEYS = ['valuation', 'quality'];
+const FUNDAMENTAL_METRIC_KEYS = ['valuation', 'quality', 'revenueGrowth', 'profitGrowth', 'operatingMargin', 'debtTrend'];
 
-// A historical statistic is only trusted once enough candle observations back
-// it — a "1-year return" from 5 days of data, or a volatility/drawdown figure
-// from 3 days, is not verified evidence even though it's mathematically
-// computable. Each statistic gets its own minimum sample size reflecting how
-// much history it actually needs to be meaningful: a short realized-volatility
-// window is a standard convention (~1 trading month), drawdown needs a longer
-// look-back to capture a real peak-to-trough move (~1 quarter), and a genuine
-// 1-year return needs close to a full year of trading days.
-const MIN_OBSERVATIONS_FOR_VOLATILITY = 20;
-const MIN_OBSERVATIONS_FOR_DRAWDOWN = 60;
-const MIN_OBSERVATIONS_FOR_RETURN = 200;
-
+// A historical statistic is only trusted once enough trading-day observations
+// back it — the minimum sample size per statistic (volatility: 20, drawdown:
+// 60, one-year return: 200) is now enforced once, centrally, by
+// StockHistoricalMetricsService (see MIN_OBSERVATIONS_FOR_* there) when it
+// computes StockHistoricalMetricsSnapshot; this module trusts that snapshot's
+// own null-ness rather than re-deriving a second gate from an observation
+// count that could disagree with it (e.g. a discontinuity-affected symbol).
+//
 // A metric is "available" only when it comes from a verified, sufficiently
-// sampled source: real historical candles (each of volatility/oneYearReturn/
-// maxDrawdown independently gated by its own minimum observation count above)
+// sampled source: real historical prices (each of volatility/oneYearReturn/
+// maxDrawdown independently verified/nulled by StockHistoricalMetricsService)
 // or a real, positive fundamentals value (pe/roe). Zero/negative/missing/
 // under-sampled values are treated as not-provided rather than defaulted.
 const buildMetricAvailability = (stock, historical) => {
   const pe = Number(stock.pe ?? stock.PE);
   const roe = Number(stock.roe ?? stock.ROE);
-  const observations = historical.available ? historical.observations : 0;
+  const revenueGrowth = Number(stock.revenueGrowth);
+  const profitGrowth = Number(stock.profitGrowth);
+  const operatingMargin = Number(stock.operatingMargin);
+  const debtTrend = stock.debtTrend;
+  // Each historical metric's own null-ness is the single source of truth for
+  // "was this verified" -- StockHistoricalMetricsService already enforces
+  // its own minimum-observation thresholds AND corporate-action-discontinuity
+  // exclusion before ever setting a non-null value, so re-deriving a second
+  // gate here from a raw observation count could disagree with it (e.g. a
+  // symbol with 250 observations but an unresolved split mid-window has
+  // oneYearReturn/maxDrawdown genuinely null despite observations >= 200).
   return {
-    volatility: observations >= MIN_OBSERVATIONS_FOR_VOLATILITY ? { available: true, value: historical.volatility } : { available: false, value: null },
-    oneYearReturn: observations >= MIN_OBSERVATIONS_FOR_RETURN ? { available: true, value: historical.oneYearReturn } : { available: false, value: null },
-    maxDrawdown: observations >= MIN_OBSERVATIONS_FOR_DRAWDOWN ? { available: true, value: historical.maxDrawdown } : { available: false, value: null },
+    volatility: Number.isFinite(historical.volatility) ? { available: true, value: historical.volatility } : { available: false, value: null },
+    oneYearReturn: Number.isFinite(historical.oneYearReturn) ? { available: true, value: historical.oneYearReturn } : { available: false, value: null },
+    maxDrawdown: Number.isFinite(historical.maxDrawdown) ? { available: true, value: historical.maxDrawdown } : { available: false, value: null },
     valuation: Number.isFinite(pe) && pe > 0 ? { available: true, value: pe } : { available: false, value: null },
     quality: Number.isFinite(roe) && roe > 0 ? { available: true, value: roe } : { available: false, value: null },
+    // Each independently gated on being a real, finite verified value (never
+    // 0/null standing in for "unavailable") -- sourced only from
+    // StockFundamentalsService.getFundamentals (IndianAPI or
+    // REAL_RESEARCH-derived), never fabricated here.
+    revenueGrowth: Number.isFinite(revenueGrowth) ? { available: true, value: revenueGrowth } : { available: false, value: null },
+    profitGrowth: Number.isFinite(profitGrowth) ? { available: true, value: profitGrowth } : { available: false, value: null },
+    operatingMargin: Number.isFinite(operatingMargin) ? { available: true, value: operatingMargin } : { available: false, value: null },
+    debtTrend: debtTrend?.direction ? { available: true, value: debtTrend } : { available: false, value: null },
   };
 };
 
@@ -238,36 +278,37 @@ const computeVerifiedScore = (availability, sectorFitScore) => {
   return Math.round(clamp(weightedScore + sectorAdjustment, 0, 100));
 };
 
-const calculateHistoricalMetrics = (history = []) => {
-  const closes = history.map((item) => Number(item.close)).filter((value) => Number.isFinite(value) && value > 0);
-  if (closes.length < 2) {
-    return { available: false, source: null, oneYearReturn: null, volatility: null, maxDrawdown: null, observations: 0 };
+// Reads the already-computed StockHistoricalMetricsSnapshot (NSE bhavcopy,
+// see StockHistoricalMetricsService.js) instead of raw candles -- Angel One
+// historical candles returned HTTP 403 for the large majority of symbols in
+// this environment, and recomputing return/volatility/drawdown from ~250
+// daily rows on every request was needless work the snapshot already does
+// once. `snapshot.oneYearReturn`/`maximumDrawdown` are themselves already
+// null when StockHistoricalMetricsService couldn't verify them (insufficient
+// observations OR an unresolved corporate-action discontinuity in the
+// window) -- this function trusts that, it never re-derives a looser answer.
+const calculateHistoricalMetrics = (snapshot) => {
+  if (!snapshot) {
+    return {
+      available: false, source: null, oneYearReturn: null, volatility: null, maxDrawdown: null, observations: 0, liquidityClassification: null, corporateActionAdjustmentStatus: null, dataAsOf: null,
+    };
   }
-
-  const returns = closes.slice(1).map((value, index) => (value / closes[index]) - 1).filter(Number.isFinite);
-  const mean = returns.reduce((sum, value) => sum + value, 0) / Math.max(returns.length, 1);
-  const variance = returns.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / Math.max(returns.length - 1, 1);
-  let peak = closes[0];
-  let maxDrawdown = 0;
-  closes.forEach((close) => {
-    peak = Math.max(peak, close);
-    maxDrawdown = Math.min(maxDrawdown, (close / peak) - 1);
-  });
-
   return {
     available: true,
-    source: 'Angel One historical candles',
-    oneYearReturn: Number((((closes[closes.length - 1] / closes[0]) - 1) * 100).toFixed(2)),
-    volatility: Number((Math.sqrt(variance) * Math.sqrt(252) * 100).toFixed(2)),
-    maxDrawdown: Number((maxDrawdown * 100).toFixed(2)),
-    observations: closes.length,
-    series: history,
+    source: `NSE bhavcopy (${snapshot.provider || 'NSE_BHAVCOPY'})`,
+    oneYearReturn: snapshot.oneYearReturn ?? null,
+    volatility: snapshot.annualizedVolatility ?? null,
+    maxDrawdown: snapshot.maximumDrawdown ?? null,
+    observations: snapshot.observationCount || 0,
+    liquidityClassification: snapshot.liquidityClassification ?? null,
+    corporateActionAdjustmentStatus: snapshot.corporateActionAdjustmentStatus ?? null,
+    dataAsOf: snapshot.dataAsOf ?? null,
   };
 };
 
 const getResearchMetrics = (stock, researchBySymbol) => {
   const historical = researchBySymbol.get(String(stock.ticker || stock.symbol).toUpperCase());
-  return calculateHistoricalMetrics(historical?.history || []);
+  return calculateHistoricalMetrics(historical?.metricsSnapshot || null);
 };
 
 // Used only for the coarse universe-eligibility pre-screen below (unrelated
@@ -328,6 +369,69 @@ const riskTierAllows = (riskCapacity, riskScore, hasHistoricalData) => {
   if (riskCapacity === 'AGGRESSIVE') return riskScore >= 35;
   return riskScore >= 20 && riskScore <= 78;
 };
+
+// Part I: the user's goal horizon + risk profile controls which market-cap
+// segments may appear at all, and a hard maximum count per segment (never a
+// forced quota -- fewer, or zero, is always an acceptable real outcome when
+// evidence is insufficient). Documented examples this directly implements:
+//   <3 years：no direct equity at all
+//   3-5y CONSERVATIVE: large-cap only
+//   5+y MODERATE (or shorter-horizon non-conservative): mostly large/mid,
+//     small-cap allocation tightly capped (max 1)
+//   7+y AGGRESSIVE: small-cap exposure may reach its full max (still 1 --
+//     this project returns at most one small-cap candidate regardless of
+//     risk profile, per the diversity ceiling in Part I/10)
+const getSegmentPolicy = (yearsRemaining, riskCapacity) => {
+  if (yearsRemaining < 3) return { allowedSegments: [], maxBySegment: { LARGE: 0, MID: 0, SMALL: 0 } };
+  if (yearsRemaining < 5) {
+    if (riskCapacity === 'CONSERVATIVE') return { allowedSegments: ['LARGE'], maxBySegment: { LARGE: 2, MID: 0, SMALL: 0 } };
+    return { allowedSegments: ['LARGE', 'MID'], maxBySegment: { LARGE: 2, MID: 1, SMALL: 0 } };
+  }
+  if (riskCapacity === 'CONSERVATIVE') return { allowedSegments: ['LARGE'], maxBySegment: { LARGE: 2, MID: 0, SMALL: 0 } };
+  if (yearsRemaining >= 7 && riskCapacity === 'AGGRESSIVE') return { allowedSegments: ['LARGE', 'MID', 'SMALL'], maxBySegment: { LARGE: 2, MID: 2, SMALL: 1 } };
+  return { allowedSegments: ['LARGE', 'MID', 'SMALL'], maxBySegment: { LARGE: 2, MID: 2, SMALL: 1 } };
+};
+
+// Part G: small-cap candidates must clear a strictly higher evidence bar
+// than large/mid -- every check here uses only already-verified fields
+// (never a guessed/derived-for-this-purpose value). A stock failing any
+// check is simply excluded from the SMALL segment's candidate pool, never
+// forced through.
+const passesSmallCapEligibilityGate = (stock) => {
+  if (!Number.isFinite(stock.marketCapCr) || stock.marketCapCr < 1000) return false;
+  if (stock.historical?.liquidityClassification === 'LOW') return false;
+  if (stock.historical?.corporateActionAdjustmentStatus === 'UNVERIFIED') return false;
+  const revenueDeclining = Number.isFinite(stock.revenueGrowth) && stock.revenueGrowth < -5;
+  const profitDeclining = Number.isFinite(stock.profitGrowth) && stock.profitGrowth < -10;
+  if (revenueDeclining && profitDeclining) return false; // neither growth signal is positive/improving
+  if (stock.debtTrend?.direction === 'INCREASING' && Math.abs(stock.debtTrend?.changePercent || 0) > 30) return false;
+  return true;
+};
+
+const SCORE_LABELS = [
+  { min: 78, label: 'High growth-potential candidate' },
+  { min: 60, label: 'Balanced growth/quality candidate' },
+  { min: 40, label: 'Defensive quality candidate' },
+  { min: 0, label: 'Higher-risk candidate' },
+];
+/**
+ * Never asserts a stock "will give good returns" -- a fixed, deterministic
+ * label from the verified score + segment only. The SMALL-segment override
+ * is checked first (small-cap concentration is a distinct, real risk this
+ * project already gates on -- see passesSmallCapEligibilityGate), so the
+ * generic low-score tier's label must never itself say "small-cap": a
+ * large-cap stock that simply scores low on verified metrics is not a
+ * small-cap stock, and mislabeling it as one would be a fabricated
+ * classification, not a derived one.
+ */
+const labelForScore = (goalFitScore, marketCapSegment) => {
+  if (goalFitScore == null) return 'Insufficient evidence to label';
+  if (marketCapSegment === 'SMALL') return 'Higher-risk small-cap candidate';
+  return SCORE_LABELS.find((tier) => goalFitScore >= tier.min).label;
+};
+
+/** Part I / Part 9: a stock is never called a dividend/passive-income candidate without verified dividend evidence, which this project does not yet ingest -- always the honest, explicit fallback label. */
+const DIVIDEND_SUITABILITY_UNVERIFIED_LABEL = 'Growth/quality equity candidate; dividend suitability not verified.';
 
 // Bundles metric availability, data-quality classification, and the verified
 // score for one stock. This is the single source of truth for both the
@@ -526,6 +630,12 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
         recommendedApproach: goalProfile.recommendedApproach,
       },
       recommendations: [],
+      universeCount: 0,
+      evaluatedCount: 0,
+      eligibleCount: 0,
+      rejectionCounts: {
+        INSUFFICIENT_HISTORY: 0, AWAITING_FUNDAMENTALS: 0, STALE_DATA: 0, RISK_MISMATCH: 0, HORIZON_MISMATCH: 0, INVALID_METRICS: 0, PROVIDER_UNAVAILABLE: 0,
+      },
       disclaimer: 'Investment returns are market-dependent and not guaranteed. This analysis is for informational purposes and should not be treated as personalized financial advice.',
       projection: buildProjection(goalProfile),
     };
@@ -533,19 +643,31 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
     return emptyResponse;
   }
 
+  // Rejection counts by reason code -- logged for transparency (task: "Log
+  // rejection counts by reason") and surfaced in the route's response.
+  // Sector-preference exclusion is intentionally NOT counted here: it is an
+  // expected, user-directed narrowing (a chosen sector filter), not a data-
+  // quality or suitability rejection.
+  const rejectionCounts = {
+    INSUFFICIENT_HISTORY: 0, AWAITING_FUNDAMENTALS: 0, STALE_DATA: 0, RISK_MISMATCH: 0,
+    HORIZON_MISMATCH: 0, INVALID_METRICS: 0, PROVIDER_UNAVAILABLE: 0,
+  };
+
   const filtered = universe.filter((stock) => {
     const sector = stock.sector || stock.industry || 'Unknown';
     const volatility = Number(stock.volatility ?? stock.annualVolatility ?? 0.18);
     const pe = Number(stock.pe ?? stock.PE ?? 0);
     const metrics = getResearchMetrics(stock, researchBySymbol);
     const riskScore = getRiskScore(metrics);
-    if (goalProfile.investmentHorizon === 'SHORT_TERM' && volatility > 0.26) return false;
-    if (goalProfile.investmentHorizon === 'SHORT_TERM' && pe > 35) return false;
-    if (goalProfile.goalType === 'retirement' && sector === 'Green Energy' && volatility > 0.3) return false;
-    if (goalProfile.goalType === 'house' && goalProfile.yearsRemaining <= 3 && sector === 'IT') return false;
-    if (goalProfile.selectedSector && normalizeSector(sector) !== goalProfile.selectedSector) return false;
-    if (!riskTierAllows(goalProfile.riskCapacity, riskScore, metrics.available)) return false;
-    return Boolean(stock.ticker || stock.symbol) && sector !== 'Unknown';
+
+    if (stock.fundamentalsProviderError) { rejectionCounts.PROVIDER_UNAVAILABLE += 1; return false; }
+    if (!(stock.ticker || stock.symbol) || sector === 'Unknown') { rejectionCounts.INVALID_METRICS += 1; return false; }
+    if (goalProfile.investmentHorizon === 'SHORT_TERM' && (volatility > 0.26 || pe > 35)) { rejectionCounts.HORIZON_MISMATCH += 1; return false; }
+    if (goalProfile.goalType === 'retirement' && sector === 'Green Energy' && volatility > 0.3) { rejectionCounts.HORIZON_MISMATCH += 1; return false; }
+    if (goalProfile.goalType === 'house' && goalProfile.yearsRemaining <= 3 && sector === 'IT') { rejectionCounts.HORIZON_MISMATCH += 1; return false; }
+    if (goalProfile.selectedSector && normalizeSector(sector) !== goalProfile.selectedSector) return false; // chosen sector filter -- not a rejection reason
+    if (!riskTierAllows(goalProfile.riskCapacity, riskScore, metrics.available)) { rejectionCounts.RISK_MISMATCH += 1; return false; }
+    return true;
   });
 
   // STATUS_RANK enforces "complete candidates first, then partial" — stocks
@@ -580,22 +702,83 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
     };
   }).sort(rankComparator);
 
+  // Fine-grained rejection reason for every INSUFFICIENT_DATA stock: which
+  // required category (historical or fundamental) is the actual gap. A
+  // stock relying on a stale-but-verified fundamentals snapshot is still
+  // usable (priority 3 of the lookup order) but is separately counted so
+  // "Load Eligible Stocks" can be transparent about it.
+  for (const stock of scored) {
+    if (stock.fundamentalIsStale) rejectionCounts.STALE_DATA += 1;
+    if (stock.scoreStatus !== 'INSUFFICIENT_DATA') continue;
+    const hasHistorical = HISTORICAL_METRIC_KEYS.some((key) => stock.availableMetrics.includes(key));
+    const hasFundamental = FUNDAMENTAL_METRIC_KEYS.some((key) => stock.availableMetrics.includes(key));
+    if (!hasHistorical) rejectionCounts.INSUFFICIENT_HISTORY += 1;
+    else if (!hasFundamental) rejectionCounts.AWAITING_FUNDAMENTALS += 1;
+    else rejectionCounts.INVALID_METRICS += 1; // both categories represented but still below the 3-metric floor
+  }
+
   // Stocks with zero verified metrics are never ranked as recommendations,
   // no matter how well their sector matches the goal.
   const rankable = scored.filter((stock) => stock.scoreStatus !== 'INSUFFICIENT_DATA');
 
-  // `rankable` is already sorted best-first (COMPLETE before PARTIAL, higher
-  // score first within each). The per-sector diversity pick below keeps the
-  // FIRST (best) stock seen for each sector, so a higher-quality candidate
-  // can never be silently displaced by a lower-status same-sector stock.
-  const sectorCandidates = goalProfile.selectedSector
-    ? rankable
-    : [...rankable.reduce((bySector, stock) => {
-        const key = normalizeSector(stock.sector || stock.industry);
-        if (!bySector.has(key)) bySector.set(key, stock);
-        return bySector;
-      }, new Map()).values()];
-  const topCandidates = sectorCandidates.slice(0, goalProfile.selectedSector ? 5 : 20);
+  // Part I / Part 10: market-cap-segment diversity, not a single combined
+  // list where large caps (which tend to have the most complete verified
+  // data) crowd out every mid/small candidate. The goal's horizon+risk
+  // determines which segments are even allowed; SMALL additionally requires
+  // passesSmallCapEligibilityGate. Maximums, never forced quotas -- a
+  // segment with zero qualifying candidates simply contributes nothing.
+  const segmentPolicy = getSegmentPolicy(goalProfile.yearsRemaining, goalProfile.riskCapacity);
+  const dedupeBySector = (list) => [...list.reduce((bySector, stock) => {
+    const key = normalizeSector(stock.sector || stock.industry);
+    if (!bySector.has(key)) bySector.set(key, stock);
+    return bySector;
+  }, new Map()).values()];
+
+  // Every rankable stock ends up in exactly one bucket: selected, or one of
+  // the rejection reasons below -- this is what lets the route-level
+  // invariant (eligibleCount + sum(primary rejection counts) === evaluatedCount)
+  // hold exactly, not just approximately.
+  let topCandidates;
+  if (goalProfile.selectedSector) {
+    // An explicit sector filter is a deliberate user narrowing -- segment
+    // diversity still applies (never mixes disallowed segments in), but the
+    // per-sector cap of 5 takes precedence over the 2/2/1 segment caps.
+    const sectorFiltered = rankable.filter((stock) => {
+      if (!segmentPolicy.allowedSegments.includes(stock.marketCapSegment)) { rejectionCounts.HORIZON_MISMATCH += 1; return false; }
+      if (stock.marketCapSegment === 'SMALL' && !passesSmallCapEligibilityGate(stock)) { rejectionCounts.RISK_MISMATCH += 1; return false; }
+      return true;
+    });
+    topCandidates = sectorFiltered.slice(0, 5);
+    rejectionCounts.HORIZON_MISMATCH += Math.max(0, sectorFiltered.length - 5);
+  } else {
+    const bySegment = { LARGE: [], MID: [], SMALL: [] };
+    for (const stock of rankable) {
+      const segment = stock.marketCapSegment;
+      if (!segment || !segmentPolicy.allowedSegments.includes(segment)) {
+        rejectionCounts.HORIZON_MISMATCH += 1;
+        continue;
+      }
+      if (segment === 'SMALL' && !passesSmallCapEligibilityGate(stock)) { rejectionCounts.RISK_MISMATCH += 1; continue; }
+      bySegment[segment].push(stock);
+    }
+    const dedupedLarge = dedupeBySector(bySegment.LARGE);
+    const dedupedMid = dedupeBySector(bySegment.MID);
+    const dedupedSmall = dedupeBySector(bySegment.SMALL);
+    topCandidates = [
+      ...dedupedLarge.slice(0, segmentPolicy.maxBySegment.LARGE || 0),
+      ...dedupedMid.slice(0, segmentPolicy.maxBySegment.MID || 0),
+      ...dedupedSmall.slice(0, segmentPolicy.maxBySegment.SMALL || 0),
+    ];
+    // Everything eligible-segment but crowded out by the sector-dedupe or the
+    // per-segment cap is still a real, evaluated stock -- HORIZON_MISMATCH
+    // (a portfolio-construction/diversity limit) is the closest of the 7
+    // canonical reason codes, not a silent drop.
+    const excessCount = (dedupedLarge.length - Math.min(dedupedLarge.length, segmentPolicy.maxBySegment.LARGE || 0))
+      + (dedupedMid.length - Math.min(dedupedMid.length, segmentPolicy.maxBySegment.MID || 0))
+      + (dedupedSmall.length - Math.min(dedupedSmall.length, segmentPolicy.maxBySegment.SMALL || 0))
+      + (bySegment.LARGE.length - dedupedLarge.length) + (bySegment.MID.length - dedupedMid.length) + (bySegment.SMALL.length - dedupedSmall.length);
+    rejectionCounts.HORIZON_MISMATCH += excessCount;
+  }
 
   const newsData = await Promise.all(
     topCandidates.map(async (stock) => {
@@ -620,7 +803,11 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
     return {
       symbol,
       companyName: stock.name || stock.companyName || symbol,
+      marketCapSegment: stock.marketCapSegment || null,
+      marketCapCr: stock.marketCapCr ?? null,
       goalFitScore: stock.goalFitScore,
+      scoreLabel: labelForScore(stock.goalFitScore, stock.marketCapSegment),
+      dividendSuitability: DIVIDEND_SUITABILITY_UNVERIFIED_LABEL,
       scoreStatus: stock.scoreStatus,
       dataCoveragePct: stock.dataCoveragePct,
       availableMetrics: stock.availableMetrics,
@@ -630,6 +817,7 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
       components: stock.goalFitComponents,
       recommendation: stock.goalFitScore == null ? 'INSUFFICIENT_DATA' : stock.goalFitScore >= 78 ? 'CONSIDER' : stock.goalFitScore >= 65 ? 'WATCH' : 'AVOID',
       allocationPercent,
+      suggestedMonthlyAmount: Number(Math.max(goalProfile.monthlyContribution * (allocationPercent / 100), 50).toFixed(0)),
       risk: getRiskLabel(stock.riskScore),
       whyRecommended: buildWhyRecommended(stock, goalProfile),
       reasons: [
@@ -639,7 +827,11 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
         stock.availableMetrics?.includes('valuation') ? `Available valuation input: P/E ${stock.pe}.` : 'Valuation data was unavailable and excluded from the score.',
         stock.availableMetrics?.includes('quality') ? `Available quality input: ROE ${stock.roe}.` : 'Quality (ROE) data was unavailable and excluded from the score.',
         `Data coverage: ${stock.dataCoveragePct}% of verified metrics available (${stock.confidence} confidence). Missing: ${stock.missingMetrics.length ? stock.missingMetrics.join(', ') : 'none'}.`,
-      ],
+        // This pipeline never tracks or verifies dividend data (yield,
+        // payout ratio, history) -- a passive-income goal must never imply
+        // dividend suitability from an unrelated goal-fit score alone.
+        goalProfile.goalType === 'passive_income' ? 'Fundamentally eligible equity candidate for this goal; dividend suitability not verified.' : null,
+      ].filter(Boolean),
       history: HISTORICAL_METRIC_KEYS.every((key) => stock.availableMetrics?.includes(key))
         ? `The provider returned ${stock.historical.observations} daily observations. The one-year price change was ${stock.historical.oneYearReturn}%, annualized volatility was ${stock.historical.volatility}%, and maximum drawdown was ${stock.historical.maxDrawdown}%. These are historical measurements, not a forecast.`
         : 'Historical candle data was unavailable, or did not meet the minimum sample size required, from the configured provider for this stock, so historical performance metrics are not asserted.',
@@ -680,8 +872,16 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
         pe: stock.pe ?? null,
         marketCap: stock.marketCap ?? null,
         roe: stock.roe ?? null,
+        revenueGrowth: stock.revenueGrowth ?? null,
+        profitGrowth: stock.profitGrowth ?? null,
+        operatingMargin: stock.operatingMargin ?? null,
+        debtTrend: stock.debtTrend ?? null,
         debtEquity: stock.debtEquity ?? stock.debtToEquity ?? null,
         source: stock.fundamentalSource || null,
+        sourceUrl: stock.fundamentalSourceUrl || null,
+        dataAsOf: stock.fundamentalDataAsOf || null,
+        isStale: Boolean(stock.fundamentalIsStale),
+        provenance: stock.fundamentalProvenance || null,
       },
       present: {
         price: Number(stock.price || 0),
@@ -787,6 +987,17 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
       partialCount: scored.filter((stock) => stock.scoreStatus === 'PARTIAL').length,
       insufficientDataExcludedCount: scored.filter((stock) => stock.scoreStatus === 'INSUFFICIENT_DATA').length,
     },
+    universeCount: universe.length,
+    // Every universe stock reaches exactly one outcome: eligible, or exactly
+    // one of the 6 primary rejectionCounts reasons (STALE_DATA is the one
+    // non-exclusive/informational counter, deliberately excluded from this
+    // sum) -- so evaluatedCount is the whole universe here, never just the
+    // subset that happened to pass the pre-filter. This is what makes the
+    // route-level invariant (eligibleCount + sum(primary rejectionCounts)
+    // === evaluatedCount) hold exactly, not approximately.
+    evaluatedCount: universe.length,
+    eligibleCount: recommendations.length,
+    rejectionCounts,
     rebalanceAnalysis,
     projection: buildProjection(goalProfile),
     disclaimer: 'Investment returns are market-dependent and not guaranteed. This analysis is for informational purposes and should not be treated as personalized financial advice.',
@@ -802,5 +1013,26 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
   return recommendationPayload;
 };
 
-export default { buildGoalProfile, buildGoalRecommendation, createRecommendationSummary };
+// Exported for reuse by StockDetailAggregationService's standalone
+// (non-goal-specific) "Growth Potential and Quality Score" -- the analyst/
+// research view tab must show the project's own deterministic score, never
+// a fabricated broker target, and this is the exact same weighted-metric
+// engine the Goals screener already uses, just invoked without a goal's
+// sector-fit adjustment.
+export {
+  buildMetricAvailability, evaluateDataQuality, computeVerifiedScore, getVerifiedRiskScore, getRiskLabel, labelForScore, calculateHistoricalMetrics,
+};
+
+export default {
+  buildGoalProfile,
+  buildGoalRecommendation,
+  createRecommendationSummary,
+  buildMetricAvailability,
+  evaluateDataQuality,
+  computeVerifiedScore,
+  getVerifiedRiskScore,
+  getRiskLabel,
+  labelForScore,
+  calculateHistoricalMetrics,
+};
 

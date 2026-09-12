@@ -50,6 +50,7 @@ import {
   createInvalidInputError,
 } from '../utils/errorHandler.js';
 import { getCompanyResearchBundle } from '../services/CompanyResearchService.js';
+import { getStockDetail } from '../services/StockDetailAggregationService.js';
 
 /**
  * StockController - HTTP handlers for stock endpoints
@@ -479,13 +480,78 @@ export class StockController {
 
       logger.debug(`[Controller] getCompanyDetails requested for: ${symbol}`);
 
-      // Call service
-      const details = await this.stockService.getCompanyDetails(symbol);
+      // Angel One's own getCompanyDetails is a stub (no real description/
+      // sector/marketCap) -- this response layers the verified aggregation
+      // (StockDetailAggregationService: real ISIN/BSE code/market cap,
+      // NSE-bhavcopy-derived summary metrics, IndianAPI research sections,
+      // this project's own deterministic score) on top of it, additively,
+      // so any existing consumer reading the old flat fields keeps working.
+      // A live quote is included only best-effort -- an Angel One outage
+      // must never fail this endpoint (it already has a durable last-close
+      // fallback for price).
+      const [detailsResult, aggregateResult, quoteResult] = await Promise.allSettled([
+        this.stockService.getCompanyDetails(symbol),
+        getStockDetail(symbol),
+        this.stockService.getStock(symbol),
+      ]);
+
+      const details = detailsResult.status === 'fulfilled' ? detailsResult.value : {};
+      const quote = quoteResult.status === 'fulfilled' ? quoteResult.value : null;
+
+      let aggregate = aggregateResult.status === 'fulfilled' ? aggregateResult.value : null;
+      if (aggregate && quote?.price != null) {
+        // Re-run with the live quote once it's known, rather than serving
+        // the durable-fallback price when a real live one was available all
+        // along -- getStockDetail is cheap (Mongo-only) so a second call is
+        // fine.
+        aggregate = await getStockDetail(symbol, {
+          livePrice: {
+            price: quote.price, change: quote.change, changePct: quote.changePct,
+          },
+        }).catch(() => aggregate);
+      }
+
+      const merged = {
+        ...details,
+        ...(aggregate ? {
+          marketCap: aggregate.summaryMetrics.marketCap || details.marketCap,
+          marketCapCr: aggregate.summaryMetrics.marketCapCr,
+          pe: aggregate.summaryMetrics.pe,
+          fiftyTwoWeekHigh: aggregate.summaryMetrics.fiftyTwoWeekHigh,
+          fiftyTwoWeekLow: aggregate.summaryMetrics.fiftyTwoWeekLow,
+          oneYearReturn: aggregate.summaryMetrics.oneYearReturn,
+          volatility: aggregate.summaryMetrics.volatility,
+          maxDrawdown: aggregate.summaryMetrics.maxDrawdown,
+          dataAsOf: aggregate.summaryMetrics.dataAsOf,
+          company: {
+            companyName: aggregate.identity.companyName,
+            sector: aggregate.identity.sector,
+            industry: aggregate.overview.industry,
+            isin: aggregate.identity.isin,
+            bseCode: aggregate.identity.bseScripCode,
+            nseCode: aggregate.identity.nseSymbol,
+            description: aggregate.overview.description,
+          },
+          research: aggregate.research,
+          summaryMetrics: aggregate.summaryMetrics,
+          sectionStatus: {
+            identity: aggregate.identity.status,
+            summaryMetrics: aggregate.summaryMetrics.status,
+            overview: aggregate.overview.status,
+            financials: aggregate.research.financials.status,
+            keyMetrics: aggregate.research.keyMetrics.status,
+            shareholding: aggregate.research.shareholding.status,
+            corporateActions: aggregate.research.corporateActions.status,
+            analystData: aggregate.research.analystData.status,
+            news: aggregate.research.news.status,
+          },
+        } : {}),
+      };
 
       // Return response
       res.status(HTTP_STATUS.OK).json({
         success: true,
-        data: details,
+        data: merged,
         message: `Company details for ${symbol}`,
       });
     } catch (error) {

@@ -181,11 +181,19 @@ const normalizeFinancials = (raw) => {
 
 // IndianAPI's keyMetrics is a fixed set of named categories (confirmed
 // empirically: mgmtEffectiveness, margins, financialstrength, valuation,
-// incomeStatement, growth, persharedata, priceandVolume), each itself an
-// object of metric-name -> value pairs. Splitting into one normalized
-// entry PER CATEGORY (rather than one opaque blob) is what lets
-// getCompanyFinancials/getCompanyResearch build an evidence excerpt that
-// actually names real numbers instead of an empty/untitled record.
+// incomeStatement, growth, persharedata, priceandVolume). Each category is
+// itself an ARRAY of { displayName, key, value } line items -- the same
+// "line item" shape normalizeFinancialEntry already uses for
+// stockFinancialMap.INC/BAL/CAS, NOT a flat metric-name -> value object.
+// (Confirmed live against real TCS/HDFCBANK responses, Sep 2026: a prior
+// version of this function assumed a flat object, so Object.entries() on
+// the actual array produced index->object pairs, toNumberOrNull(wholeObject)
+// always returned null, and `categories` silently came back empty for every
+// company despite the underlying data being present under `raw`.) Splitting
+// into one normalized entry PER CATEGORY (rather than one opaque blob) is
+// what lets getCompanyFinancials/getCompanyResearch build an evidence
+// excerpt that actually names real numbers instead of an empty/untitled
+// record.
 const KEY_METRIC_CATEGORY_LABELS = {
   margins: 'Margins',
   valuation: 'Valuation',
@@ -197,22 +205,34 @@ const KEY_METRIC_CATEGORY_LABELS = {
   priceandVolume: 'Price & Volume',
 };
 
+/** Extracts { name, value } metrics from one category's line-item array (or, defensively, a flat object). */
+const extractKeyMetricEntries = (categoryValue) => {
+  if (Array.isArray(categoryValue)) {
+    return categoryValue
+      .map((item) => ({
+        name: item?.displayName || item?.key || null,
+        value: toNumberOrNull(item?.value),
+      }))
+      .filter((m) => m.name && m.value !== null);
+  }
+  // Defensive fallback only -- not the confirmed live shape, but kept in
+  // case a future category is ever returned as a flat name->value object.
+  return Object.entries(categoryValue || {})
+    .map(([name, value]) => ({ name, value: toNumberOrNull(value) }))
+    .filter((m) => m.value !== null);
+};
+
 const normalizeKeyMetrics = (raw) => {
   const keyMetrics = raw?.keyMetrics;
   if (!keyMetrics || typeof keyMetrics !== 'object') return { categories: [], raw: null };
 
   const categories = Object.entries(keyMetrics)
     .filter(([, value]) => value && typeof value === 'object')
-    .map(([categoryKey, categoryValue]) => {
-      const metrics = Object.entries(categoryValue)
-        .map(([name, value]) => ({ name, value: toNumberOrNull(value) }))
-        .filter((m) => m.value !== null);
-      return {
-        category: categoryKey,
-        label: KEY_METRIC_CATEGORY_LABELS[categoryKey] || categoryKey,
-        metrics,
-      };
-    })
+    .map(([categoryKey, categoryValue]) => ({
+      category: categoryKey,
+      label: KEY_METRIC_CATEGORY_LABELS[categoryKey] || categoryKey,
+      metrics: extractKeyMetricEntries(categoryValue),
+    }))
     .filter((c) => c.metrics.length);
 
   return { categories, raw: keyMetrics };

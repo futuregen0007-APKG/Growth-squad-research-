@@ -69,7 +69,8 @@ const SearchBar = () => {
   };
 
   const handleSuggestionClick = (ticker) => {
-    navigate(`/stock/${ticker}`);
+    const normalizedSymbol = String(ticker || '').trim().toUpperCase();
+    navigate(`/stock/${encodeURIComponent(normalizedSymbol)}`);
     setQuery('');
     setIsOpen(false);
   };
