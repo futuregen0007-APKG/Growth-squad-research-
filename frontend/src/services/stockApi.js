@@ -152,8 +152,19 @@ export const fetchHistoricalData = async (symbol, range = '1Y', interval, option
 // constituent coverage or aligned trading days come back with
 // status: 'INSUFFICIENT_DATA' and null numeric fields — never a
 // neutral/fallback number. Render exactly what the backend returns.
+// Sector rotation is a genuinely heavier server-side computation (relative
+// strength across every sector's constituents) than an ordinary GET -- it
+// can legitimately take well past the shared 25s default even on a fully
+// healthy, already-warm backend. A generic instance-level timeout here
+// would misclassify "this one endpoint is just slow" as "the backend is
+// unreachable" and incorrectly trigger the shared readiness-recovery flow
+// (see reportBackendUnavailable in backendHealth.js) for a request that
+// was never actually a sign of an outage. Only this call gets a longer,
+// dedicated bound; every other request keeps the standard 25s.
+const SECTOR_ROTATION_TIMEOUT_MS = 60000;
+
 export const fetchSectorRotation = async (options = {}) => {
-  const response = await api.get('/sector-rotation', options);
+  const response = await api.get('/sector-rotation', { timeout: SECTOR_ROTATION_TIMEOUT_MS, ...options });
   return response.data.data || [];
 };
 
