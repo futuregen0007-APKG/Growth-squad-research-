@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Search, X, TrendingUp, TrendingDown } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { searchStocks } from '@/services/stockApi';
+import { useBackendReadiness } from '@/hooks/useBackendReadiness';
 
 const SearchBar = () => {
   const [query, setQuery] = useState('');
@@ -11,42 +12,75 @@ const SearchBar = () => {
   const [searchError, setSearchError] = useState('');
   const navigate = useNavigate();
   const searchRef = useRef(null);
+  // Global search shares the same single-flight readiness check as every
+  // other terminal route (see useBackendReadiness.js) -- typing into
+  // search while the backend is still waking up must not fire a live
+  // request into it; it must wait for the same wake-up signal Layout is
+  // already showing.
+  const backendReadiness = useBackendReadiness();
 
-  // Filter stocks based on query
+  // Minimum query length before searching at all -- a single character
+  // matches a huge fraction of the directory and is never a useful search.
+  const MIN_QUERY_LENGTH = 2;
+  // 400-500ms: long enough that normal typing speed never fires one
+  // request per keystroke, short enough to still feel responsive.
+  const SEARCH_DEBOUNCE_MS = 450;
+
+  // Filter stocks based on query. Debounced, and the in-flight request (if
+  // any) is aborted whenever the query changes again or the component
+  // unmounts -- both the network call itself (AbortController) and the
+  // state update (the `requestId` guard) are protected, so a slow response
+  // to an old keystroke can never overwrite a newer one's results.
+  const requestIdRef = useRef(0);
   useEffect(() => {
-    if (query.trim().length < 1) {
+    if (query.trim().length < MIN_QUERY_LENGTH) {
       setSuggestions([]);
       setIsOpen(false);
       setSearchError('');
-      return;
+      return undefined;
     }
 
-    let active = true;
+    // Never fire the live search request while the backend is still
+    // waking up -- show a clear status instead. Once readiness flips
+    // (this effect re-runs because backendReadiness.status is a
+    // dependency below), the debounce/search proceeds normally.
+    if (backendReadiness.status === 'waking') {
+      setSuggestions([]);
+      setIsLoading(false);
+      setSearchError('Backend is starting…');
+      setIsOpen(true);
+      return undefined;
+    }
+
+    const thisRequestId = requestIdRef.current + 1;
+    requestIdRef.current = thisRequestId;
+    const controller = new AbortController();
+
     const searchTimer = setTimeout(() => {
       setIsLoading(true);
       setSearchError('');
-      searchStocks(query)
-      .then((stocks) => {
-        if (!active) return;
-        setSuggestions(stocks.slice(0, 8));
-        setIsOpen(true);
-      })
-      .catch(() => {
-        if (!active) return;
-        setSuggestions([]);
-        setSearchError('Search is temporarily unavailable');
-        setIsOpen(true);
-      })
-      .finally(() => {
-        if (active) setIsLoading(false);
-      });
-    }, 300);
+      searchStocks(query, { signal: controller.signal })
+        .then((stocks) => {
+          if (requestIdRef.current !== thisRequestId) return;
+          setSuggestions(stocks.slice(0, 8));
+          setIsOpen(true);
+        })
+        .catch((error) => {
+          if (controller.signal.aborted || requestIdRef.current !== thisRequestId) return;
+          setSuggestions([]);
+          setSearchError('Search is temporarily unavailable');
+          setIsOpen(true);
+        })
+        .finally(() => {
+          if (requestIdRef.current === thisRequestId) setIsLoading(false);
+        });
+    }, SEARCH_DEBOUNCE_MS);
 
     return () => {
-      active = false;
       clearTimeout(searchTimer);
+      controller.abort();
     };
-  }, [query]);
+  }, [query, backendReadiness.status]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -92,7 +126,7 @@ const SearchBar = () => {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search stocks, companies, sectors..."
             className="w-full bg-gs-card border border-gs-border rounded-md pl-10 pr-10 py-2 text-sm text-gs-text placeholder-gs-textDim focus:outline-none focus:border-gs-accent transition-colors"
-            onFocus={() => query.length >= 1 && setIsOpen(true)}
+            onFocus={() => query.trim().length >= MIN_QUERY_LENGTH && suggestions.length > 0 && setIsOpen(true)}
           />
           {query && (
             <button

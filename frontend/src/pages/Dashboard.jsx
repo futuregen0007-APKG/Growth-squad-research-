@@ -17,6 +17,7 @@ import PopularStocksRail from "@/components/widgets/PopularStocksRail";
 import { fetchAllStocks, fetchIndexQuotes, fetchHistoricalData, fetchSectorRotation } from "@/services/stockApi";
 import { fetchNewsWithStatus } from "@/services/newsApi";
 import API_BASE from "@/config/api";
+import { useBackendReadiness } from "@/hooks/useBackendReadiness";
 
 const DASHBOARD_NEWS_SYMBOLS = ['AXISBANK', 'HDFCBANK', 'TCS', 'INFY'];
 
@@ -83,6 +84,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const marketStatus = useMarketStatus();
+  const backendReadiness = useBackendReadiness();
   const [stockState, setStockState] = useState({ loading: true, data: [], error: null });
   const [indexState, setIndexState] = useState({ loading: true, data: [], error: null });
   const [newsState, setNewsState] = useState({ loading: true, data: [], error: null, failedSymbols: [], providerStatus: 'OK' });
@@ -102,6 +104,13 @@ export default function Dashboard() {
   const indices = Object.values(dynamicIndexData);
 
   useEffect(() => {
+    // Wait out a Render cold-start wake-up before firing the dashboard's
+    // usual burst of parallel requests -- previously all five fired
+    // immediately on mount with only a flat 10s axios timeout each, so a
+    // sleeping backend made every single one time out together instead of
+    // the page just waiting a bit longer up front.
+    if (backendReadiness.status === 'waking') return undefined;
+
     const controller = new AbortController();
     let isActive = true;
     const requestOptions = { signal: controller.signal };
@@ -162,7 +171,7 @@ export default function Dashboard() {
       isActive = false;
       controller.abort();
     };
-  }, []);
+  }, [backendReadiness.status]);
 
   const news = newsState.data;
 
@@ -185,6 +194,17 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6 animate-fade-up" data-testid="dashboard-page">
+      {backendReadiness.status === 'waking' && (
+        <div className="gs-card flex items-center gap-3 border-l-2 border-l-gs-gold/60 p-4" data-testid="backend-waking-banner">
+          <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-gs-gold" />
+          <div className="text-sm text-gs-text">
+            Starting backend service…
+            <span className="ml-2 text-xs text-gs-textDim">
+              This can take up to a minute on a cold start ({Math.round(backendReadiness.elapsedMs / 1000)}s elapsed)
+            </span>
+          </div>
+        </div>
+      )}
       {/* Page Heading */}
       <div className="flex items-end justify-between flex-wrap gap-3">
         <div>

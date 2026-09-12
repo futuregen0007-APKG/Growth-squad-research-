@@ -2,14 +2,18 @@ import { Server } from 'socket.io';
 import { logger } from '../utils/logger.js';
 
 export class StockSocket {
-  constructor(httpServer, marketProvider, livePriceService = null, angelWebSocketService = null) {
+  // `corsOrigins` mirrors the main Express CORS config (a string or an
+  // array of allowed origins) so the deployed frontend domain only needs
+  // to be configured once (CORS_ORIGINS/FRONTEND_URL) instead of the
+  // websocket silently using a different, single-origin fallback.
+  constructor(httpServer, marketProvider, livePriceService = null, angelWebSocketService = null, { corsOrigins } = {}) {
     if (!marketProvider) {
       throw new Error('Market provider is required');
     }
 
     this.io = new Server(httpServer, {
       cors: {
-        origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+        origin: corsOrigins || process.env.FRONTEND_URL || 'http://localhost:3000',
         methods: ['GET', 'POST'],
       },
     });

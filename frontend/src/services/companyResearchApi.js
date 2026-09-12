@@ -1,10 +1,24 @@
 import axios from 'axios';
 import API_BASE from '@/config/api';
+import { reportBackendUnavailable, isAvailabilityImpactingAxiosError } from '@/services/backendHealth';
 
 const api = axios.create({
   baseURL: `${API_BASE}/api`,
   timeout: 15000,
 });
+
+// Same shared-readiness reporting as stockApi.js/newsApi.js -- a network
+// failure/timeout/502/503/504 on the Stock Detail research bundle means
+// the backend itself is down, not that this one symbol's IndianAPI
+// section failed (that's already reported per-section by the response
+// body itself, never via a thrown error).
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (isAvailabilityImpactingAxiosError(error)) reportBackendUnavailable();
+    return Promise.reject(error);
+  },
+);
 
 /**
  * fetchCompanyResearch - provider-neutral company research bundle

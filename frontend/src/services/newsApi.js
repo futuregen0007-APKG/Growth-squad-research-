@@ -1,7 +1,22 @@
 import axios from 'axios';
 import API_BASE from '@/config/api';
+import { reportBackendUnavailable, isAvailabilityImpactingAxiosError } from '@/services/backendHealth';
 
 const api = axios.create({ baseURL: `${API_BASE}/api`, timeout: 12000 });
+
+// Reports a network failure/timeout/502/503/504 to the shared readiness
+// store (see services/backendHealth.js) so a mid-session backend outage
+// falls back to the same wake-up screen Dashboard/Layout show on first
+// load -- a 4xx/500/canceled request never does this (see the classifier
+// for the exact rule). This client never retries on its own; Dashboard
+// already treats a failed news fetch as an independent, non-fatal section.
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (isAvailabilityImpactingAxiosError(error)) reportBackendUnavailable();
+    return Promise.reject(error);
+  },
+);
 
 export const isValidArticleUrl = (value) => {
   try {

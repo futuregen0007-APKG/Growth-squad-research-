@@ -284,10 +284,20 @@ export class StockService {
       }
     }
 
-    // 2. Support any live ticker on NSE/BSE (e.g. JIOFIN, TATATECH, MAPMYINDIA, SWIGGY)
-    const cleanTicker = searchTerm.toUpperCase().replace(/[^A-Z0-9&-]/g, '');
-    if (cleanTicker && /^[A-Z0-9&-]{2,15}$/.test(cleanTicker)) {
-      matchedSet.add(cleanTicker);
+    // 2. Support any live ticker on NSE/BSE not in the static directory
+    // (e.g. JIOFIN, TATATECH, MAPMYINDIA, SWIGGY) -- but only as a fallback
+    // when the directory found nothing at all. Previously this ran on
+    // every search regardless, so every partial keystroke (e.g. "IRCT",
+    // "hd") also speculatively fetched a live quote for that literal
+    // fragment as a ticker guess -- almost always a provider round-trip
+    // that was going to 404, on top of the real directory matches. The
+    // directory (SUPPORTED_STOCKS, in-memory) already answers the
+    // overwhelming majority of searches for free.
+    if (!matchedSet.size) {
+      const cleanTicker = searchTerm.toUpperCase().replace(/[^A-Z0-9&-]/g, '');
+      if (cleanTicker && /^[A-Z0-9&-]{2,15}$/.test(cleanTicker)) {
+        matchedSet.add(cleanTicker);
+      }
     }
 
     const matchingSymbols = Array.from(matchedSet).slice(0, 25);

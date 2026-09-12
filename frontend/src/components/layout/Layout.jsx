@@ -15,6 +15,7 @@ import {
   TrendingUp,
 } from "lucide-react";
 import BrandLogo from "../widgets/BrandLogo";
+import { useBackendReadiness } from "@/hooks/useBackendReadiness";
 
 const MOBILE_NAV = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -29,6 +30,14 @@ export default function Layout() {
   const [cmdOpen, setCmdOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
+  // Single shared readiness check (see useBackendReadiness.js) covering
+  // every route rendered through this Layout -- Dashboard, Goals, News,
+  // Sectors, Earnings, Stock Detail, Search, and the protected pages --
+  // plus the global SearchBar in TopBar. Previously only Dashboard.jsx
+  // gated its own requests on this; every other terminal route (and a
+  // fresh direct navigation straight to e.g. /goals or /stock/INFY) fired
+  // requests immediately regardless of whether the backend had woken up.
+  const backendReadiness = useBackendReadiness();
 
   return (
     <div className="min-h-screen bg-gs-bg text-gs-text">
@@ -78,12 +87,28 @@ export default function Layout() {
       </Sheet>
 
       <div className="lg:ml-64 pt-14">
-        <MarketTicker />
+        {/* MarketTicker fires its own fetchAllStocks() on mount, independent
+            of any page -- it must not fire into a still-waking backend
+            either, so it's gated the same as the routed page content. */}
+        {backendReadiness.status !== "waking" && <MarketTicker />}
         <main
           className="p-4 sm:p-6 min-h-[calc(100vh-3.5rem-2.25rem)] grid-bg"
           data-testid={`page-${location.pathname.replace(/\//g, "-").replace(/^-/, "") || "root"}`}
         >
-          <Outlet />
+          {backendReadiness.status === "waking" ? (
+            <div
+              className="gs-card flex min-h-[50vh] flex-col items-center justify-center gap-3 border-l-2 border-l-gs-gold/60 p-8 text-center"
+              data-testid="backend-waking-screen"
+            >
+              <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-gs-gold" />
+              <div className="text-base text-gs-text">Starting backend service…</div>
+              <div className="text-xs text-gs-textDim">
+                This can take up to a minute on a cold start ({Math.round(backendReadiness.elapsedMs / 1000)}s elapsed)
+              </div>
+            </div>
+          ) : (
+            <Outlet />
+          )}
         </main>
       </div>
     </div>

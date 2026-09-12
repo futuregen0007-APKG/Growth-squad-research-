@@ -12,7 +12,8 @@ import { FinnhubProvider } from './providers/FinnhubProvider.js';
 import { TwelveDataProvider } from './providers/TwelveDataProvider.js';
 import { FinancialModelingPrepProvider } from './providers/FinancialModelingPrepProvider.js';
 import { AngelOneProvider } from './providers/AngelOneProvider.js';
-import { initializeRedis, closeRedis } from './utils/redisClient.js';
+import { initializeRedis, closeRedis, getRedisClient } from './utils/redisClient.js';
+import { livenessHandler, createReadinessHandler } from './utils/healthHandlers.js';
 import { formatErrorResponse, getHttpStatus } from './utils/errorHandler.js';
 import { logger } from './utils/logger.js';
 import { StockSocket } from './socket/stock.socket.js';
@@ -29,18 +30,45 @@ import { startChatRateLimitCleanup } from './middleware/chatRateLimit.js';
 
 dotenv.config();
 
-const connectMongo = async () => {
-  const mongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/stock_market_ai';
+// Mongo connection state, tracked independently of mongoose's own
+// readyState so /ready can report a specific reason ("connecting" vs
+// "never attempted" vs "failed") without an extra DB round-trip -- the
+// readiness check below only ever reads this in-memory value, never
+// issues its own query.
+let mongoConnectAttempted = false;
+let mongoLastError = null;
 
-  try {
-    await mongoose.connect(mongoUri, {
-      serverSelectionTimeoutMS: 5000
-    });
-    logger.info('MongoDB connected successfully');
-  } catch (error) {
-    logger.error(`MongoDB connection failed: ${error.message}`);
-    logger.error('Please ensure MongoDB is running and MONGODB_URI is set in .env');
-    throw new Error('MongoDB connection required. Application cannot start without database.');
+const MONGO_CONNECT_RETRY_DELAYS_MS = [1000, 3000, 8000, 15000, 30000];
+
+/**
+ * connectMongoWithRetry - bounded retry (never infinite, never blocking
+ * Express startup) for the *initial* connection. Once mongoose is
+ * connected once, its own driver handles reconnection on drops -- this
+ * loop only covers "never connected yet" (e.g. Atlas cold-starting at the
+ * same moment as this Render instance).
+ */
+const connectMongoWithRetry = async () => {
+  const mongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/stock_market_ai';
+  mongoConnectAttempted = true;
+
+  for (let attempt = 0; attempt <= MONGO_CONNECT_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 5000 });
+      logger.info('MongoDB connected successfully');
+      mongoLastError = null;
+      return;
+    } catch (error) {
+      mongoLastError = error.message;
+      const delay = MONGO_CONNECT_RETRY_DELAYS_MS[attempt];
+      if (delay == null) {
+        logger.error(`MongoDB connection failed after ${attempt + 1} attempts: ${error.message}. Requests needing the database will queue/fail until it recovers.`);
+        return;
+      }
+      logger.warn(`MongoDB connection attempt ${attempt + 1} failed (${error.message}); retrying in ${delay}ms`);
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => { setTimeout(resolve, delay); });
+    }
   }
 };
 
@@ -62,13 +90,26 @@ app.use(cors({
 }));
 app.use(express.json());
 
-app.get('/health', (req, res) => {
-  res.status(200).json({ success: true, status: 'ok', uptime: process.uptime() });
-});
+// Liveness: must respond the instant Express is listening, independent of
+// Mongo/Redis/any other dependency -- this is what a cold-start wake-up
+// probe polls. Never touches the database.
+app.get('/health', livenessHandler);
+app.get('/api/health', livenessHandler);
 
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ success: true, status: 'ok', uptime: process.uptime() });
+// Readiness: reports whether the app's real dependencies are usable yet.
+// Every check here reads already-tracked in-memory state (mongoose's own
+// connection.readyState, the redis client's isOpen flag) -- no query, no
+// ping, no unbounded wait, so this always answers instantly. Redis is
+// optional (caching only) and never affects the ready/not-ready verdict;
+// Mongo is required by most routes, so it does.
+const readinessHandler = createReadinessHandler({
+  getMongoReadyState: () => mongoose.connection.readyState,
+  mongoAttempted: () => mongoConnectAttempted,
+  getMongoLastError: () => mongoLastError,
+  getRedisClient,
 });
+app.get('/ready', readinessHandler);
+app.get('/api/ready', readinessHandler);
 
 // Debug: list registered routes
 app.get('/__routes', (req, res) => {
@@ -92,26 +133,29 @@ app.get('/__routes', (req, res) => {
 });
 
 app.use((req, res, next) => {
-  console.log('Incoming request', req.method, req.url);
+  logger.debug(`Incoming request ${req.method} ${req.url}`);
   next();
 });
 
 app.use('/api/chat', chatRoute);
-app.use('/api/auth', (req, res, next) => {
-  console.log('Auth middleware hit', req.method, req.url);
-  next();
-}, authRoutes);
+app.use('/api/auth', authRoutes);
 
 let server = null;
 
-const startServer = async () => {
+/**
+ * startServer - synchronous from here down (no `await`) until app.listen()
+ * fires. Route registration and provider construction do no I/O, so they
+ * are safe to run before the port is bound. Mongo/Redis/seed data are all
+ * moved to a background task kicked off *after* listen -- a slow or
+ * failing dependency must never delay accepting the first HTTP connection
+ * (that delay was previously exactly what a Render wake-up looked like:
+ * connectMongo + seedHistoricalIntelligence + initializeRedis were all
+ * awaited before app.listen, so the liveness endpoint itself only became
+ * reachable once all three had finished).
+ */
+const startServer = () => {
   const PORT = process.env.PORT || 5001;
   const marketProvider = (process.env.MARKET_DATA_PROVIDER || 'angel-one').toLowerCase();
-
-  await connectMongo();
-  await seedHistoricalIntelligence().catch(err => logger.warn('Seed error: ' + err.message));
-  await initializeRedis();
-  startChatRateLimitCleanup();
 
   let provider;
   if (marketProvider === 'angel-one' || marketProvider === 'angelone' || marketProvider === 'angel') {
@@ -174,16 +218,33 @@ const startServer = async () => {
   });
 
   server = app.listen(PORT, '0.0.0.0', () => {
-    logger.info(`Backend API running at http://localhost:${PORT}`);
-    logger.info(`Server running on http://localhost:${PORT}`);
+    logger.info(`Backend API listening on 0.0.0.0:${PORT} (env: ${process.env.NODE_ENV || 'development'})`);
   });
 
   const livePriceService = provider instanceof AngelOneProvider ? new LivePriceService() : null;
   const angelWebSocketService = livePriceService
     ? new AngelWebSocketService(provider, livePriceService)
     : null;
-  const stockSocket = new StockSocket(server, provider, livePriceService, angelWebSocketService);
+  const socketCorsOrigins = configuredCorsOrigins.length ? configuredCorsOrigins : (process.env.FRONTEND_URL || 'http://localhost:3000');
+  const stockSocket = new StockSocket(server, provider, livePriceService, angelWebSocketService, { corsOrigins: socketCorsOrigins });
   stockSocket.start();
+
+  startChatRateLimitCleanup();
+
+  // Background startup: never awaited by anything on the request path.
+  // Heavy/optional work (Mongo connect with retry, Redis cache warm-up,
+  // demo historical-intelligence seeding) all happens here, after the
+  // server is already accepting connections.
+  (async () => {
+    await connectMongoWithRetry();
+    if (mongoose.connection.readyState === 1) {
+      await seedHistoricalIntelligence().catch((err) => logger.warn(`Seed error: ${err.message}`));
+    } else {
+      logger.warn('Skipping demo historical-intelligence seed: MongoDB is not connected.');
+    }
+  })();
+
+  initializeRedis().catch((err) => logger.warn(`Redis initialization error: ${err.message}`));
 
   const shutdown = async (signal) => {
     logger.info(`Received ${signal}. Shutting down gracefully...`);
@@ -215,7 +276,9 @@ const startServer = async () => {
   });
 };
 
-startServer().catch((error) => {
+try {
+  startServer();
+} catch (error) {
   logger.error(`Failed to start server: ${error.message}`);
   process.exit(1);
-});
+}
