@@ -6,7 +6,25 @@ import {
 } from '../services/ChatThreadService.js';
 import { createNotFoundError, createInvalidInputError, AppError } from '../utils/errorHandler.js';
 import { MAX_INPUT_LENGTH } from '../graph/nodes/validateInput.js';
+import { resolveTotalDeadlineMs } from '../graph/requestBudget.js';
 import { logger } from '../utils/logger.js';
+
+/**
+ * makeRequestScope - one AbortController + deadline per HTTP request, the
+ * Phase 1 "request identity and total deadline" / "real cancellation"
+ * primitives shared by both sendMessage and legacySendMessage. The signal
+ * aborts when EITHER the client disconnects OR the total deadline
+ * elapses — never persisted anywhere (not on the request record, not in
+ * Mongo), exactly like the pre-existing onEvent/aborted callbacks this
+ * mirrors.
+ */
+const makeRequestScope = () => {
+  const deadlineAt = Date.now() + resolveTotalDeadlineMs();
+  const controller = new AbortController();
+  const deadlineTimer = setTimeout(() => controller.abort(), Math.max(0, deadlineAt - Date.now()));
+  const dispose = () => clearTimeout(deadlineTimer);
+  return { deadlineAt, signal: controller.signal, abort: () => controller.abort(), dispose };
+};
 
 /**
  * ChatController.js
@@ -103,7 +121,13 @@ export const sendMessage = async (req, res, next) => {
 
   const requestId = uuidv4();
   let clientDisconnected = false;
-  req.on('close', () => { clientDisconnected = true; });
+  const scope = makeRequestScope();
+  // res.on('close') -- not req.on('close') -- is the correct disconnect
+  // signal; see legacySendMessage's fuller note below for why. This was
+  // pre-existing (req.on('close')) code before Phase 1 and is corrected
+  // here as part of implementing real cancellation properly, not left as
+  // a silently-broken listener.
+  res.on?.('close', () => { if (!res.writableEnded) { clientDisconnected = true; scope.abort(); } });
 
   try {
     const { message: userMessage, duplicate } = await appendUserMessage(req.userId, threadId, { content: text, clientMessageId });
@@ -141,6 +165,8 @@ export const sendMessage = async (req, res, next) => {
       currentMessageId: String(userMessage._id),
       onEvent,
       aborted: () => clientDisconnected,
+      deadlineAt: scope.deadlineAt,
+      abortSignal: scope.signal,
     });
 
     if (clientDisconnected) return res.end();
@@ -165,6 +191,7 @@ export const sendMessage = async (req, res, next) => {
     }
   } finally {
     if (dedupeKey) inFlightClientMessages.delete(dedupeKey);
+    scope.dispose();
   }
 };
 
@@ -177,15 +204,48 @@ export const sendMessage = async (req, res, next) => {
  * backward compatibility).
  */
 export const legacySendMessage = async (req, res) => {
+  // Previously invoked the graph with no requestId at all (GraphState's
+  // default null survived all the way to logDiagnostics) — the earliest
+  // missing propagation point traced in Phase 0. Fixed by generating one
+  // here, exactly like sendMessage already does; never a second id
+  // downstream (classifyIntent/etc. only ever read state.requestId, they
+  // never create one).
+  const requestId = uuidv4();
+  const scope = makeRequestScope();
+  let clientDisconnected = false;
+
   try {
+    // req.on is guarded (optional chaining) — legacySendMessage is also
+    // called directly in tests with a minimal { body } object rather than
+    // a real Express request, and scope's deadline timer must still be
+    // disposed via `finally` below even when a caller's req has no event
+    // emitter at all.
+    // res.on('close') -- NOT req.on('close') -- is the correct signal here.
+    // Confirmed empirically while building this: req's 'close' fires once
+    // the INCOMING request body has been fully read (Node's own docs:
+    // "the request has been completed"), which for a small JSON POST body
+    // happens within milliseconds of the request arriving -- i.e. it fired
+    // almost immediately on every single call, long before any response
+    // was sent, silently cancelling every request. res's 'close' fires
+    // only when the underlying connection is actually torn down before
+    // the response finishes, which is the real "client went away" signal.
+    res.on?.('close', () => { if (!res.writableEnded) { clientDisconnected = true; scope.abort(); } });
     const text = String(req.body?.message || '').trim();
     if (!text) return res.status(400).json({ error: 'message is required' });
 
-    const finalState = await graph.invoke({ messages: [new HumanMessage(text)] });
+    const finalState = await graph.invoke({
+      messages: [new HumanMessage(text)],
+      requestId,
+      deadlineAt: scope.deadlineAt,
+      abortSignal: scope.signal,
+      aborted: () => clientDisconnected,
+    });
     res.json({ reply: finalState.answer });
   } catch (error) {
     logger.error(`[Chat] legacySendMessage failed: ${error.message}`);
     res.status(500).json({ error: error.message });
+  } finally {
+    scope.dispose();
   }
 };
 

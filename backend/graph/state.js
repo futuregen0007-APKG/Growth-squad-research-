@@ -31,6 +31,29 @@ export const GraphState = Annotation.Root({
   currentMessageId: Annotation({ reducer: replace, default: () => null }),
   turnStartedAt: Annotation({ reducer: replace, default: () => null }),
 
+  // Phase 1 (performance/reliability). deadlineAt is set exactly ONCE, in
+  // validateInput — see graph/requestBudget.js. Every later node only
+  // reads it (via remainingMs/boundedTimeout), never resets or extends it.
+  deadlineAt: Annotation({ reducer: replace, default: () => null }),
+  // The request's AbortSignal (client disconnect OR deadline expiry —
+  // see controllers/ChatController.js). Transient, exactly like onEvent/
+  // aborted below: never persisted, never part of any checkpoint (this
+  // graph has none).
+  abortSignal: Annotation({ reducer: replace, default: () => null }),
+  // One entry per LLM call this turn: {node, role, model, inputTokens,
+  // outputTokens, durationMs, timedOut}. Never the prompt text or the
+  // parsed content — see logDiagnostics.js.
+  llmCalls: Annotation({ reducer: (x, y) => x.concat(y), default: () => [] }),
+  // Fingerprints of tool calls executeTools collapsed into a single real
+  // execution this turn (see graph/toolFingerprint.js) — a safe count/list
+  // for diagnostics, never re-derived from toolResults after the fact.
+  deduplicatedToolCalls: Annotation({ reducer: replace, default: () => [] }),
+  // One entry per graph node this turn: {node, durationMs} — set by
+  // graph.js's withNodeTiming wrapper (see graph/timing.js), never by the
+  // node functions themselves, so every node (not just the LLM-calling
+  // ones) is covered without repeating timing boilerplate in each file.
+  nodeTimings: Annotation({ reducer: (x, y) => x.concat(y), default: () => [] }),
+
   // Short-term memory restored from ChatThread/ChatMessage before this
   // turn's model calls. `recentHistory` holds the last N prior turns
   // VERBATIM (plain {role, content} objects — never summarized);

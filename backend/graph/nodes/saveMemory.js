@@ -54,7 +54,7 @@ export const saveMemory = async (state) => {
       citations: state.citations,
       toolSummary: state.toolResults.map((t) => ({ tool: t.tool, status: t.status, warning: t.warning })),
       intent: state.intent,
-      model: LLM_CONFIG.chatModel,
+      model: LLM_CONFIG.synthesisModel, // the model that actually composed this answer, not the routing model classifyIntent/planTools used
       tokenUsage: state.tokenUsage,
     });
   } catch (error) {
@@ -75,7 +75,16 @@ export const saveMemory = async (state) => {
       const olderMessages = messages.slice(0, -RECENT_MESSAGE_COUNT);
       const unsummarized = olderMessages.filter((m) => !thread.summaryUpToMessageId || String(m._id) > String(thread.summaryUpToMessageId));
       if (unsummarized.length) {
+        // These two LLM calls happen AFTER logDiagnostics in the graph
+        // (composeAnswer -> validateFinalAnswer -> logDiagnostics ->
+        // saveMemory -> END), so they can never appear in that turn's main
+        // diagnostic line — logged here instead, in the same safe,
+        // structured, no-prompt-content style (Phase 1 report notes this
+        // ordering constraint explicitly rather than reordering the graph
+        // to force them into one line).
+        const summaryStartedAt = Date.now();
         const summarized = await summarizeOlderMessages(thread.summary, unsummarized);
+        logger.info(`[GS Copilot:memory] ${JSON.stringify({ node: 'summarizeOlderMessages', role: 'summary', model: LLM_CONFIG.summaryModel, durationMs: Date.now() - summaryStartedAt, produced: Boolean(summarized) })}`);
         if (summarized) {
           summaryUpdate = {
             summary: summarized.summary,
@@ -94,7 +103,9 @@ export const saveMemory = async (state) => {
 
   try {
     const lastMessage = state.messages[state.messages.length - 1];
+    const preferenceStartedAt = Date.now();
     const preference = await detectExplicitPreference(String(lastMessage?.content || ''));
+    logger.info(`[GS Copilot:memory] ${JSON.stringify({ node: 'detectExplicitPreference', role: 'summary', model: LLM_CONFIG.summaryModel, durationMs: Date.now() - preferenceStartedAt, stated: Boolean(preference?.stated) })}`);
     if (preference?.stated) {
       await saveExplicitPreferences(state.userId, preference);
     }

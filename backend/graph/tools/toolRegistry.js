@@ -41,6 +41,9 @@ import Watchlist from '../../models/Watchlist.js';
 import PortfolioHolding from '../../models/PortfolioHolding.js';
 import { buildEvidenceRecord } from '../evidence.js';
 import { SAFE_REASONS, classifyErrorCode } from '../safeReasons.js';
+import { boundedTimeout } from '../requestBudget.js';
+import { getProviderBreaker, isBreakerCountedFailure } from './circuitBreaker.js';
+import { getOrCompute, buildCacheKey, CACHE_TTL_MS } from './toolCache.js';
 import { logger } from '../../utils/logger.js';
 
 export const TOOL_STATUS = Object.freeze({
@@ -53,7 +56,14 @@ const countOf = (data) => {
   return 1;
 };
 
-const result = (tool, status, data, evidence = [], warning = null, errorCode = null) => ({
+// `meta` carries the Phase 1 diagnostic extras a tool call may know about —
+// cacheStatus ('HIT'|'MISS', omitted when this tool never caches),
+// circuitState (the provider breaker's state at call time, omitted when
+// this tool has no breaker), cancellationMode ('HARD' when the underlying
+// call genuinely accepted the abort signal, 'SOFT' when this tool only
+// stopped awaiting it — see toolRegistry.js's module note and the Phase 1
+// report's "cancellation limitations"). Never a raw provider payload.
+const result = (tool, status, data, evidence = [], warning = null, errorCode = null, meta = {}) => ({
   tool,
   status,
   data,
@@ -63,6 +73,7 @@ const result = (tool, status, data, evidence = [], warning = null, errorCode = n
   errorCode,
   fetchedAt: new Date().toISOString(),
   warning,
+  ...meta,
 });
 
 let stockServiceSingleton = null;
@@ -73,11 +84,62 @@ const getStockService = () => {
   return stockServiceSingleton;
 };
 
-/** Bounds a slow tool call so one hung request never blocks the whole graph. */
-const withTimeout = (promise, ms, label) => Promise.race([
-  promise,
-  new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
-]);
+/**
+ * withTimeout - bounds a slow tool call so one hung request never blocks
+ * the whole graph. `ms` is already the request-budget-bounded value the
+ * caller computed (see boundedCallTimeout below) — this function itself
+ * only races promise vs. timer vs. an optional AbortSignal.
+ *
+ * Cancellation via `signal` is a SOFT cancel for any tool whose underlying
+ * call doesn't itself accept the signal (most of the tools in this file —
+ * see each call site's own note): the graph stops *awaiting* the call and
+ * moves on, but the in-flight HTTP/DB call may still complete in the
+ * background. That is a real, documented limitation (Phase 1 report,
+ * "cancellation limitations"), never silently claimed as a true abort.
+ */
+const withTimeout = (promise, ms, label, signal) => {
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error(`${label} timed out after ${ms}ms`), { code: 'TIMEOUT' })), ms);
+  });
+  const racers = [promise, timeoutPromise];
+  if (signal) {
+    racers.push(new Promise((_, reject) => {
+      if (signal.aborted) { reject(Object.assign(new Error(`${label} cancelled`), { code: 'CANCELLED' })); return; }
+      signal.addEventListener('abort', () => reject(Object.assign(new Error(`${label} cancelled`), { code: 'CANCELLED' })), { once: true });
+    }));
+  }
+  return Promise.race(racers).finally(() => clearTimeout(timer));
+};
+
+/** The timeout a call should actually use this turn: its own natural ceiling, bounded by whatever remains of the request's total deadline (never longer, sometimes shorter). */
+const boundedCallTimeout = (naturalTimeoutMs, context) => boundedTimeout(naturalTimeoutMs, context?.deadlineAt);
+
+/**
+ * withBreaker - runs `fn` only if the named provider's circuit isn't OPEN,
+ * and records the outcome. A cancellation (context.signal already
+ * aborted, or the call rejects with code TIMEOUT/CANCELLED because the
+ * *request* deadline — not the provider — ran out) is never counted
+ * against the breaker (see circuitBreaker.js's isBreakerCountedFailure).
+ * Returns { blocked: true } without calling fn at all when the circuit is
+ * OPEN — the caller reports that as UNAVAILABLE, never as a fresh attempt.
+ */
+const withBreaker = async (providerName, fn) => {
+  const breaker = getProviderBreaker(providerName);
+  if (!breaker.canAttempt()) {
+    return { blocked: true, circuitState: breaker.getState() };
+  }
+  const circuitState = breaker.getState();
+  try {
+    const value = await fn();
+    breaker.recordSuccess();
+    return { blocked: false, circuitState, value };
+  } catch (error) {
+    const cancelled = error?.code === 'CANCELLED';
+    breaker.recordOutcome({ cancelled, errorCode: error?.errorCode || (error?.code === 'TIMEOUT' ? 'TIMEOUT' : null) });
+    throw error;
+  }
+};
 
 const normalizeSymbol = (value) => String(value || '').trim().toUpperCase();
 
@@ -114,11 +176,29 @@ const deriveBundleOutcome = (sections) => {
 // ---------------------------------------------------------------------------
 // getLiveQuote
 // ---------------------------------------------------------------------------
-export const getLiveQuote = async ({ symbol }) => {
+// getLiveQuote is the only tool whose underlying call (StockService ->
+// AngelOneProvider, a plain internal method with no options parameter of
+// its own) does not accept an AbortSignal — cancellation here is SOFT
+// (see withTimeout's doc): the graph stops waiting on it, but the
+// in-flight request to Angel One may still complete in the background.
+export const getLiveQuote = async ({ symbol }, context = {}) => {
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return result('getLiveQuote', TOOL_STATUS.ERROR, null, [], 'A symbol is required');
+
+  let circuitState = null;
   try {
-    const quote = await withTimeout(getStockService().getStock(normalized), 10000, 'getLiveQuote');
+    const { value: quote, cacheStatus } = await getOrCompute(
+      buildCacheKey('getLiveQuote', normalized),
+      CACHE_TTL_MS.LIVE_QUOTE,
+      async () => {
+        const outcome = await withBreaker('angel-one', () => withTimeout(
+          getStockService().getStock(normalized), boundedCallTimeout(10000, context), 'getLiveQuote', context.signal,
+        ));
+        circuitState = outcome.circuitState;
+        if (outcome.blocked) throw Object.assign(new Error('angel-one circuit is open'), { code: 'CIRCUIT_OPEN' });
+        return outcome.value;
+      },
+    );
     const evidence = [buildEvidenceRecord({
       claimType: 'LIVE_PRICE',
       symbol: normalized,
@@ -127,10 +207,12 @@ export const getLiveQuote = async ({ symbol }) => {
       publishedAt: quote.timestamp || new Date().toISOString(),
       excerpt: `Price ₹${quote.price}, change ${quote.changePct}% as of ${quote.timestamp}`,
     })].filter(Boolean);
-    return result('getLiveQuote', TOOL_STATUS.SUCCESS, quote, evidence);
+    return result('getLiveQuote', TOOL_STATUS.SUCCESS, quote, evidence, null, null, { cacheStatus, circuitState, cancellationMode: 'SOFT' });
   } catch (error) {
+    const meta = { circuitState, cancellationMode: 'SOFT' };
+    if (error.code === 'CANCELLED') return result('getLiveQuote', TOOL_STATUS.ERROR, null, [], 'Request was cancelled.', 'CANCELLED', meta);
     logger.warn(`[Tool] getLiveQuote(${normalized}) failed: ${error.message}`);
-    return result('getLiveQuote', TOOL_STATUS.UNAVAILABLE, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, error.errorCode || null);
+    return result('getLiveQuote', TOOL_STATUS.UNAVAILABLE, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, error.errorCode || (error.code === 'CIRCUIT_OPEN' ? 'CIRCUIT_OPEN' : null), meta);
   }
 };
 
@@ -153,11 +235,29 @@ const keyMetricExcerpt = (category, max = 8) => {
   return category.metrics.slice(0, max).map((m) => `${m.name}: ${m.value}`).join(', ');
 };
 
-export const getCompanyResearch = async ({ symbol }) => {
+// getCompanyResearch and getCompanyFinancials share the same underlying
+// IndianAPI bundle fetch (and its provider, so the same 'indian-api'
+// circuit breaker instance). CompanyResearchService already caches this
+// bundle in-process for 5 minutes — Phase 1 deliberately does NOT add a
+// second cache layer on top of that (redundant complexity, no real
+// speedup). IndianApiProvider's client has no signal parameter of its
+// own, so cancellation here is SOFT, same as getLiveQuote.
+const fetchResearchBundle = async (normalized, toolLabel, context) => {
+  const outcome = await withBreaker('indian-api', () => withTimeout(
+    getCompanyResearchBundle(normalized), boundedCallTimeout(15000, context), toolLabel, context?.signal,
+  ));
+  if (outcome.blocked) throw Object.assign(new Error('indian-api circuit is open'), { code: 'CIRCUIT_OPEN', circuitState: outcome.circuitState });
+  return { bundle: outcome.value, circuitState: outcome.circuitState };
+};
+
+export const getCompanyResearch = async ({ symbol }, context = {}) => {
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return result('getCompanyResearch', TOOL_STATUS.ERROR, null, [], 'A symbol is required');
+  let circuitState = null;
   try {
-    const bundle = await withTimeout(getCompanyResearchBundle(normalized), 15000, 'getCompanyResearch');
+    const fetched = await fetchResearchBundle(normalized, 'getCompanyResearch', context);
+    const { bundle } = fetched;
+    circuitState = fetched.circuitState;
     if (!bundle.configured) {
       return result('getCompanyResearch', TOOL_STATUS.UNAVAILABLE, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, 'CONFIGURATION_ERROR');
     }
@@ -223,36 +323,43 @@ export const getCompanyResearch = async ({ symbol }) => {
       }));
     }
 
+    const meta = { circuitState, cancellationMode: 'SOFT' };
     const filteredEvidence = evidence.filter(Boolean);
     if (filteredEvidence.length) {
-      return result('getCompanyResearch', TOOL_STATUS.SUCCESS, bundle, filteredEvidence);
+      return result('getCompanyResearch', TOOL_STATUS.SUCCESS, bundle, filteredEvidence, null, null, meta);
     }
     const outcome = deriveBundleOutcome(bundle.sections);
-    return result('getCompanyResearch', outcome.status, outcome.status === TOOL_STATUS.SUCCESS ? bundle : null, [], outcome.reason, outcome.errorCode);
+    return result('getCompanyResearch', outcome.status, outcome.status === TOOL_STATUS.SUCCESS ? bundle : null, [], outcome.reason, outcome.errorCode, meta);
   } catch (error) {
+    const meta = { circuitState: error.circuitState ?? circuitState, cancellationMode: 'SOFT' };
+    if (error.code === 'CANCELLED') return result('getCompanyResearch', TOOL_STATUS.ERROR, null, [], 'Request was cancelled.', 'CANCELLED', meta);
     logger.warn(`[Tool] getCompanyResearch(${normalized}) failed: ${error.message}`);
-    return result('getCompanyResearch', TOOL_STATUS.ERROR, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, error.errorCode || null);
+    return result('getCompanyResearch', TOOL_STATUS.ERROR, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, error.errorCode || (error.code === 'CIRCUIT_OPEN' ? 'CIRCUIT_OPEN' : null), meta);
   }
 };
 
-export const getCompanyFinancials = async ({ symbol }) => {
+export const getCompanyFinancials = async ({ symbol }, context = {}) => {
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return result('getCompanyFinancials', TOOL_STATUS.ERROR, null, [], 'A symbol is required');
+  let circuitState = null;
   try {
-    const bundle = await withTimeout(getCompanyResearchBundle(normalized), 15000, 'getCompanyFinancials');
+    const fetched = await fetchResearchBundle(normalized, 'getCompanyFinancials', context);
+    const { bundle } = fetched;
+    circuitState = fetched.circuitState;
     const section = bundle.sections.financials;
+    const meta = { circuitState, cancellationMode: 'SOFT' };
 
     if (!section.available) {
       const classified = classifyErrorCode(section.error?.code);
       return result(
         'getCompanyFinancials', classified ? TOOL_STATUS[classified.toolStatus] : TOOL_STATUS.UNAVAILABLE,
-        null, [], classified ? classified.reason : SAFE_REASONS.PROVIDER_UNAVAILABLE, section.error?.code || null,
+        null, [], classified ? classified.reason : SAFE_REASONS.PROVIDER_UNAVAILABLE, section.error?.code || null, meta,
       );
     }
 
     const entriesWithData = (section.data || []).filter((entry) => entry.lineItems?.length);
     if (!entriesWithData.length) {
-      return result('getCompanyFinancials', TOOL_STATUS.EMPTY, section.data || [], [], SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD, null);
+      return result('getCompanyFinancials', TOOL_STATUS.EMPTY, section.data || [], [], SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD, null, meta);
     }
 
     const evidence = entriesWithData.slice(0, 5).map((entry) => buildEvidenceRecord({
@@ -265,21 +372,36 @@ export const getCompanyFinancials = async ({ symbol }) => {
       excerpt: financialsExcerpt(entry),
     })).filter(Boolean);
 
-    return result('getCompanyFinancials', TOOL_STATUS.SUCCESS, entriesWithData, evidence);
+    return result('getCompanyFinancials', TOOL_STATUS.SUCCESS, entriesWithData, evidence, null, null, meta);
   } catch (error) {
+    const meta = { circuitState: error.circuitState ?? circuitState, cancellationMode: 'SOFT' };
+    if (error.code === 'CANCELLED') return result('getCompanyFinancials', TOOL_STATUS.ERROR, null, [], 'Request was cancelled.', 'CANCELLED', meta);
     logger.warn(`[Tool] getCompanyFinancials(${normalized}) failed: ${error.message}`);
-    return result('getCompanyFinancials', TOOL_STATUS.ERROR, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, error.errorCode || null);
+    return result('getCompanyFinancials', TOOL_STATUS.ERROR, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, error.errorCode || (error.code === 'CIRCUIT_OPEN' ? 'CIRCUIT_OPEN' : null), meta);
   }
 };
 
 // ---------------------------------------------------------------------------
 // getCompanyNews
 // ---------------------------------------------------------------------------
-export const getCompanyNews = async ({ symbol }) => {
+export const getCompanyNews = async ({ symbol }, context = {}) => {
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return result('getCompanyNews', TOOL_STATUS.ERROR, null, [], 'A symbol is required');
+  let circuitState = null;
   try {
-    const articles = await withTimeout(getStockNews(normalized, { days: 14 }), 12000, 'getCompanyNews');
+    const { value: articles, cacheStatus } = await getOrCompute(
+      buildCacheKey('getCompanyNews', normalized),
+      CACHE_TTL_MS.COMPANY_NEWS,
+      async () => {
+        const outcome = await withBreaker('news-api', () => withTimeout(
+          getStockNews(normalized, { days: 14 }), boundedCallTimeout(12000, context), 'getCompanyNews', context.signal,
+        ));
+        circuitState = outcome.circuitState;
+        if (outcome.blocked) throw Object.assign(new Error('news-api circuit is open'), { code: 'CIRCUIT_OPEN' });
+        return outcome.value;
+      },
+    );
+    const meta = { cacheStatus, circuitState, cancellationMode: 'SOFT' };
     const evidence = articles.slice(0, 5).map((article) => buildEvidenceRecord({
       claimType: 'COMPANY_NEWS',
       symbol: normalized,
@@ -289,21 +411,33 @@ export const getCompanyNews = async ({ symbol }) => {
       publishedAt: article.publishedAt,
       excerpt: article.description,
     })).filter(Boolean);
-    return result('getCompanyNews', articles.length ? TOOL_STATUS.SUCCESS : TOOL_STATUS.EMPTY, articles, evidence, articles.length ? null : SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD);
+    return result('getCompanyNews', articles.length ? TOOL_STATUS.SUCCESS : TOOL_STATUS.EMPTY, articles, evidence, articles.length ? null : SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD, null, meta);
   } catch (error) {
+    const meta = { circuitState, cancellationMode: 'SOFT' };
+    if (error.code === 'CANCELLED') return result('getCompanyNews', TOOL_STATUS.ERROR, null, [], 'Request was cancelled.', 'CANCELLED', meta);
     logger.warn(`[Tool] getCompanyNews(${normalized}) failed: ${error.message}`);
-    return result('getCompanyNews', TOOL_STATUS.UNAVAILABLE, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE);
+    return result('getCompanyNews', TOOL_STATUS.UNAVAILABLE, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, error.code === 'CIRCUIT_OPEN' ? 'CIRCUIT_OPEN' : null, meta);
   }
 };
 
 // ---------------------------------------------------------------------------
 // getEarningsTimeline / getManagementPromiseDetails
 // ---------------------------------------------------------------------------
-export const getEarningsTimeline = async ({ symbol }) => {
+// Mongo-backed (ManagementPromiseService), not an external rate-limited
+// provider in the same sense as Angel One/IndianAPI/NewsAPI — Phase 1
+// gives this a cache (a real, worthwhile speedup for repeated questions
+// about the same company) but deliberately no circuit breaker; see the
+// Phase 1 report's "remaining adapters" note.
+export const getEarningsTimeline = async ({ symbol }, context = {}) => {
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return result('getEarningsTimeline', TOOL_STATUS.ERROR, null, [], 'A symbol is required');
   try {
-    const timeline = await withTimeout(getCompanyTimeline(normalized), 10000, 'getEarningsTimeline');
+    const { value: timeline, cacheStatus } = await getOrCompute(
+      buildCacheKey('getEarningsTimeline', normalized),
+      CACHE_TTL_MS.EARNINGS_TIMELINE,
+      () => withTimeout(getCompanyTimeline(normalized), boundedCallTimeout(10000, context), 'getEarningsTimeline', context.signal),
+    );
+    const meta = { cacheStatus, cancellationMode: 'SOFT' };
     const evidence = timeline.promises.slice(0, 8).map((promise) => buildEvidenceRecord({
       claimType: 'PROMISE_OUTCOME',
       symbol: normalized,
@@ -315,10 +449,11 @@ export const getEarningsTimeline = async ({ symbol }) => {
       excerpt: promise.evidence?.excerpt || null,
       pageNumber: promise.evidence?.page || null,
     })).filter(Boolean);
-    return result('getEarningsTimeline', timeline.promises.length ? TOOL_STATUS.SUCCESS : TOOL_STATUS.EMPTY, timeline, evidence, timeline.promises.length ? null : SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD);
+    return result('getEarningsTimeline', timeline.promises.length ? TOOL_STATUS.SUCCESS : TOOL_STATUS.EMPTY, timeline, evidence, timeline.promises.length ? null : SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD, null, meta);
   } catch (error) {
+    if (error.code === 'CANCELLED') return result('getEarningsTimeline', TOOL_STATUS.ERROR, null, [], 'Request was cancelled.', 'CANCELLED', { cancellationMode: 'SOFT' });
     logger.warn(`[Tool] getEarningsTimeline(${normalized}) failed: ${error.message}`);
-    return result('getEarningsTimeline', TOOL_STATUS.UNAVAILABLE, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE);
+    return result('getEarningsTimeline', TOOL_STATUS.UNAVAILABLE, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, null, { cancellationMode: 'SOFT' });
   }
 };
 
@@ -354,11 +489,24 @@ export const getManagementPromiseDetails = async ({ promiseId, symbol, metric, p
 // ---------------------------------------------------------------------------
 // searchResearchDocuments
 // ---------------------------------------------------------------------------
-export const searchResearchDocuments = async ({ symbol }) => {
+// Not wrapped in a circuit breaker this phase (see Phase 1 report's
+// "remaining adapters") — collectDocuments fans out across multiple
+// underlying sources (BSE filings, durable storage) rather than one
+// single external provider boundary the way Angel One/IndianAPI/NewsAPI
+// are; it does get the same request-deadline-aware timeout and a cache,
+// since a repeated question about the same company shouldn't re-run the
+// whole discovery/extraction pipeline within the TTL window.
+export const searchResearchDocuments = async ({ symbol }, context = {}) => {
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return result('searchResearchDocuments', TOOL_STATUS.ERROR, null, [], 'A symbol is required');
   try {
-    const { documents } = await withTimeout(collectDocuments(normalized), 25000, 'searchResearchDocuments');
+    const { value: collected, cacheStatus } = await getOrCompute(
+      buildCacheKey('searchResearchDocuments', normalized),
+      CACHE_TTL_MS.RESEARCH_DOCUMENTS,
+      () => withTimeout(collectDocuments(normalized), boundedCallTimeout(25000, context), 'searchResearchDocuments', context.signal),
+    );
+    const { documents } = collected;
+    const meta = { cacheStatus, cancellationMode: 'SOFT' };
     const evidence = documents.slice(0, 8).map((doc) => buildEvidenceRecord({
       claimType: 'DOCUMENT_EXCERPT',
       symbol: normalized,
@@ -371,11 +519,12 @@ export const searchResearchDocuments = async ({ symbol }) => {
     })).filter(Boolean);
     return result(
       'searchResearchDocuments', documents.length ? TOOL_STATUS.SUCCESS : TOOL_STATUS.EMPTY,
-      documents.slice(0, 15), evidence, documents.length ? null : SAFE_REASONS.EVIDENCE_SOURCE_UNAVAILABLE,
+      documents.slice(0, 15), evidence, documents.length ? null : SAFE_REASONS.EVIDENCE_SOURCE_UNAVAILABLE, null, meta,
     );
   } catch (error) {
+    if (error.code === 'CANCELLED') return result('searchResearchDocuments', TOOL_STATUS.ERROR, null, [], 'Request was cancelled.', 'CANCELLED', { cancellationMode: 'SOFT' });
     logger.warn(`[Tool] searchResearchDocuments(${normalized}) failed: ${error.message}`);
-    return result('searchResearchDocuments', TOOL_STATUS.UNAVAILABLE, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE);
+    return result('searchResearchDocuments', TOOL_STATUS.UNAVAILABLE, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, null, { cancellationMode: 'SOFT' });
   }
 };
 
@@ -442,13 +591,13 @@ export const getPortfolio = async ({}, { userId } = {}) => {
 // trends" had no usable evidence: getCompanyResearch's evidence never
 // included the financials section).
 // ---------------------------------------------------------------------------
-export const compareStocks = async ({ symbols }) => {
+export const compareStocks = async ({ symbols }, context = {}) => {
   const list = (Array.isArray(symbols) ? symbols : [symbols]).map(normalizeSymbol).filter(Boolean).slice(0, 4);
   if (list.length < 2) return result('compareStocks', TOOL_STATUS.ERROR, null, [], 'At least two symbols are required to compare.');
 
   const perSymbol = await Promise.all(list.map(async (symbol) => {
     const [quoteResult, researchResult, financialsResult] = await Promise.all([
-      getLiveQuote({ symbol }), getCompanyResearch({ symbol }), getCompanyFinancials({ symbol }),
+      getLiveQuote({ symbol }, context), getCompanyResearch({ symbol }, context), getCompanyFinancials({ symbol }, context),
     ]);
     return {
       symbol, quote: quoteResult, research: researchResult, financials: financialsResult,

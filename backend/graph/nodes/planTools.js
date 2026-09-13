@@ -1,9 +1,8 @@
-import { zodResponseFormat } from 'openai/helpers/zod';
 import { OpenAIClientFactory, LLM_CONFIG } from '../../llm/OpenAIClientFactory.js';
-import { mapOpenAIError } from '../../llm/errors.js';
 import { ToolPlanSchema, APPROVED_TOOLS } from '../schemas.js';
 import { toolPlanPrompt } from '../prompts/index.js';
 import { AUTH_REQUIRED_TOOLS } from '../tools/toolRegistry.js';
+import { invokeRoutingModel } from '../llmInvoke.js';
 import { logger } from '../../utils/logger.js';
 
 export const MAX_TOOL_CALLS_PER_REQUEST = 4;
@@ -123,31 +122,33 @@ export const planTools = async (state) => {
   const warnings = [];
 
   let plan = deterministicPlan(state.intent, state.entities, text);
+  const llmCalls = [];
 
   if (plan === null) {
     if (!OpenAIClientFactory.isConfigured()) {
       plan = [];
     } else {
-      try {
-        const client = OpenAIClientFactory.getClient();
-        const response = await client.chat.completions.parse({
-          model: LLM_CONFIG.chatModel,
-          temperature: 0,
-          max_tokens: 400,
-          messages: [{ role: 'user', content: toolPlanPrompt(text, state.intent, state.entities) }],
-          response_format: zodResponseFormat(ToolPlanSchema, 'tool_plan'),
-        });
-        const parsed = response.choices?.[0]?.message?.parsed;
+      const { parsed, error, diagnostic } = await invokeRoutingModel({
+        node: 'planTools',
+        model: LLM_CONFIG.routingModel,
+        maxTokens: 400,
+        schema: ToolPlanSchema,
+        schemaName: 'tool_plan',
+        prompt: toolPlanPrompt(text, state.intent, state.entities),
+        signal: state.abortSignal,
+        deadlineAt: state.deadlineAt,
+      });
+      llmCalls.push(diagnostic);
+      if (parsed) {
         // Strip the schema's nullable placeholders down to the fields a
         // tool actually got — see schemas.js's ToolArgsSchema note on why
         // args can't be a free-form map under OpenAI strict mode.
-        plan = (parsed?.tools || []).map((t) => ({
+        plan = (parsed.tools || []).map((t) => ({
           tool: t.tool,
           args: Object.fromEntries(Object.entries(t.args || {}).filter(([, v]) => v !== null)),
         }));
-      } catch (error) {
-        const mapped = mapOpenAIError(error, { operation: 'planTools' });
-        logger.warn(`[Graph] planTools LLM fallback failed: ${mapped.message}`);
+      } else {
+        logger.warn(`[Graph] planTools LLM fallback failed: ${error}`);
         plan = [];
       }
     }
@@ -160,7 +161,7 @@ export const planTools = async (state) => {
     plan = plan.slice(0, MAX_TOOL_CALLS_PER_REQUEST);
   }
 
-  return { toolPlan: plan, warnings };
+  return { toolPlan: plan, warnings, llmCalls };
 };
 
 export default planTools;

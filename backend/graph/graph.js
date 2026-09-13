@@ -12,6 +12,7 @@ import { composeAnswer } from './nodes/composeAnswer.js';
 import { validateFinalAnswer } from './nodes/validateFinalAnswer.js';
 import { logDiagnostics } from './nodes/logDiagnostics.js';
 import { saveMemory } from './nodes/saveMemory.js';
+import { withNodeTiming } from './timing.js';
 
 /**
  * graph.js
@@ -34,18 +35,22 @@ import { saveMemory } from './nodes/saveMemory.js';
 
 const builder = new StateGraph(GraphState);
 
-builder.addNode('validateInput', validateInput);
-builder.addNode('loadThreadMemory', loadThreadMemory);
-builder.addNode('loadUserContext', loadUserContext);
-builder.addNode('classifyIntent', classifyIntent);
-builder.addNode('extractEntities', extractEntities);
-builder.addNode('planTools', planTools);
-builder.addNode('executeTools', executeTools);
-builder.addNode('validateEvidence', validateEvidence);
-builder.addNode('composeAnswer', composeAnswer);
-builder.addNode('validateFinalAnswer', validateFinalAnswer);
-builder.addNode('logDiagnostics', logDiagnostics);
-builder.addNode('saveMemory', saveMemory);
+// Every node is wrapped with withNodeTiming (Phase 1 observability) so
+// state.nodeTimings covers all 12 nodes uniformly — including the ones
+// that never call an LLM — without repeating start/end timestamp
+// boilerplate inside each node file.
+builder.addNode('validateInput', withNodeTiming('validateInput', validateInput));
+builder.addNode('loadThreadMemory', withNodeTiming('loadThreadMemory', loadThreadMemory));
+builder.addNode('loadUserContext', withNodeTiming('loadUserContext', loadUserContext));
+builder.addNode('classifyIntent', withNodeTiming('classifyIntent', classifyIntent));
+builder.addNode('extractEntities', withNodeTiming('extractEntities', extractEntities));
+builder.addNode('planTools', withNodeTiming('planTools', planTools));
+builder.addNode('executeTools', withNodeTiming('executeTools', executeTools));
+builder.addNode('validateEvidence', withNodeTiming('validateEvidence', validateEvidence));
+builder.addNode('composeAnswer', withNodeTiming('composeAnswer', composeAnswer));
+builder.addNode('validateFinalAnswer', withNodeTiming('validateFinalAnswer', validateFinalAnswer));
+builder.addNode('logDiagnostics', withNodeTiming('logDiagnostics', logDiagnostics));
+builder.addNode('saveMemory', withNodeTiming('saveMemory', saveMemory));
 
 builder.addEdge(START, 'validateInput');
 

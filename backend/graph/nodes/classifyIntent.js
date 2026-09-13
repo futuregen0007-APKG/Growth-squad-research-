@@ -1,9 +1,8 @@
-import { zodResponseFormat } from 'openai/helpers/zod';
 import { OpenAIClientFactory, LLM_CONFIG } from '../../llm/OpenAIClientFactory.js';
-import { mapOpenAIError } from '../../llm/errors.js';
 import { IntentSchema } from '../schemas.js';
 import { intentPrompt } from '../prompts/index.js';
 import { SUPPORTED_STOCKS, INDEX_SYMBOLS } from '../../utils/constants.js';
+import { invokeRoutingModel, SKIPPED_NO_BUDGET } from '../llmInvoke.js';
 import { logger } from '../../utils/logger.js';
 
 const KNOWN_SYMBOLS = new Set(Object.keys(SUPPORTED_STOCKS));
@@ -95,34 +94,37 @@ export const classifyIntent = async (state) => {
     return { intent: 'UNSUPPORTED', intentConfidence: 0, warnings: ['GS Copilot is not configured (missing OpenAI API key).'] };
   }
 
-  const attempt = async () => {
-    const client = OpenAIClientFactory.getClient();
-    const response = await client.chat.completions.parse({
-      model: LLM_CONFIG.chatModel,
-      temperature: 0,
-      max_tokens: 200,
-      messages: [{ role: 'user', content: intentPrompt(text, state.conversationSummary, state.activeEntities) }],
-      response_format: zodResponseFormat(IntentSchema, 'intent_classification'),
-    });
-    const parsed = response.choices?.[0]?.message?.parsed;
-    if (!parsed) throw new Error('Model returned no parsed intent.');
-    return parsed;
-  };
+  const attempt = () => invokeRoutingModel({
+    node: 'classifyIntent',
+    model: LLM_CONFIG.routingModel,
+    maxTokens: 200,
+    schema: IntentSchema,
+    schemaName: 'intent_classification',
+    prompt: intentPrompt(text, state.conversationSummary, state.activeEntities),
+    signal: state.abortSignal,
+    deadlineAt: state.deadlineAt,
+  });
 
-  try {
-    const parsed = await attempt();
-    return { intent: parsed.intent, intentConfidence: parsed.confidence };
-  } catch (firstError) {
-    logger.warn(`[Graph] classifyIntent first attempt failed: ${firstError.message}. Retrying once.`);
-    try {
-      const parsed = await attempt();
-      return { intent: parsed.intent, intentConfidence: parsed.confidence };
-    } catch (secondError) {
-      const mapped = mapOpenAIError(secondError, { operation: 'classifyIntent' });
-      logger.warn(`[Graph] classifyIntent failed after retry: ${mapped.message}`);
-      return { intent: 'UNSUPPORTED', intentConfidence: 0, warnings: ['Could not classify your question — please try rephrasing it.'] };
-    }
+  const first = await attempt();
+  if (first.parsed) {
+    return { intent: first.parsed.intent, intentConfidence: first.parsed.confidence, llmCalls: [first.diagnostic] };
   }
+  if (first.error === 'CANCELLED' || first.error === SKIPPED_NO_BUDGET) {
+    return { intent: 'UNSUPPORTED', intentConfidence: 0, llmCalls: [first.diagnostic], warnings: ['Ran out of time understanding your question — please try again.'] };
+  }
+
+  logger.warn(`[Graph] classifyIntent first attempt failed (${first.error}). Retrying once.`);
+  const second = await attempt();
+  if (second.parsed) {
+    return { intent: second.parsed.intent, intentConfidence: second.parsed.confidence, llmCalls: [first.diagnostic, second.diagnostic] };
+  }
+  logger.warn(`[Graph] classifyIntent failed after retry (${second.error}).`);
+  return {
+    intent: 'UNSUPPORTED',
+    intentConfidence: 0,
+    llmCalls: [first.diagnostic, second.diagnostic],
+    warnings: [second.error === 'CANCELLED' ? 'Generation was stopped.' : 'Could not classify your question — please try rephrasing it.'],
+  };
 };
 
 export default classifyIntent;

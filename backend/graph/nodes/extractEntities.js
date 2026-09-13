@@ -1,9 +1,8 @@
-import { zodResponseFormat } from 'openai/helpers/zod';
 import { OpenAIClientFactory, LLM_CONFIG } from '../../llm/OpenAIClientFactory.js';
-import { mapOpenAIError } from '../../llm/errors.js';
 import { EntitiesSchema } from '../schemas.js';
 import { entitiesPrompt } from '../prompts/index.js';
 import { SUPPORTED_STOCKS, INDEX_SYMBOLS } from '../../utils/constants.js';
+import { invokeRoutingModel } from '../llmInvoke.js';
 import { logger } from '../../utils/logger.js';
 
 const KNOWN_SYMBOLS = new Set(Object.keys(SUPPORTED_STOCKS));
@@ -75,29 +74,30 @@ export const extractEntities = async (state) => {
     return { entities: { symbols: symbolsFromText, companyNames: [], periods: periodsFromText, comparisonMode: false } };
   }
 
-  try {
-    const client = OpenAIClientFactory.getClient();
-    const response = await client.chat.completions.parse({
-      model: LLM_CONFIG.chatModel,
-      temperature: 0,
-      max_tokens: 300,
-      messages: [{ role: 'user', content: entitiesPrompt(text, state.activeEntities) }],
-      response_format: zodResponseFormat(EntitiesSchema, 'entity_extraction'),
-    });
-    const parsed = response.choices?.[0]?.message?.parsed;
-    if (!parsed) throw new Error('Model returned no parsed entities.');
+  const { parsed, error, diagnostic } = await invokeRoutingModel({
+    node: 'extractEntities',
+    model: LLM_CONFIG.routingModel,
+    maxTokens: 300,
+    schema: EntitiesSchema,
+    schemaName: 'entity_extraction',
+    prompt: entitiesPrompt(text, state.activeEntities),
+    signal: state.abortSignal,
+    deadlineAt: state.deadlineAt,
+  });
+
+  if (parsed) {
     // Union deterministic symbol/period matches with the model's — belt-and-braces.
     const symbols = [...new Set([...symbolsFromText, ...parsed.symbols.map((s) => s.toUpperCase())])];
     const periods = [...new Set([...periodsFromText, ...parsed.periods])];
-    return { entities: { ...parsed, symbols, periods } };
-  } catch (error) {
-    const mapped = mapOpenAIError(error, { operation: 'extractEntities' });
-    logger.warn(`[Graph] extractEntities failed: ${mapped.message}`);
-    return {
-      entities: { symbols: symbolsFromText, companyNames: [], periods: periodsFromText, comparisonMode: false },
-      warnings: symbolsFromText.length ? [] : ['Could not resolve which company you meant — please name it directly.'],
-    };
+    return { entities: { ...parsed, symbols, periods }, llmCalls: [diagnostic] };
   }
+
+  logger.warn(`[Graph] extractEntities failed: ${error}`);
+  return {
+    entities: { symbols: symbolsFromText, companyNames: [], periods: periodsFromText, comparisonMode: false },
+    llmCalls: [diagnostic],
+    warnings: symbolsFromText.length || error === 'CANCELLED' ? [] : ['Could not resolve which company you meant — please name it directly.'],
+  };
 };
 
 export default extractEntities;

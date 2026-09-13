@@ -9,16 +9,28 @@ import ChatMessage from '../models/ChatMessage.js';
 const USER_ID = new mongoose.Types.ObjectId().toString();
 const THREAD_ID = new mongoose.Types.ObjectId().toString();
 
-/** A minimal fake Express response that captures SSE frames written to it. */
+/**
+ * A minimal fake Express response that captures SSE frames written to it.
+ * `on`/`writableEnded` mirror real http.ServerResponse: the controller
+ * listens for res's own 'close' event (not req's -- see ChatController.js's
+ * note on why req.on('close') fires as soon as the request body is fully
+ * read, long before any response completes) to detect a genuine client
+ * disconnect, guarded by writableEnded so a normal end() is never
+ * misread as one.
+ */
 const makeFakeRes = () => {
   const frames = [];
   let ended = false;
+  const closeHandlers = [];
   return {
     frames,
     ended: () => ended,
+    get writableEnded() { return ended; },
     writeHead: () => {},
     write: (chunk) => { frames.push(chunk); },
     end: () => { ended = true; },
+    on: (event, handler) => { if (event === 'close') closeHandlers.push(handler); },
+    emitClose: () => closeHandlers.forEach((h) => h()),
     json: function json(body) { this.jsonBody = body; return this; },
     status: function status(code) { this.statusCode = code; return this; },
   };
@@ -151,25 +163,42 @@ test('a duplicate clientMessageId returns the existing message instead of runnin
 test('a client disconnect mid-stream stops further writes after the abort is detected', async () => {
   const restoreDb = installDbMocks();
   const originalInvoke = graph.invoke;
+  const res = makeFakeRes();
 
-  let closeHandler = null;
   graph.invoke = async ({ onEvent, aborted }) => {
     onEvent({ type: 'token', token: 'partial' });
-    closeHandler(); // simulate the client disconnecting mid-generation
+    res.emitClose(); // simulate the client disconnecting mid-generation (res's 'close', not req's -- see ChatController.js)
     assert.equal(aborted(), true);
     return { answer: 'partial', citations: [] };
   };
 
   try {
-    const req = makeFakeReq({
-      params: { threadId: THREAD_ID },
-      body: { message: 'Hi' },
-      on: (event, handler) => { if (event === 'close') closeHandler = handler; },
-    });
-    const res = makeFakeRes();
+    const req = makeFakeReq({ params: { threadId: THREAD_ID }, body: { message: 'Hi' } });
     await sendMessage(req, res, (err) => { throw err; });
     const events = parseFrames(res.frames).map((e) => e.type);
     assert.ok(!events.includes('message.completed'), 'must not send message.completed after the client disconnected');
+  } finally {
+    restoreDb();
+    graph.invoke = originalInvoke;
+  }
+});
+
+test('res emitting close AFTER the response has already ended (writableEnded) is never misread as a disconnect', async () => {
+  const restoreDb = installDbMocks();
+  const originalInvoke = graph.invoke;
+  const res = makeFakeRes();
+  let observedAborted = null;
+
+  graph.invoke = async ({ aborted }) => {
+    observedAborted = aborted;
+    return { answer: 'complete answer', citations: [] };
+  };
+
+  try {
+    const req = makeFakeReq({ params: { threadId: THREAD_ID }, body: { message: 'Hi' } });
+    await sendMessage(req, res, (err) => { throw err; });
+    res.emitClose(); // a normal end-of-response 'close' firing after the fact -- a real Node ServerResponse does this too
+    assert.equal(observedAborted(), false, 'a close event after the response already ended must never be treated as a client disconnect');
   } finally {
     restoreDb();
     graph.invoke = originalInvoke;

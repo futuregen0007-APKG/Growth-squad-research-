@@ -25,11 +25,15 @@ dotenv.config();
  * This factory is a separate client instance because GS Copilot needs its
  * own configurable timeout/model set; both read the same underlying key.
  *
- * Conceptual roles (all served by ONE OpenAI client — the SDK has a single
- * client object and model selection happens per-call, not per-instance):
- *   - main reasoning/chat model      → LLM_CONFIG.chatModel
- *   - structured-output model        → LLM_CONFIG.chatModel (via response_format)
- *   - lower-cost summarization model → LLM_CONFIG.summaryModel
+ * Conceptual roles — Phase 1 gives each an independently configurable
+ * model (previously all three resolved to the same value by construction):
+ *   - routing model   (classifyIntent, extractEntities, planTools) → LLM_CONFIG.routingModel
+ *   - synthesis model  (composeAnswer)                              → LLM_CONFIG.synthesisModel
+ *   - summary model    (preference detection, conversation summary) → LLM_CONFIG.summaryModel
+ * All three may be pointed at the same model via configuration (the
+ * default) — nothing requires them to differ. `chatModel` is kept as a
+ * deprecated alias of `routingModel` for backward compatibility with any
+ * existing caller/env var (OPENAI_CHAT_MODEL still works).
  */
 
 // Conservative defaults: 'gpt-4o-mini' is the model already proven to work
@@ -40,7 +44,14 @@ const DEFAULT_CHAT_MODEL = 'gpt-4o-mini';
 const DEFAULT_SUMMARY_MODEL = 'gpt-4o-mini';
 
 export const LLM_CONFIG = {
-  get chatModel() { return process.env.OPENAI_CHAT_MODEL || DEFAULT_CHAT_MODEL; },
+  // OPENAI_ROUTING_MODEL / OPENAI_SYNTHESIS_MODEL are the new, explicit
+  // per-role env vars. OPENAI_CHAT_MODEL (the original, single var) is
+  // preserved as the fallback for BOTH roles when the new ones aren't set —
+  // an existing deployment's env config keeps working unchanged.
+  get routingModel() { return process.env.OPENAI_ROUTING_MODEL || process.env.OPENAI_CHAT_MODEL || DEFAULT_CHAT_MODEL; },
+  get synthesisModel() { return process.env.OPENAI_SYNTHESIS_MODEL || process.env.OPENAI_CHAT_MODEL || DEFAULT_CHAT_MODEL; },
+  /** @deprecated use routingModel (or synthesisModel for composeAnswer) — kept only so any caller not yet migrated still resolves a real model. */
+  get chatModel() { return this.routingModel; },
   get summaryModel() { return process.env.OPENAI_SUMMARY_MODEL || DEFAULT_SUMMARY_MODEL; },
   get temperature() {
     const value = Number(process.env.OPENAI_TEMPERATURE);

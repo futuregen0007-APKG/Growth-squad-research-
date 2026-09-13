@@ -2,7 +2,10 @@ import { OpenAIClientFactory, LLM_CONFIG } from '../../llm/OpenAIClientFactory.j
 import { mapOpenAIError } from '../../llm/errors.js';
 import { buildSystemPrompt, answerComposerPrompt } from '../prompts/index.js';
 import { SAFE_REASONS } from '../safeReasons.js';
+import { boundedTimeout, hasBudgetFor } from '../requestBudget.js';
 import { logger } from '../../utils/logger.js';
+
+const MIN_COMPOSE_BUDGET_MS = 500;
 
 const CITATION_MARKER_PATTERN = /\[(\d+)\]/g;
 
@@ -62,6 +65,15 @@ export const composeAnswer = async (state) => {
       ? `${GENERAL_EDUCATION_SYSTEM_NOTE}\n\nUser question: "${text}"`
       : answerComposerPrompt({ message: text, conversationSummary: state.conversationSummary, evidence: state.evidence, toolResults: state.toolResults, warnings: state.warnings });
 
+  // Never start a synthesis call with essentially no budget left — a
+  // partial-evidence, honest "ran out of time" answer beats hanging past
+  // the turn's total deadline.
+  if (!hasBudgetFor(state.deadlineAt, MIN_COMPOSE_BUDGET_MS)) {
+    const answer = 'I ran out of time gathering everything for this answer — please try again.';
+    if (state.onEvent) state.onEvent({ type: 'token', token: answer });
+    return { answer, citations: [], warnings: ['Response generation skipped: request deadline exhausted.'], llmCalls: [{ node: 'composeAnswer', role: 'synthesis', model: LLM_CONFIG.synthesisModel, durationMs: 0, timedOut: false, skipped: 'SKIPPED_NO_BUDGET' }] };
+  }
+
   const systemPrompt = buildSystemPrompt(state.userContext);
   if (state.onEvent) state.onEvent({ type: 'status', message: 'Writing response…' });
 
@@ -72,10 +84,23 @@ export const composeAnswer = async (state) => {
     content: m.content,
   }));
 
+  const model = LLM_CONFIG.synthesisModel;
+  const startedAt = Date.now();
+  // Real cancellation: a controller-provided AbortSignal (client
+  // disconnect or the request's total deadline — see ChatController.js)
+  // is combined with a local timer bounded to whatever's left of the
+  // budget, so composeAnswer never waits past either. The existing
+  // per-chunk state.aborted?.() poll is kept as a second, redundant
+  // safety net for a stream that's already producing tokens.
+  const timeoutMs = boundedTimeout(LLM_CONFIG.timeoutMs, state.deadlineAt);
+  const localController = new AbortController();
+  const combinedSignal = state.abortSignal ? AbortSignal.any([state.abortSignal, localController.signal]) : localController.signal;
+  const timer = setTimeout(() => localController.abort(), timeoutMs);
+
   try {
     const client = OpenAIClientFactory.getClient();
     const stream = await client.chat.completions.create({
-      model: LLM_CONFIG.chatModel,
+      model,
       temperature: LLM_CONFIG.temperature,
       max_tokens: LLM_CONFIG.maxOutputTokens,
       stream: true,
@@ -85,7 +110,7 @@ export const composeAnswer = async (state) => {
         ...historyMessages,
         { role: 'user', content: userPrompt },
       ],
-    });
+    }, { signal: combinedSignal });
 
     let full = '';
     let tokenUsage = null;
@@ -109,16 +134,27 @@ export const composeAnswer = async (state) => {
     }
 
     const citations = extractCitations(full, state.evidence);
-    return { answer: full, citations, tokenUsage };
+    const llmCalls = [{
+      node: 'composeAnswer', role: 'synthesis', model, durationMs: Date.now() - startedAt, timedOut: false,
+      inputTokens: tokenUsage?.inputTokens ?? null, outputTokens: tokenUsage?.outputTokens ?? null,
+    }];
+    return { answer: full, citations, tokenUsage, llmCalls };
   } catch (error) {
-    if (error?.isAbort || error?.name === 'APIUserAbortError') {
-      return { answer: null, citations: [], warnings: ['Generation was stopped.'] };
+    const timedOut = error?.isAbort || error?.name === 'APIUserAbortError' || combinedSignal.aborted;
+    const llmCalls = [{ node: 'composeAnswer', role: 'synthesis', model, durationMs: Date.now() - startedAt, timedOut }];
+    if (timedOut) {
+      // A caller-initiated cancellation (client disconnect / deadline) is
+      // never reported as a provider failure — mapOpenAIError is only for
+      // a genuine SDK/provider error below.
+      return { answer: null, citations: [], warnings: ['Generation was stopped.'], llmCalls };
     }
     const mapped = mapOpenAIError(error, { operation: 'composeAnswer' });
     logger.warn(`[Graph] composeAnswer failed: ${mapped.message}`);
     const answer = 'I ran into a problem generating a response just now. Please try again.';
     if (state.onEvent) state.onEvent({ type: 'token', token: answer });
-    return { answer, citations: [], errors: [mapped.message] };
+    return { answer, citations: [], errors: [mapped.message], llmCalls };
+  } finally {
+    clearTimeout(timer);
   }
 };
 

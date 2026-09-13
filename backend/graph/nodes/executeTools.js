@@ -1,4 +1,6 @@
 import { TOOL_REGISTRY } from '../tools/toolRegistry.js';
+import { fingerprintToolCall } from '../toolFingerprint.js';
+import { hasBudgetFor } from '../requestBudget.js';
 import { logger } from '../../utils/logger.js';
 
 const STATUS_LABEL = Object.freeze({
@@ -14,73 +16,129 @@ const STATUS_LABEL = Object.freeze({
   compareStocks: 'Comparing companies…',
 });
 
+// A tool call needs at least this much remaining budget to be worth
+// attempting at all — well below any tool's natural timeout (10-25s), so
+// this only skips work when the deadline is genuinely almost/already gone,
+// never a normal in-budget request.
+const MIN_TOOL_BUDGET_MS = 300;
+
+const budgetExhaustedResult = (toolName) => ({
+  tool: toolName, status: 'ERROR', data: null, evidence: [],
+  resultCount: 0, evidenceCount: 0, errorCode: 'DEADLINE_EXCEEDED',
+  fetchedAt: new Date().toISOString(), warning: 'Ran out of time before this could be checked.',
+});
+
 /**
- * executeTools - runs every planned tool call in parallel
+ * executeTools - runs every DISTINCT planned tool call in parallel
  * (Promise.allSettled — Phase 11's "parallel independent tools"). One
  * tool throwing/rejecting never discards the others' results.
+ *
+ * Phase 1 additions:
+ *  - request-local deduplication: two planned steps with the same
+ *    normalizedToolName+canonicalArgs fingerprint (e.g. the live-observed
+ *    duplicate getCompanyFinancials calls) execute the underlying tool
+ *    exactly once and share its result/evidence — never duplicated evidence
+ *    records, never a second real provider call. Every originally-planned
+ *    step still gets its own tool.started/tool.completed SSE events (the
+ *    frontend's contract is unchanged), and state.deduplicatedToolCalls
+ *    records which fingerprints were collapsed, for diagnostics.
+ *  - deadline awareness: a step is not even attempted once the request's
+ *    remaining budget is below MIN_TOOL_BUDGET_MS — it comes back as a
+ *    safe DEADLINE_EXCEEDED result instead of hanging past the turn's
+ *    total time budget.
+ *  - cancellation: state.abortSignal is passed into every tool's context
+ *    so tools/providers that support it can be genuinely aborted (see
+ *    toolRegistry.js); tools that can't still stop *awaiting* it safely.
  */
 export const executeTools = async (state) => {
   if (state.errors.length || !state.toolPlan.length) return {};
 
-  const settled = await Promise.allSettled(
-    state.toolPlan.map((step) => {
+  const steps = state.toolPlan;
+  const fingerprints = steps.map(fingerprintToolCall);
+  const firstIndexByFingerprint = new Map();
+  fingerprints.forEach((fp, i) => { if (!firstIndexByFingerprint.has(fp)) firstIndexByFingerprint.set(fp, i); });
+  const uniqueIndexes = [...firstIndexByFingerprint.values()];
+  const deduplicatedToolCalls = steps
+    .map((step, i) => ({ step, i, fingerprint: fingerprints[i] }))
+    .filter(({ i, fingerprint }) => firstIndexByFingerprint.get(fingerprint) !== i)
+    .map(({ step, fingerprint }) => ({ tool: step.tool, fingerprint }));
+
+  if (state.onEvent) {
+    steps.forEach((step) => {
+      state.onEvent({ type: 'tool.started', tool: step.tool });
+      state.onEvent({ type: 'status', message: STATUS_LABEL[step.tool] || 'Gathering information…' });
+    });
+  }
+
+  const context = { userId: state.userId, signal: state.abortSignal, deadlineAt: state.deadlineAt };
+
+  const settledByIndex = new Map();
+  await Promise.allSettled(
+    uniqueIndexes.map(async (index) => {
+      const step = steps[index];
       const fn = TOOL_REGISTRY[step.tool];
       if (!fn) {
-        return Promise.resolve({
-          tool: step.tool, status: 'ERROR', data: null, evidence: [],
-          resultCount: 0, evidenceCount: 0, errorCode: 'UNKNOWN_TOOL',
-          fetchedAt: new Date().toISOString(), warning: 'Unknown tool.',
-        });
+        settledByIndex.set(index, { status: 'fulfilled', value: { tool: step.tool, status: 'ERROR', data: null, evidence: [], resultCount: 0, evidenceCount: 0, errorCode: 'UNKNOWN_TOOL', fetchedAt: new Date().toISOString(), warning: 'Unknown tool.' } });
+        return;
       }
-      if (state.onEvent) {
-        state.onEvent({ type: 'tool.started', tool: step.tool });
-        state.onEvent({ type: 'status', message: STATUS_LABEL[step.tool] || 'Gathering information…' });
+      if (!hasBudgetFor(state.deadlineAt, MIN_TOOL_BUDGET_MS)) {
+        settledByIndex.set(index, { status: 'fulfilled', value: budgetExhaustedResult(step.tool) });
+        return;
       }
-      return fn(step.args, { userId: state.userId });
+      const startedAt = Date.now();
+      try {
+        const value = await fn(step.args, context);
+        settledByIndex.set(index, { status: 'fulfilled', value: { ...value, durationMs: Date.now() - startedAt } });
+      } catch (reason) {
+        settledByIndex.set(index, { status: 'rejected', reason, durationMs: Date.now() - startedAt });
+      }
     }),
   );
 
   const toolResults = [];
-  const evidence = [];
+  const evidenceByFingerprint = new Map();
   const warnings = [];
 
-  // ERROR must never be silently reported as EMPTY — the event emitted
-  // here always carries the tool's OWN determined status/errorCode
-  // verbatim (see toolRegistry.js's deriveBundleOutcome/classifyErrorCode:
-  // that's where the real ERROR vs EMPTY vs UNAVAILABLE vs UNSUPPORTED
-  // decision is made, once, based on the actual provider error code —
-  // this node just relays it, including to the dev-only frontend tool
-  // activity panel via resultCount/evidenceCount/errorCode).
-  settled.forEach((outcome, index) => {
-    const toolName = state.toolPlan[index].tool;
+  steps.forEach((step, index) => {
+    const masterIndex = firstIndexByFingerprint.get(fingerprints[index]);
+    const outcome = settledByIndex.get(masterIndex);
+    const isDeduplicated = masterIndex !== index;
+
+    let toolResult;
     if (outcome.status === 'fulfilled') {
-      const toolResult = outcome.value;
-      toolResults.push(toolResult);
-      evidence.push(...(toolResult.evidence || []));
-      if (state.onEvent) {
-        state.onEvent({
-          type: 'tool.completed', tool: toolName, status: toolResult.status,
-          resultCount: toolResult.resultCount ?? 0, evidenceCount: toolResult.evidenceCount ?? 0,
-          errorCode: toolResult.errorCode ?? null,
-        });
-      }
-      if (toolResult.warning) warnings.push(toolResult.warning);
+      toolResult = { ...outcome.value, deduplicated: isDeduplicated };
     } else {
-      logger.warn(`[Graph] tool ${toolName} rejected: ${outcome.reason?.message}`);
-      const failed = {
-        tool: toolName, status: 'ERROR', data: null, evidence: [],
+      logger.warn(`[Graph] tool ${step.tool} rejected: ${outcome.reason?.message}`);
+      toolResult = {
+        tool: step.tool, status: 'ERROR', data: null, evidence: [],
         resultCount: 0, evidenceCount: 0, errorCode: 'TOOL_REJECTED',
         fetchedAt: new Date().toISOString(), warning: 'This data source failed unexpectedly.',
+        durationMs: outcome.durationMs, deduplicated: isDeduplicated,
       };
-      toolResults.push(failed);
-      if (state.onEvent) {
-        state.onEvent({ type: 'tool.completed', tool: toolName, status: 'ERROR', resultCount: 0, evidenceCount: 0, errorCode: 'TOOL_REJECTED' });
-      }
-      warnings.push(failed.warning);
+    }
+
+    toolResults.push(toolResult);
+    // Evidence is only ever added once per fingerprint — a deduplicated
+    // step must never duplicate the same evidence records a second time.
+    if (!evidenceByFingerprint.has(fingerprints[index])) {
+      evidenceByFingerprint.set(fingerprints[index], toolResult.evidence || []);
+    }
+    if (toolResult.warning && !isDeduplicated) warnings.push(toolResult.warning);
+
+    if (state.onEvent) {
+      state.onEvent({
+        type: 'tool.completed', tool: step.tool, status: toolResult.status,
+        resultCount: toolResult.resultCount ?? 0, evidenceCount: toolResult.evidenceCount ?? 0,
+        errorCode: toolResult.errorCode ?? null,
+      });
     }
   });
 
-  return { toolResults, evidence, warnings };
+  const evidence = [...evidenceByFingerprint.values()].flat();
+
+  return {
+    toolResults, evidence, warnings, deduplicatedToolCalls,
+  };
 };
 
 export default executeTools;
