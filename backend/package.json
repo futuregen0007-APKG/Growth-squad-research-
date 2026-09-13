@@ -20,7 +20,10 @@
     "earnings:backfill-promises": "node scripts/backfillPromises.js",
     "earnings:capture-durability": "node scripts/captureDocumentDurability.js",
     "earnings:sync-latest": "node scripts/syncLatestAnnouncements.js",
-    "products:refresh": "node scripts/refreshInvestmentProducts.js"
+    "products:refresh": "node scripts/refreshInvestmentProducts.js",
+    "stocks:compute-metrics": "node scripts/computeHistoricalMetrics.js",
+    "data:production-status": "node scripts/productionStatus.js",
+    "data:bootstrap": "node scripts/productionBootstrap.js"
   },
   "keywords": [],
   "author": "",
