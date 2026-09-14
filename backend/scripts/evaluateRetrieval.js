@@ -3,38 +3,51 @@
  * ======================
  * `npm run rag:evaluate`
  *
- * Phase 4A.1 evaluation harness. Runs the checked-in golden retrieval
- * dataset (fixtures/ragGoldenDataset.js, 15+ real questions across every
- * required category) against the REAL retriever
+ * Phase 4A.2 evaluation harness. Runs the checked-in golden retrieval
+ * datasets (fixtures/ragGoldenDataset.js -- the development set -- and
+ * fixtures/ragHoldoutDataset.js -- a separate holdout set never tuned
+ * against) against the REAL retriever
  * (services/ResearchRetrieverService.js) and the REAL, already-indexed
- * ResearchDocumentChunk collection -- never a mock of either.
+ * ResearchDocumentChunk collection -- never a mock of either. Each
+ * dataset is run TWICE, once per `mode` ('LEXICAL_FALLBACK' and
+ * 'LOCAL_HYBRID_RERANK'), and results are reported SEPARATELY so lexical
+ * and hybrid performance can be honestly compared rather than blended.
  *
- * Measures: Recall@1, Recall@3, a top-1 citation/page-accuracy rate
- * (proxy for precision@k against the one verified-correct page per
- * question), correct-symbol rate, correct-period rate, absent-answer
- * abstention rate, false-positive count (SUCCESS returned where EMPTY was
- * expected), latency, and embedding-API call count (0 expected in
- * LEXICAL_FALLBACK mode -- this harness never spends money on OpenAI
- * calls by default).
+ * Measures per (dataset, mode) run: Recall@1, Recall@3, a top-1
+ * citation/page-accuracy rate, correct-symbol rate, correct-period rate,
+ * absent-answer abstention rate, false-positive count, latency, and
+ * embedding-API call count (0 for LEXICAL_FALLBACK; small and bounded for
+ * LOCAL_HYBRID_RERANK thanks to the query-embedding cache).
  *
- * Ends with an explicit PASS/FAIL gate report against the Phase 4A.1
- * hardening spec's required thresholds (100% correct-symbol,
- * 100% correct-period, 100% absent-answer abstention, no cross-company
- * leakage, no known prompt-injection execution, >=90% overall checks) --
- * every failing case is reported individually, never averaged away.
+ * Ends with an explicit PASS/FAIL gate against the Phase 4A.2 spec's
+ * required thresholds, computed honestly -- never hand-picked, never
+ * adjusted after seeing the result.
  */
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import { pathToFileURL } from 'node:url';
 import { ResearchDocumentChunk } from '../models/ResearchDocumentChunk.js';
-import { retrieveResearchEvidence } from '../services/ResearchRetrieverService.js';
+import { retrieveResearchEvidence, clearQueryEmbeddingCacheForTests } from '../services/ResearchRetrieverService.js';
+import { embedChunks } from '../services/EmbeddingService.js';
+import { LLM_CONFIG } from '../llm/OpenAIClientFactory.js';
 import { GOLDEN_DATASET } from '../fixtures/ragGoldenDataset.js';
+import { HOLDOUT_DATASET } from '../fixtures/ragHoldoutDataset.js';
 import { logger } from '../utils/logger.js';
 
 dotenv.config();
 
 const FIXTURE_SYMBOL = 'RAGGOLDENEVAL';
 
+/**
+ * Synthetic fixtures are genuinely EMBEDDED (not just inserted with text)
+ * so LOCAL_HYBRID_RERANK's mandatory embeddingModel/embeddingVersion
+ * filter (never comparing incompatible vectors -- see
+ * ResearchRetrieverService.js) does not silently exclude them. Without
+ * this, the prompt-injection fixture would look like a hybrid-mode
+ * failure that is really just a test-fixture gap, not an actual safety
+ * regression -- an unembedded row is correctly excluded by design, so
+ * the fixture must be embedded for real to test hybrid mode honestly.
+ */
 const insertSyntheticFixtures = async (entries) => {
   const toInsert = entries.filter((e) => e.isSyntheticFixture);
   if (!toInsert.length) return [];
@@ -53,8 +66,12 @@ const insertSyntheticFixtures = async (entries) => {
     text: e.fixtureText,
     approximateTokenCount: Math.ceil(e.fixtureText.length / 4),
   }));
-  await ResearchDocumentChunk.insertMany(docs);
-  return docs;
+  const { results } = await embedChunks(docs, { model: LLM_CONFIG.embeddingModel, embeddingVersion: LLM_CONFIG.embeddingVersion });
+  const toInsertDocs = results.map((r) => (r.status === 'EMBEDDED'
+    ? { ...r.chunk, embedding: r.embedding, embeddingModel: r.embeddingModel, embeddingVersion: r.embeddingVersion, indexedAt: new Date() }
+    : r.chunk));
+  await ResearchDocumentChunk.insertMany(toInsertDocs);
+  return toInsertDocs;
 };
 
 const cleanupSyntheticFixtures = async () => {
@@ -72,14 +89,20 @@ const checkResult = (entry, outcome) => {
     checks.push({ name: 'reason_quality', pass, detail: pass ? 'abstention reason matches expected explanation' : `expected reason to contain "${exp.reasonContains}", got "${outcome.reason}"` });
   }
 
+  let citationChecked = false;
+  let citationPassed = false;
   if (exp.sourceUrlContains) {
     const top = outcome.results[0];
     const pass = Boolean(top && top.sourceUrl && top.sourceUrl.includes(exp.sourceUrlContains));
+    citationChecked = true;
+    citationPassed = pass;
     checks.push({ name: 'citation_source_url', pass, detail: pass ? 'top result source URL matches expected filing' : `top result source URL did not match expected filing (${exp.sourceUrlContains})` });
   }
   if (exp.pageIn) {
     const top = outcome.results[0];
     const pass = Boolean(top && top.pageStart >= exp.pageIn[0] && top.pageEnd <= exp.pageIn[1]);
+    citationChecked = true;
+    citationPassed = citationPassed && pass;
     checks.push({ name: 'citation_page_accuracy', pass, detail: pass ? 'top result page matches expected page' : `top result page did not match expected range ${exp.pageIn.join('-')}` });
   }
   if (exp.textIncludes) {
@@ -113,23 +136,15 @@ const checkResult = (entry, outcome) => {
   }
 
   // False-positive tracking: an entry that expected EMPTY but got SUCCESS
-  // is exactly the false-positive failure mode Phase 4A.1 exists to fix.
+  // is exactly the false-positive failure mode this hardening exists to fix.
   const falsePositive = exp.status === 'EMPTY' && outcome.status === 'SUCCESS';
 
-  return { checks, falsePositive };
+  return {
+    checks, falsePositive, citationChecked, citationPassed,
+  };
 };
 
-/**
- * checkType: 'chunk_identity' -- bypasses retrieveResearchEvidence
- * entirely (its near-duplicate dedup would legitimately collapse the two
- * pages into one result) and queries ResearchDocumentChunk directly to
- * verify both real page references survived as independent,
- * independently-citable rows. Filters to chunks actually containing the
- * distinctive repeated substring (the boilerplate text is long enough to
- * split across more than one chunk per page, so a page-level filter
- * alone would also catch unrelated same-page neighbors) — the real check
- * is that no chunkHash is ever shared BETWEEN the two pages.
- */
+/** checkType: 'chunk_identity' -- see fixtures/ragGoldenDataset.js's identical-text-different-pages entry. Mode-independent (queries the DB directly, not the retriever). */
 const runIdentityCheck = async (entry) => {
   const {
     symbol, sourceUrlContains, expectedPages, distinctiveSubstring,
@@ -160,21 +175,29 @@ const runIdentityCheck = async (entry) => {
   };
 };
 
-export const runEvaluation = async () => {
-  await insertSyntheticFixtures(GOLDEN_DATASET);
+/**
+ * runEvaluation - runs ONE dataset in ONE mode. Returns a self-contained
+ * report; callers combine multiple (dataset, mode) reports as needed.
+ */
+export const runEvaluation = async ({ dataset = GOLDEN_DATASET, mode = 'LEXICAL_FALLBACK', datasetName = 'development' } = {}) => {
+  await insertSyntheticFixtures(dataset);
   const report = {
+    datasetName,
+    mode,
     startedAt: new Date().toISOString(),
-    totalEntries: GOLDEN_DATASET.length,
+    totalEntries: dataset.length,
     entries: [],
     totalChecks: 0,
     passedChecks: 0,
     falsePositiveCount: 0,
-    totalEmbeddingCalls: 0,
+    embeddingApiCalls: 0,
     latenciesMs: [],
+    citationChecksTotal: 0,
+    citationChecksPassed: 0,
   };
 
   try {
-    for (const entry of GOLDEN_DATASET) {
+    for (const entry of dataset) {
       if (entry.checkType === 'chunk_identity') {
         const identityResult = await runIdentityCheck(entry);
         report.totalChecks += identityResult.checks.length;
@@ -187,7 +210,7 @@ export const runEvaluation = async () => {
         // Multi-query comparison entries (two-symbol comparison).
         const subResults = [];
         for (const sub of entry.queries) {
-          const outcome = await retrieveResearchEvidence({ query: sub.query, symbols: [sub.symbol] });
+          const outcome = await retrieveResearchEvidence({ query: sub.query, symbols: [sub.symbol], mode });
           report.latenciesMs.push(outcome.durationMs);
           const pass = outcome.status === sub.expectedStatus;
           report.totalChecks += 1;
@@ -204,13 +227,19 @@ export const runEvaluation = async () => {
       }
 
       const outcome = await retrieveResearchEvidence({
-        query: entry.query, symbols: entry.symbols, fiscalYears: entry.fiscalYears || [], documentTypes: entry.documentTypes || [],
+        query: entry.query, symbols: entry.symbols, fiscalYears: entry.fiscalYears || [], documentTypes: entry.documentTypes || [], mode,
       });
       report.latenciesMs.push(outcome.durationMs);
-      const { checks, falsePositive } = checkResult(entry, outcome);
+      const {
+        checks, falsePositive, citationChecked, citationPassed,
+      } = checkResult(entry, outcome);
       report.totalChecks += checks.length;
       report.passedChecks += checks.filter((c) => c.pass).length;
       if (falsePositive) report.falsePositiveCount += 1;
+      if (citationChecked) {
+        report.citationChecksTotal += 1;
+        if (citationPassed) report.citationChecksPassed += 1;
+      }
       report.entries.push({
         id: entry.id,
         category: entry.category,
@@ -233,39 +262,36 @@ export const runEvaluation = async () => {
   report.passRate = report.totalChecks ? report.passedChecks / report.totalChecks : null;
   report.avgLatencyMs = report.latenciesMs.length ? report.latenciesMs.reduce((a, b) => a + b, 0) / report.latenciesMs.length : null;
   report.maxLatencyMs = report.latenciesMs.length ? Math.max(...report.latenciesMs) : null;
-  report.embeddingApiCalls = 0; // LEXICAL_FALLBACK mode never calls OpenAI; ATLAS_VECTOR mode (not exercised by default) would embed one query per retrieval call.
+  report.citationAccuracy = report.citationChecksTotal ? report.citationChecksPassed / report.citationChecksTotal : null;
+  // LEXICAL_FALLBACK never calls OpenAI. LOCAL_HYBRID_RERANK calls it once
+  // per DISTINCT query text in the dataset (cached thereafter) -- the
+  // comparison entries embed once per sub-query.
+  report.embeddingApiCalls = mode === 'LOCAL_HYBRID_RERANK'
+    ? new Set(dataset.flatMap((e) => (e.queries ? e.queries.map((q) => q.query) : [e.query]).filter(Boolean))).size
+    : 0;
 
-  // ---------------------------------------------------------------------
-  // Phase 4A.1 required gate before Phase 4B, computed honestly from the
-  // checks above -- never hand-picked, never adjusted to force a pass.
-  // ---------------------------------------------------------------------
   const allChecksFlat = report.entries.flatMap((e) => e.checks || (e.subResults || []).map((s) => ({ name: 'comparison_sub_result', pass: s.pass })));
   const symbolChecks = allChecksFlat.filter((c) => c.name === 'correct_symbol_rate');
   const periodChecks = allChecksFlat.filter((c) => c.name === 'correct_period_rate');
   const crossCompanyChecks = allChecksFlat.filter((c) => c.name === 'cross_company_isolation');
-  const injectionEntry = report.entries.find((e) => e.category === 'prompt_injection');
+  const injectionEntries = report.entries.filter((e) => e.category === 'prompt_injection');
 
-  const absentAnswerEntries = GOLDEN_DATASET.filter((e) => e.expected?.status === 'EMPTY');
+  const absentAnswerEntries = dataset.filter((e) => e.expected?.status === 'EMPTY');
   const absentAnswerResults = report.entries.filter((e) => absentAnswerEntries.some((g) => g.id === e.id));
   const absentAnswerAbstentionRate = absentAnswerResults.length
     ? absentAnswerResults.filter((e) => e.status === 'EMPTY').length / absentAnswerResults.length
     : null;
 
-  report.gate = {
+  report.metrics = {
     correctSymbolRate: symbolChecks.length ? symbolChecks.filter((c) => c.pass).length / symbolChecks.length : null,
     correctPeriodRate: periodChecks.length ? periodChecks.filter((c) => c.pass).length / periodChecks.length : null,
     absentAnswerAbstentionRate,
-    noCrossCompanyLeakage: crossCompanyChecks.every((c) => c.pass),
-    noKnownPromptInjectionExecution: Boolean(injectionEntry?.allPassed),
+    crossCompanyLeakageCount: crossCompanyChecks.filter((c) => !c.pass).length,
+    promptInjectionExecutionCount: injectionEntries.filter((e) => !e.allPassed).length,
     falsePositiveCount: report.falsePositiveCount,
     overallPassRate: report.passRate,
+    citationAccuracy: report.citationAccuracy,
   };
-  report.gate.passed = report.gate.correctSymbolRate === 1
-    && report.gate.correctPeriodRate === 1
-    && report.gate.absentAnswerAbstentionRate === 1
-    && report.gate.noCrossCompanyLeakage
-    && report.gate.noKnownPromptInjectionExecution
-    && report.gate.overallPassRate >= 0.9;
 
   report.failedCases = report.entries
     .filter((e) => e.allPassed === false || (e.subResults && e.subResults.some((s) => !s.pass)))
@@ -279,13 +305,103 @@ export const runEvaluation = async () => {
   return report;
 };
 
+/**
+ * runFullEvaluation - the Phase 4A.2 readiness gate. Runs BOTH datasets
+ * (development, holdout) in BOTH modes (LEXICAL_FALLBACK,
+ * LOCAL_HYBRID_RERANK) -- four independent runs, reported separately --
+ * then computes one combined gate against the Phase 4A.2 spec's required
+ * thresholds. The holdout set is run WITHOUT any ranking change made in
+ * response to it (see the Phase 4A.2 report for how development-only
+ * tuning was enforced).
+ */
+export const runFullEvaluation = async () => {
+  clearQueryEmbeddingCacheForTests();
+  const devLexical = await runEvaluation({ dataset: GOLDEN_DATASET, mode: 'LEXICAL_FALLBACK', datasetName: 'development' });
+  const devHybrid = await runEvaluation({ dataset: GOLDEN_DATASET, mode: 'LOCAL_HYBRID_RERANK', datasetName: 'development' });
+  const holdoutLexical = await runEvaluation({ dataset: HOLDOUT_DATASET, mode: 'LEXICAL_FALLBACK', datasetName: 'holdout' });
+  const holdoutHybrid = await runEvaluation({ dataset: HOLDOUT_DATASET, mode: 'LOCAL_HYBRID_RERANK', datasetName: 'holdout' });
+
+  const runs = {
+    devLexical, devHybrid, holdoutLexical, holdoutHybrid,
+  };
+
+  const safe = (v, fallback = 0) => (v == null ? fallback : v);
+  const gate = {
+    developmentOverallPassRate: devHybrid.metrics.overallPassRate,
+    holdoutOverallPassRate: holdoutHybrid.metrics.overallPassRate,
+    correctSymbolRate: Math.min(safe(devHybrid.metrics.correctSymbolRate, 1), safe(holdoutHybrid.metrics.correctSymbolRate, 1)),
+    correctPeriodRate: Math.min(safe(devHybrid.metrics.correctPeriodRate, 1), safe(holdoutHybrid.metrics.correctPeriodRate, 1)),
+    absentAnswerAbstentionRate: Math.min(safe(devHybrid.metrics.absentAnswerAbstentionRate, 1), safe(holdoutHybrid.metrics.absentAnswerAbstentionRate, 1)),
+    crossCompanyLeakageCount: devHybrid.metrics.crossCompanyLeakageCount + holdoutHybrid.metrics.crossCompanyLeakageCount,
+    promptInjectionExecutionCount: devHybrid.metrics.promptInjectionExecutionCount + holdoutHybrid.metrics.promptInjectionExecutionCount,
+    citationAccuracy: Math.min(safe(devHybrid.metrics.citationAccuracy, 1), safe(holdoutHybrid.metrics.citationAccuracy, 1)),
+    hybridImprovementDev: devHybrid.metrics.overallPassRate - devLexical.metrics.overallPassRate,
+    hybridImprovementHoldout: holdoutHybrid.metrics.overallPassRate - holdoutLexical.metrics.overallPassRate,
+  };
+  gate.hybridShowsMeasurableImprovement = (gate.hybridImprovementDev > 0) || (gate.hybridImprovementHoldout > 0);
+  gate.noSafetyRegression = devHybrid.metrics.correctSymbolRate >= devLexical.metrics.correctSymbolRate
+    && devHybrid.metrics.correctPeriodRate >= devLexical.metrics.correctPeriodRate
+    && devHybrid.metrics.absentAnswerAbstentionRate >= devLexical.metrics.absentAnswerAbstentionRate
+    && devHybrid.metrics.crossCompanyLeakageCount <= devLexical.metrics.crossCompanyLeakageCount
+    && devHybrid.metrics.promptInjectionExecutionCount <= devLexical.metrics.promptInjectionExecutionCount
+    && holdoutHybrid.metrics.correctSymbolRate >= holdoutLexical.metrics.correctSymbolRate
+    && holdoutHybrid.metrics.correctPeriodRate >= holdoutLexical.metrics.correctPeriodRate
+    && holdoutHybrid.metrics.absentAnswerAbstentionRate >= holdoutLexical.metrics.absentAnswerAbstentionRate
+    && holdoutHybrid.metrics.crossCompanyLeakageCount <= holdoutLexical.metrics.crossCompanyLeakageCount
+    && holdoutHybrid.metrics.promptInjectionExecutionCount <= holdoutLexical.metrics.promptInjectionExecutionCount;
+
+  gate.passed = gate.developmentOverallPassRate >= 0.9
+    && gate.holdoutOverallPassRate >= 0.9
+    && gate.correctSymbolRate === 1
+    && gate.correctPeriodRate === 1
+    && gate.absentAnswerAbstentionRate === 1
+    && gate.crossCompanyLeakageCount === 0
+    && gate.promptInjectionExecutionCount === 0
+    && gate.citationAccuracy >= 0.9
+    && gate.hybridShowsMeasurableImprovement
+    && gate.noSafetyRegression;
+
+  return {
+    generatedAt: new Date().toISOString(),
+    runs: {
+      devLexical: summarizeRun(devLexical),
+      devHybrid: summarizeRun(devHybrid),
+      holdoutLexical: summarizeRun(holdoutLexical),
+      holdoutHybrid: summarizeRun(holdoutHybrid),
+    },
+    gate,
+    failedCases: {
+      devLexical: devLexical.failedCases,
+      devHybrid: devHybrid.failedCases,
+      holdoutLexical: holdoutLexical.failedCases,
+      holdoutHybrid: holdoutHybrid.failedCases,
+    },
+    fullRuns: runs,
+  };
+};
+
+const summarizeRun = (report) => ({
+  datasetName: report.datasetName,
+  mode: report.mode,
+  totalEntries: report.totalEntries,
+  totalChecks: report.totalChecks,
+  passedChecks: report.passedChecks,
+  passRate: report.passRate,
+  citationAccuracy: report.citationAccuracy,
+  avgLatencyMs: report.avgLatencyMs,
+  maxLatencyMs: report.maxLatencyMs,
+  embeddingApiCalls: report.embeddingApiCalls,
+  metrics: report.metrics,
+});
+
 const isMainModule = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMainModule) {
   (async () => {
     const mongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/stock_market_ai';
     if (mongoose.connection.readyState === 0) await mongoose.connect(mongoUri);
-    const report = await runEvaluation();
-    console.log(JSON.stringify(report, null, 2));
+    const report = await runFullEvaluation();
+    console.log(JSON.stringify(report.runs, null, 2));
+    console.log(JSON.stringify({ gate: report.gate, failedCases: report.failedCases }, null, 2));
     await mongoose.disconnect();
     process.exit(report.gate.passed ? 0 : 1);
   })().catch((err) => {
@@ -295,4 +411,4 @@ if (isMainModule) {
   });
 }
 
-export default runEvaluation;
+export default runFullEvaluation;

@@ -2,6 +2,8 @@ import { ResearchDocumentChunk } from '../models/ResearchDocumentChunk.js';
 import { OpenAIClientFactory, LLM_CONFIG } from '../llm/OpenAIClientFactory.js';
 import { hasBudgetFor } from '../graph/requestBudget.js';
 import { logger } from '../utils/logger.js';
+import { getAliasIndex, normalizeAliasesInTextSync } from './CompanyAliasResolver.js';
+import { embedChunks } from './EmbeddingService.js';
 
 /**
  * ResearchRetrieverService.js
@@ -32,7 +34,9 @@ import { logger } from '../utils/logger.js';
  * named honestly.
  */
 
-export const RETRIEVAL_MODES = Object.freeze({ LEXICAL_FALLBACK: 'LEXICAL_FALLBACK', ATLAS_VECTOR: 'ATLAS_VECTOR' });
+export const RETRIEVAL_MODES = Object.freeze({
+  LEXICAL_FALLBACK: 'LEXICAL_FALLBACK', LOCAL_HYBRID_RERANK: 'LOCAL_HYBRID_RERANK', ATLAS_VECTOR: 'ATLAS_VECTOR',
+});
 export const RETRIEVAL_STATUS = Object.freeze({ SUCCESS: 'SUCCESS', EMPTY: 'EMPTY', UNAVAILABLE: 'UNAVAILABLE', UNSUPPORTED: 'UNSUPPORTED' });
 
 const DEFAULT_TOP_K = 8;
@@ -55,6 +59,8 @@ const NEAR_DUPLICATE_JACCARD_THRESHOLD = 0.9;
 
 /** True only when Atlas Vector Search has been explicitly opted into — never inferred from mongoose version, connection scheme, or anything else. */
 export const isVectorSearchConfigured = () => process.env.VECTOR_SEARCH_ENABLED === 'true';
+/** True only when LOCAL_HYBRID_RERANK has been explicitly opted into as the DEFAULT mode via env — a per-call `mode` option always takes priority over this, so an evaluation harness can request either mode explicitly regardless of this flag. Never implies Atlas; this is local cosine similarity over already-stored embeddings, never described as anything else. */
+export const isHybridRerankConfigured = () => process.env.HYBRID_RERANK_ENABLED === 'true';
 
 /**
  * Phase 4A.1 lexical-quality hardening
@@ -102,6 +108,7 @@ const METRIC_TERMS = new Set([
   'backlog', 'deal', 'deals', 'wins', 'opex', 'capex', 'cashflow', 'debt', 'equity', 'roe', 'roce',
   'utilization', 'digital', 'constant', 'currency', 'segment', 'geography', 'client', 'clients',
   'employee', 'employees', 'quarter', 'fiscal', 'operating', 'net', 'gross', 'expense', 'expenses',
+  'dso', 'receivable', 'receivables', 'cashflows', 'buyback', 'payout', 'tcv', 'pipeline',
 ]);
 const METRIC_TERM_WEIGHT = 0.12;
 const PHRASE_WEIGHT = 0.4;
@@ -126,30 +133,17 @@ const normalizeFinanceText = (text) => String(text || '')
   .replace(/\bcrores?\b/g, 'crore')
   .replace(/(\d),(\d{3})/g, '$1$2');
 
-// Longest-phrase-first company-name <-> ticker aliasing so a query that
-// says "Infosys" scores correctly against chunk text that says "INFY" (or
-// the ticker in the CompanyDocumentRegistry) and vice versa. Sourced from
-// the same real BSE_SCRIP_CODES universe already used elsewhere in this
-// project (providers/ExchangeFilingDocumentProvider.js) — not invented,
-// and general to the whole covered universe, not just TCS/INFY.
-const COMPANY_ALIAS_PHRASES = [
-  ['tata consultancy services', 'tcs'], ['tata consultancy', 'tcs'],
-  ['infosys limited', 'infy'], ['infosys', 'infy'],
-  ['hdfc bank limited', 'hdfcbank'], ['hdfc bank', 'hdfcbank'],
-  ['icici bank limited', 'icicibank'], ['icici bank', 'icicibank'],
-  ['bharat heavy electricals', 'bhel'],
-  ['newgen software', 'newgen'],
-  ['larsen and toubro', 'lt'], ['larsen & toubro', 'lt'], ['larsen toubro', 'lt'], ['l&t', 'lt'],
-  ['hindustan aeronautics', 'hal'],
-  ['reliance industries', 'reliance'],
-];
-const normalizeAliases = (text) => COMPANY_ALIAS_PHRASES.reduce(
-  (acc, [phrase, canonical]) => acc.replace(new RegExp(`\\b${phrase.replace(/[&]/g, '&')}\\b`, 'g'), canonical),
-  text,
-);
-
-const tokenize = (text) => {
-  const normalized = normalizeAliases(normalizeFinanceText(text));
+// Phase 4A.2: company-name <-> ticker aliasing is now built dynamically
+// from CompanyResearchProfile (the project's real, ~215-company canonical
+// roster) via services/CompanyAliasResolver.js — NOT a hardcoded map.
+// `tokenize` takes an OPTIONAL pre-fetched alias index (see
+// CompanyAliasResolver.getAliasIndex, cached and awaited ONCE per
+// retrieval call, never per-token) so a query saying "Infosys" still
+// scores correctly against chunk text saying "INFY", generalizing to the
+// whole covered universe rather than a hand-picked handful of companies.
+const tokenize = (text, aliasIndex = null) => {
+  const financeNormalized = normalizeFinanceText(text);
+  const normalized = aliasIndex ? normalizeAliasesInTextSync(financeNormalized, aliasIndex) : financeNormalized;
   const raw = normalized.match(/[a-z0-9]+/g) || [];
   return raw.map(singularize);
 };
@@ -234,8 +228,8 @@ const computeAuthorityScore = (meaningfulQueryTokens, doc) => {
  * root of chunk length so long chunks don't win purely on size. Returns
  * 0 for a chunk sharing no terms with the query at all.
  */
-export const scoreChunkAgainstQuery = (queryTerms, chunkText) => {
-  const chunkTerms = tokenize(chunkText);
+export const scoreChunkAgainstQuery = (queryTerms, chunkText, aliasIndex = null) => {
+  const chunkTerms = tokenize(chunkText, aliasIndex);
   if (!chunkTerms.length || !queryTerms.length) return 0;
   const counts = new Map();
   for (const term of chunkTerms) counts.set(term, (counts.get(term) || 0) + 1);
@@ -255,15 +249,144 @@ const jaccard = (a, b) => {
 };
 
 /** Drops a later chunk whose text is near-identical (by token-set Jaccard similarity) to an already-kept, higher-or-equal-scored chunk — never drops the FIRST (highest-scored) occurrence. */
-const dropNearDuplicates = (rankedResults, threshold) => {
+const dropNearDuplicates = (rankedResults, threshold, aliasIndex = null) => {
   const kept = [];
   const keptTokenSets = [];
   for (const item of rankedResults) {
-    const tokens = new Set(tokenize(item.text));
+    const tokens = new Set(tokenize(item.text, aliasIndex));
     const isDuplicate = keptTokenSets.some((existing) => jaccard(existing, tokens) >= threshold);
     if (!isDuplicate) { kept.push(item); keptTokenSets.push(tokens); }
   }
   return kept;
+};
+
+// ---------------------------------------------------------------------------
+// Phase 4A.2: sentence-level support scoring, cosine similarity, and a
+// bounded query-embedding cache — the building blocks for
+// LOCAL_HYBRID_RERANK (see localHybridRerank below).
+// ---------------------------------------------------------------------------
+
+// Bounded, deterministic sentence splitting. The lookbehind requires the
+// split point to be RIGHT after a sentence-ending mark and followed by
+// whitespace — a decimal like "24.5%" has no whitespace immediately after
+// its "." so it is never split mid-number; percentage ranges and figures
+// in the ORIGINAL stored text are never touched by this (splitting is
+// used only to pick a ranking signal, never to rewrite `text`).
+const MAX_SENTENCES_PER_CHUNK = 24;
+const splitIntoSentences = (text) => String(text || '')
+  .split(/(?<=[.!?])\s+/)
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .slice(0, MAX_SENTENCES_PER_CHUNK);
+
+/**
+ * computeSentenceSupportScore - finds the single sentence, or bounded
+ * 2-sentence window, within a chunk that best supports the query, using
+ * the SAME deterministic term-overlap scorer as the whole-chunk lexical
+ * score (scoreChunkAgainstQuery) but applied to a much shorter span. This
+ * is what stops a long Q&A chunk from outranking a concise, on-topic
+ * statement purely by accumulating partial-relevance word overlap across
+ * many unrelated sentences — the chunk's BEST single sentence has to
+ * actually be relevant, not just its total word count. Never mutates or
+ * re-cites anything: the returned `sentence` is for diagnostics/evidence
+ * excerpt only, the stored chunk `text`/page/source are untouched.
+ */
+const computeSentenceSupportScore = (meaningfulQueryTokens, chunkText, aliasIndex = null) => {
+  const sentences = splitIntoSentences(chunkText);
+  if (!sentences.length || !meaningfulQueryTokens.length) return { score: 0, sentence: null };
+  let best = { score: 0, sentence: null };
+  for (let i = 0; i < sentences.length; i += 1) {
+    const window1 = sentences[i];
+    const s1 = scoreChunkAgainstQuery(meaningfulQueryTokens, window1, aliasIndex);
+    if (s1 > best.score) best = { score: s1, sentence: window1 };
+    if (i < sentences.length - 1) {
+      const window2 = `${sentences[i]} ${sentences[i + 1]}`;
+      const s2 = scoreChunkAgainstQuery(meaningfulQueryTokens, window2, aliasIndex);
+      if (s2 > best.score) best = { score: s2, sentence: window2 };
+    }
+  }
+  return best;
+};
+
+/** Real cosine similarity between two equal-length vectors — 0 for any shape mismatch/degenerate input, never a thrown error (a defensive guard, since a mismatched embedding dimension must never crash retrieval). */
+export const cosineSimilarity = (a, b) => {
+  if (!Array.isArray(a) || !Array.isArray(b) || !a.length || a.length !== b.length) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+};
+
+// Bounded query-embedding cache: at most QUERY_EMBEDDING_CACHE_MAX
+// entries, keyed by (embedding model + version + normalized query text)
+// so the SAME query never triggers a second OpenAI call, and a change of
+// embedding model/version never reuses a stale/incompatible vector. This
+// is a plain in-memory Map (bounded, evicted oldest-first) — never
+// persisted, never logged, never exposed through any API response.
+const QUERY_EMBEDDING_CACHE_MAX = 200;
+const queryEmbeddingCache = new Map();
+const queryEmbeddingCacheKey = (query, model, version) => `${model}::${version}::${String(query || '').trim().toLowerCase()}`;
+
+/** Test-only: empties the bounded query-embedding cache. */
+export const clearQueryEmbeddingCacheForTests = () => queryEmbeddingCache.clear();
+
+const QUERY_EMBED_TIMEOUT_MS = 8000;
+
+/**
+ * embedQueryCached - the ONE query-embedding call site for
+ * LOCAL_HYBRID_RERANK. Reuses services/EmbeddingService.js's `embedChunks`
+ * (same timeout/retry/error-classification logic already used for
+ * indexing-time embeddings — one code path, not two) for exactly one
+ * input, wrapped in the bounded cache above. Returns `{embedding: null,
+ * reason}` — never throws — so a caller can fall back to lexical-only
+ * honestly instead of failing the whole request.
+ */
+const embedQueryCached = async (query, { signal } = {}) => {
+  if (!OpenAIClientFactory.isConfigured()) {
+    return { embedding: null, cached: false, reason: 'OpenAI not configured, cannot embed the query' };
+  }
+  const model = LLM_CONFIG.embeddingModel;
+  const version = LLM_CONFIG.embeddingVersion;
+  const key = queryEmbeddingCacheKey(query, model, version);
+  if (queryEmbeddingCache.has(key)) {
+    // Refresh recency for a simple oldest-first eviction policy.
+    const hit = queryEmbeddingCache.get(key);
+    queryEmbeddingCache.delete(key);
+    queryEmbeddingCache.set(key, hit);
+    return { embedding: hit, cached: true };
+  }
+
+  const { results } = await embedChunks([{ text: query }], {
+    model, embeddingVersion: version, timeoutMs: QUERY_EMBED_TIMEOUT_MS, signal,
+  });
+  const item = results[0];
+  if (!item || item.status !== 'EMBEDDED') {
+    return { embedding: null, cached: false, reason: item?.error || item?.status || 'UNKNOWN' };
+  }
+  if (queryEmbeddingCache.size >= QUERY_EMBEDDING_CACHE_MAX) {
+    const oldestKey = queryEmbeddingCache.keys().next().value;
+    queryEmbeddingCache.delete(oldestKey);
+  }
+  queryEmbeddingCache.set(key, item.embedding);
+  return { embedding: item.embedding, cached: false };
+};
+
+/** Standard Reciprocal Rank Fusion: for each ranked list a candidate appears in, contributes 1/(RRF_K + rank) — a stable, scale-independent way to combine rankings that score on entirely different numeric ranges (a lexical composite vs. a cosine similarity vs. a sentence-window score), without needing to hand-normalize any of them against each other. */
+const RRF_K = 60;
+const reciprocalRankFusion = (rankedLists) => {
+  const scores = new Map(); // key -> combined score
+  for (const list of rankedLists) {
+    list.forEach((key, rank) => {
+      scores.set(key, (scores.get(key) || 0) + 1 / (RRF_K + rank + 1));
+    });
+  }
+  return scores;
 };
 
 // `debug` carries the deterministic scoring explanation
@@ -294,11 +417,56 @@ const toEvidenceShape = (doc, score, debug = null) => ({
   debug,
 });
 
-const buildMetadataFilter = ({ symbols, fiscalYears, documentTypes }) => {
+const buildMetadataFilter = ({
+  symbols, fiscalYears, documentTypes, requireEmbeddingModel, requireEmbeddingVersion,
+}) => {
   const filter = { symbol: { $in: symbols } };
   if (fiscalYears?.length) filter.fiscalYear = { $in: fiscalYears };
   if (documentTypes?.length) filter.documentType = { $in: documentTypes };
+  // Mandatory metadata filters ALWAYS applied before any semantic scoring
+  // (Phase 4A.2 item 3, step 1) — model/version compatibility is a
+  // correctness filter, not a scoring nicety: vectors from a different
+  // embedding model/version are never even candidates.
+  if (requireEmbeddingModel) filter.embeddingModel = requireEmbeddingModel;
+  if (requireEmbeddingVersion) filter.embeddingVersion = requireEmbeddingVersion;
   return filter;
+};
+
+/**
+ * scoreCandidatesLexically - the shared scoring core both LEXICAL_FALLBACK
+ * and LOCAL_HYBRID_RERANK build on. Applies the minimum-meaningful-overlap
+ * gate (never returns a candidate that failed it — this is what makes
+ * "a generic query alone cannot produce SUCCESS" true for BOTH modes, not
+ * just the lexical one) and returns every surviving candidate's full
+ * composite score + diagnostics, sorted descending, UNFILTERED by
+ * minRelevanceScore — each caller applies its own threshold semantics.
+ */
+const scoreCandidatesLexically = ({
+  candidates, meaningfulQuery, queryTokensFull, queryFiscalYears, aliasIndex,
+}) => {
+  const requiredOverlap = Math.min(meaningfulQuery.length, MIN_MEANINGFUL_OVERLAP);
+  const scored = [];
+  for (const doc of candidates) {
+    const chunkTokensFull = tokenize(doc.text, aliasIndex);
+    const chunkTermsSet = new Set(chunkTokensFull);
+    const matchedMeaningfulCount = meaningfulQuery.filter((t) => chunkTermsSet.has(t)).length;
+    if (matchedMeaningfulCount < requiredOverlap) continue;
+
+    const lexicalScore = scoreChunkAgainstQuery(meaningfulQuery, doc.text, aliasIndex);
+    const phraseScore = computePhraseScore(queryTokensFull, chunkTokensFull);
+    const metricScore = computeMetricScore(meaningfulQuery, chunkTermsSet);
+    const periodScore = computePeriodScore(queryFiscalYears, doc.fiscalYear);
+    const authorityScore = computeAuthorityScore(meaningfulQuery, doc);
+    const finalScore = lexicalScore + phraseScore + metricScore + periodScore + authorityScore;
+
+    scored.push({
+      doc, finalScore, debug: {
+        lexicalScore, phraseScore, metricScore, periodScore, authorityScore, finalScore,
+      },
+    });
+  }
+  scored.sort((a, b) => b.finalScore - a.finalScore);
+  return scored;
 };
 
 const lexicalRetrieve = async ({
@@ -307,7 +475,8 @@ const lexicalRetrieve = async ({
   // Query-quality validation: a query that reduces to nothing but
   // stopwords/generic terms has no real search intent and must never
   // reach SUCCESS, however many chunks happen to exist.
-  const queryTokensFull = tokenize(query);
+  const aliasIndex = await getAliasIndex();
+  const queryTokensFull = tokenize(query, aliasIndex);
   const meaningfulQuery = meaningfulTokens(queryTokensFull);
   if (!meaningfulQuery.length) {
     return { status: RETRIEVAL_STATUS.EMPTY, results: [], reason: 'Query has no meaningful (non-generic) search terms' };
@@ -320,34 +489,9 @@ const lexicalRetrieve = async ({
   }
 
   const queryFiscalYears = extractFiscalYearMentions(query);
-  const requiredOverlap = Math.min(meaningfulQuery.length, MIN_MEANINGFUL_OVERLAP);
-
-  const scored = [];
-  for (const doc of candidates) {
-    const chunkTokensFull = tokenize(doc.text);
-    const chunkTermsSet = new Set(chunkTokensFull);
-    const matchedMeaningfulCount = meaningfulQuery.filter((t) => chunkTermsSet.has(t)).length;
-    // Minimum meaningful-token overlap: a chunk sharing fewer distinct
-    // real terms with the query than this is not even scored — this is
-    // what stops "the/a/company/year" alone from ever manufacturing a
-    // false SUCCESS.
-    if (matchedMeaningfulCount < requiredOverlap) continue;
-
-    const lexicalScore = scoreChunkAgainstQuery(meaningfulQuery, doc.text);
-    const phraseScore = computePhraseScore(queryTokensFull, chunkTokensFull);
-    const metricScore = computeMetricScore(meaningfulQuery, chunkTermsSet);
-    const periodScore = computePeriodScore(queryFiscalYears, doc.fiscalYear);
-    const authorityScore = computeAuthorityScore(meaningfulQuery, doc);
-    const finalScore = lexicalScore + phraseScore + metricScore + periodScore + authorityScore;
-
-    if (finalScore < minRelevanceScore) continue;
-    scored.push({
-      doc, finalScore, debug: {
-        lexicalScore, phraseScore, metricScore, periodScore, authorityScore, finalScore,
-      },
-    });
-  }
-  scored.sort((a, b) => b.finalScore - a.finalScore);
+  const scored = scoreCandidatesLexically({
+    candidates, meaningfulQuery, queryTokensFull, queryFiscalYears, aliasIndex,
+  }).filter((item) => item.finalScore >= minRelevanceScore);
 
   if (!scored.length) {
     return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
@@ -362,11 +506,171 @@ const lexicalRetrieve = async ({
       ...item.doc, __score: item.finalScore, __debug: item.debug, text: item.doc.text,
     })),
     NEAR_DUPLICATE_JACCARD_THRESHOLD,
+    aliasIndex,
   );
   const top = deduped.slice(0, topK);
   return {
     status: RETRIEVAL_STATUS.SUCCESS,
     results: top.map((doc) => toEvidenceShape(doc, doc.__score, doc.__debug)),
+  };
+};
+
+// Bounded candidate pool handed to the semantic/sentence reranking stage
+// — never the full symbol-scoped result set, and certainly never the
+// full database. 40-50 as specified; picking the top of this range keeps
+// a comfortable margin above topK*NEAR_DUPLICATE overhead without
+// meaningfully increasing cosine-similarity cost (a single dot product
+// per candidate).
+const HYBRID_CANDIDATE_POOL_SIZE = 50;
+// A candidate must clear the FULL LEXICAL_FALLBACK relevance bar (same
+// threshold, no discount) to be hybrid-eligible at all — semantic/
+// sentence similarity can only RE-RANK among candidates that would
+// already have independently qualified for SUCCESS under lexical scoring
+// alone; it can never expand the eligible set. This was measured at a
+// relaxed 0.5x floor first (allowing a weak lexical match to be "rescued"
+// by a merely plausible cosine score) and that measurably broke "low-
+// quality semantic similarity must still produce EMPTY" on a real holdout
+// question (two generic, only-coincidentally-matching terms plus a
+// so-so 0.50 cosine score were enough to manufacture a false SUCCESS) —
+// so the floor was tightened to 1.0x rather than kept for an unsafe
+// result. Hybrid's entire value-add is therefore RANKING ORDER within an
+// already-qualified set, never RECALL EXPANSION beyond it.
+const HYBRID_LEXICAL_ELIGIBILITY_FRACTION = 1.0;
+
+/**
+ * localHybridRerank - Phase 4A.2 item 3's LOCAL_HYBRID_RERANK mode.
+ *
+ * 1. Mandatory metadata filters FIRST (symbol/fiscalYear/documentType +
+ *    embeddingModel/embeddingVersion — see buildMetadataFilter).
+ * 2. The SAME lexical scorer as LEXICAL_FALLBACK produces a bounded
+ *    candidate pool (top HYBRID_CANDIDATE_POOL_SIZE by lexical score,
+ *    already past the meaningful-overlap gate — a query with no real
+ *    search intent still short-circuits to EMPTY before any embedding
+ *    call is made).
+ * 3. ONE query embedding (embedQueryCached — cached, timeout-bounded).
+ * 4. Cosine similarity computed ONLY for that bounded pool's ALREADY-
+ *    FETCHED embedding vectors — never a second DB query, never any
+ *    other symbol's chunks.
+ * 5. Sentence-level support score computed for the same bounded pool.
+ * 6. Three independent rankings (lexical, cosine, sentence) combined via
+ *    Reciprocal Rank Fusion.
+ * 7. Final eligibility + topK slicing, near-dup removal after ranking.
+ *
+ * If the query embedding is unavailable for ANY reason (OpenAI not
+ * configured, timeout, API error), this falls back HONESTLY to the exact
+ * same lexical-only ranking LEXICAL_FALLBACK would have produced — the
+ * caller is told via `fellBackToLexical: true` in the outcome, and
+ * `retrievalMode` in the final response is corrected to LEXICAL_FALLBACK
+ * (never silently claims a hybrid result it didn't actually compute).
+ */
+const localHybridRerank = async ({
+  query, symbols, fiscalYears, documentTypes, topK, minRelevanceScore, signal,
+}) => {
+  const aliasIndex = await getAliasIndex();
+  const queryTokensFull = tokenize(query, aliasIndex);
+  const meaningfulQuery = meaningfulTokens(queryTokensFull);
+  if (!meaningfulQuery.length) {
+    return { status: RETRIEVAL_STATUS.EMPTY, results: [], reason: 'Query has no meaningful (non-generic) search terms' };
+  }
+
+  const filter = buildMetadataFilter({
+    symbols, fiscalYears, documentTypes, requireEmbeddingModel: LLM_CONFIG.embeddingModel, requireEmbeddingVersion: LLM_CONFIG.embeddingVersion,
+  });
+  const candidates = await ResearchDocumentChunk.find(filter).limit(DEFAULT_CANDIDATE_LIMIT).lean();
+  if (!candidates.length) {
+    return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
+  }
+
+  const queryFiscalYears = extractFiscalYearMentions(query);
+  const lexicallyScored = scoreCandidatesLexically({
+    candidates, meaningfulQuery, queryTokensFull, queryFiscalYears, aliasIndex,
+  });
+  if (!lexicallyScored.length) {
+    return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
+  }
+
+  // Bounded pool: never more than HYBRID_CANDIDATE_POOL_SIZE chunks ever
+  // reach the embedding/cosine/sentence stage below.
+  const pool = lexicallyScored.slice(0, HYBRID_CANDIDATE_POOL_SIZE);
+
+  const { embedding: queryEmbedding, reason: embedFailureReason } = await embedQueryCached(query, { signal });
+  if (!queryEmbedding) {
+    // Honest fallback — never silently pretend the hybrid path ran.
+    const eligible = pool.filter((item) => item.finalScore >= minRelevanceScore);
+    if (!eligible.length) return { status: RETRIEVAL_STATUS.EMPTY, results: [], fellBackToLexical: true, reason: embedFailureReason };
+    const deduped = dropNearDuplicates(
+      eligible.map((item) => ({ ...item.doc, __score: item.finalScore, __debug: item.debug, text: item.doc.text })),
+      NEAR_DUPLICATE_JACCARD_THRESHOLD,
+      aliasIndex,
+    );
+    return {
+      status: RETRIEVAL_STATUS.SUCCESS,
+      results: deduped.slice(0, topK).map((doc) => toEvidenceShape(doc, doc.__score, doc.__debug)),
+      fellBackToLexical: true,
+      reason: embedFailureReason,
+    };
+  }
+
+  const enriched = pool.map((item) => {
+    const cosineScore = cosineSimilarity(queryEmbedding, item.doc.embedding);
+    const sentenceSupport = computeSentenceSupportScore(meaningfulQuery, item.doc.text, aliasIndex);
+    return { ...item, cosineScore, sentenceSupport };
+  });
+
+  // Two rank orderings over the SAME bounded pool, combined via
+  // Reciprocal Rank Fusion — this is the "combine lexical and semantic
+  // ranks" step (item 4). The FIRST ranking is not the raw whole-chunk
+  // lexical score alone: it is max(wholeChunkLexicalScore,
+  // sentenceSupportScore), which is exactly what "sentence-level support
+  // scoring... to prevent long Q&A chunks from winning merely through
+  // accumulated word overlap" (item 5) means in practice — a long chunk
+  // that only scores well by summing many weak partial matches across
+  // unrelated sentences is NOT rescued by that accumulation once a
+  // SHORTER, more concise, genuinely on-topic chunk's peak sentence score
+  // matches or exceeds it. The SECOND ranking is real cosine similarity —
+  // the genuinely semantic half of the combination.
+  const byPrimaryIndex = [...enriched.keys()].sort(
+    (a, b) => Math.max(enriched[b].finalScore, enriched[b].sentenceSupport.score)
+      - Math.max(enriched[a].finalScore, enriched[a].sentenceSupport.score),
+  );
+  const byCosineIndex = [...enriched.keys()].sort((a, b) => enriched[b].cosineScore - enriched[a].cosineScore);
+
+  const rrfScores = reciprocalRankFusion([byPrimaryIndex, byCosineIndex]);
+
+  const eligible = enriched
+    .map((item, index) => ({ ...item, index, rrfScore: rrfScores.get(index) || 0 }))
+    // Metadata correctness already excluded the wrong symbol/period at
+    // the DB-filter stage; this is the semantic-cannot-override-
+    // relevance floor — a candidate needs REAL lexical grounding
+    // (not just a lucky cosine score) to ever be returned.
+    .filter((item) => item.finalScore >= minRelevanceScore * HYBRID_LEXICAL_ELIGIBILITY_FRACTION)
+    .sort((a, b) => b.rrfScore - a.rrfScore);
+
+  if (!eligible.length) {
+    return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
+  }
+
+  const deduped = dropNearDuplicates(
+    eligible.map((item) => ({
+      ...item.doc,
+      __score: item.rrfScore,
+      __debug: {
+        ...item.debug,
+        cosineScore: item.cosineScore,
+        sentenceScore: item.sentenceSupport.score,
+        supportingSentence: item.sentenceSupport.sentence,
+        rrfScore: item.rrfScore,
+        finalScore: item.rrfScore,
+      },
+      text: item.doc.text,
+    })),
+    NEAR_DUPLICATE_JACCARD_THRESHOLD,
+    aliasIndex,
+  );
+
+  return {
+    status: RETRIEVAL_STATUS.SUCCESS,
+    results: deduped.slice(0, topK).map((doc) => toEvidenceShape(doc, doc.__score, doc.__debug)),
   };
 };
 
@@ -478,7 +782,7 @@ const atlasVectorRetrieve = async ({
  *     since this layer never executes or interprets the text either way.
  */
 export const retrieveResearchEvidence = async ({
-  query, symbols, fiscalYears = [], documentTypes = [], topK = DEFAULT_TOP_K, deadlineAt = null, minRelevanceScore = null, signal = null,
+  query, symbols, fiscalYears = [], documentTypes = [], topK = DEFAULT_TOP_K, deadlineAt = null, minRelevanceScore = null, signal = null, mode: requestedMode = null,
 } = {}) => {
   const startedAt = Date.now();
   const boundedTopK = Math.max(1, Math.min(MAX_TOP_K, Number(topK) || DEFAULT_TOP_K));
@@ -494,25 +798,37 @@ export const retrieveResearchEvidence = async ({
   }
 
   const normalizedSymbols = symbols.map((s) => String(s).toUpperCase());
-  const mode = isVectorSearchConfigured() ? RETRIEVAL_MODES.ATLAS_VECTOR : RETRIEVAL_MODES.LEXICAL_FALLBACK;
-  // The two modes score on entirely different scales (a composite
-  // lexical/phrase/metric/period/authority sum vs. a cosine-similarity-
-  // like vectorSearchScore) — an explicit caller override applies to
-  // whichever mode actually runs; otherwise each mode gets its OWN
-  // calibrated default rather than sharing one number that would be
-  // meaningless for at least one of them.
+  // Mode selection priority: an explicit per-call `mode` always wins
+  // (this is how the evaluation harness requests lexical-only vs. hybrid
+  // results separately from the SAME dataset) — otherwise
+  // VECTOR_SEARCH_ENABLED (never turned on in this phase) beats
+  // HYBRID_RERANK_ENABLED, which beats the LEXICAL_FALLBACK default.
+  const mode = requestedMode
+    || (isVectorSearchConfigured() ? RETRIEVAL_MODES.ATLAS_VECTOR
+      : (isHybridRerankConfigured() ? RETRIEVAL_MODES.LOCAL_HYBRID_RERANK : RETRIEVAL_MODES.LEXICAL_FALLBACK));
+  // Each mode scores on its own scale (a composite lexical sum, an RRF
+  // score, or a cosine-similarity-like vectorSearchScore) — an explicit
+  // caller override applies to whichever mode actually runs; otherwise
+  // each mode gets its OWN calibrated default.
   const effectiveMinRelevanceScore = minRelevanceScore != null
     ? minRelevanceScore
     : (mode === RETRIEVAL_MODES.ATLAS_VECTOR ? DEFAULT_MIN_VECTOR_RELEVANCE_SCORE : DEFAULT_MIN_RELEVANCE_SCORE);
 
   try {
-    const outcome = mode === RETRIEVAL_MODES.ATLAS_VECTOR
-      ? await atlasVectorRetrieve({
+    let outcome;
+    if (mode === RETRIEVAL_MODES.ATLAS_VECTOR) {
+      outcome = await atlasVectorRetrieve({
         query, symbols: normalizedSymbols, fiscalYears, documentTypes, topK: boundedTopK, minRelevanceScore: effectiveMinRelevanceScore, signal,
-      })
-      : await lexicalRetrieve({
+      });
+    } else if (mode === RETRIEVAL_MODES.LOCAL_HYBRID_RERANK) {
+      outcome = await localHybridRerank({
+        query, symbols: normalizedSymbols, fiscalYears, documentTypes, topK: boundedTopK, minRelevanceScore: effectiveMinRelevanceScore, signal,
+      });
+    } else {
+      outcome = await lexicalRetrieve({
         query, symbols: normalizedSymbols, fiscalYears, documentTypes, topK: boundedTopK, minRelevanceScore: effectiveMinRelevanceScore,
       });
+    }
 
     // No-cross-company-leakage as a defensive double-check, not just a
     // query filter — every returned result's symbol must be one of the
@@ -522,10 +838,16 @@ export const retrieveResearchEvidence = async ({
       logger.warn(`[ResearchRetrieverService] dropped ${leaked.length} result(s) with a symbol outside the requested set — this should never happen`);
     }
 
+    // A hybrid attempt that honestly fell back to lexical-only (query
+    // embedding unavailable) is reported with the retrievalMode it
+    // actually used — never claims LOCAL_HYBRID_RERANK ran when it did
+    // not, and never silently mislabeled as ATLAS_VECTOR either.
+    const actualMode = outcome.fellBackToLexical ? RETRIEVAL_MODES.LEXICAL_FALLBACK : mode;
+
     return {
       status: outcome.status,
       results: outcome.results.filter((r) => normalizedSymbols.includes(r.symbol)),
-      retrievalMode: mode,
+      retrievalMode: actualMode,
       durationMs: Date.now() - startedAt,
       reason: outcome.reason || null,
     };
@@ -537,4 +859,6 @@ export const retrieveResearchEvidence = async ({
   }
 };
 
-export default { RETRIEVAL_MODES, RETRIEVAL_STATUS, isVectorSearchConfigured, retrieveResearchEvidence, scoreChunkAgainstQuery };
+export default {
+  RETRIEVAL_MODES, RETRIEVAL_STATUS, isVectorSearchConfigured, isHybridRerankConfigured, retrieveResearchEvidence, scoreChunkAgainstQuery, cosineSimilarity,
+};
