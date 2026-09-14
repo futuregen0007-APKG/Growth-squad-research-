@@ -5,6 +5,7 @@ import { formatMissingEvidenceForPrompt } from '../evidenceCoverage.js';
 import { SAFE_REASONS } from '../safeReasons.js';
 import { boundedTimeout, hasBudgetFor } from '../requestBudget.js';
 import { extractCitations } from '../citations.js';
+import { EVIDENCE_DEPENDENT_INTENTS } from '../claimValidation.js';
 import { logger } from '../../utils/logger.js';
 
 // Re-exported unchanged for backward compatibility — extractCitations now
@@ -85,6 +86,32 @@ export const composeAnswer = async (state) => {
   // mergeToolResults — is the reliable signal for "did any tool actually
   // run this turn," regardless of what the LATEST round's plan was.
   const isGeneralEducation = state.intent === 'GENERAL_EDUCATION' || !state.toolResults.length;
+
+  // Phase 4A item 9 (zero-evidence efficiency fix): the Phase 3 hardening
+  // benchmark showed the primary comparison question needed a full
+  // compose-then-repair round trip in 10/10 runs, purely to arrive back
+  // at the SAME deterministic "I don't have verified data" fallback
+  // buildSafeFallback.js would have produced anyway — evidence-dependent
+  // tools genuinely ran (toolResults.length > 0) but came back with zero
+  // usable evidence, so there was never anything real for a draft to cite
+  // in the first place. Detecting that HERE, before spending an LLM call
+  // on a draft that deterministic validation was always going to reject,
+  // skips both the compose call and the repair call it would otherwise
+  // trigger. validateFinalAnswer treats ABSTAINED as already-terminal
+  // (same as SKIPPED_GENERAL_EDUCATION/FAILED_SAFE) and graph.js's
+  // routeAfterValidation sends it straight to buildSafeFallback, which
+  // builds the honest, per-dimension "unavailable" answer from the real
+  // evidenceCoverage/missingEvidence state — never a fabricated draft.
+  // Never fires for GENERAL_EDUCATION/UNSUPPORTED (excluded from
+  // EVIDENCE_DEPENDENT_INTENTS), and never fires when tools never ran at
+  // all (toolResults.length === 0 is a different, pre-existing case —
+  // see isGeneralEducation above — not what this fix targets) or when
+  // SOME evidence exists (a partial answer still has real content worth
+  // composing and citing).
+  if (EVIDENCE_DEPENDENT_INTENTS.has(state.intent) && state.toolResults.length > 0 && !state.evidence.length) {
+    return { validationStatus: 'ABSTAINED' };
+  }
+
   const userPrompt = state.intent === 'UNSUPPORTED'
     ? `${UNSUPPORTED_SYSTEM_NOTE}\n\nUser question: "${text}"`
     : isGeneralEducation

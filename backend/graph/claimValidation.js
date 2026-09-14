@@ -36,14 +36,16 @@ export const SAFE_VALIDATION_REASONS = Object.freeze({
 // inherently need company-specific facts" — re-declared here (rather than
 // imported) to avoid a two-way dependency between graph/nodes/* and this
 // plain-data module; kept in sync deliberately (both are short, stable
-// lists changed together whenever intents change).
+// lists changed together whenever intents change). Exported so
+// composeAnswer.js's Phase 4A zero-evidence fast path (see its own module
+// note) can reuse the SAME list rather than a third copy.
 //
 // Hardening: WATCHLIST_ANALYSIS/PORTFOLIO_ANALYSIS added here (they were
 // missing from the original Phase 3 list) — a watchlist/portfolio answer
 // makes market claims about the user's real holdings and is exactly as
 // evidence-dependent as a plain company lookup; see the hardening
 // report's required verifier-eligibility policy.
-const EVIDENCE_DEPENDENT_INTENTS = new Set([
+export const EVIDENCE_DEPENDENT_INTENTS = new Set([
   'LIVE_MARKET_DATA', 'COMPANY_RESEARCH', 'EARNINGS_INTELLIGENCE',
   'DOCUMENT_RESEARCH', 'NEWS_RESEARCH', 'STOCK_COMPARISON', 'FOLLOW_UP',
   'WATCHLIST_ANALYSIS', 'PORTFOLIO_ANALYSIS',
@@ -253,5 +255,5 @@ export const needsClaimVerifier = ({
 };
 
 export default {
-  SAFE_VALIDATION_REASONS, runDeterministicChecks, needsClaimVerifier, extractCitationIndexes,
+  SAFE_VALIDATION_REASONS, runDeterministicChecks, needsClaimVerifier, extractCitationIndexes, EVIDENCE_DEPENDENT_INTENTS,
 };

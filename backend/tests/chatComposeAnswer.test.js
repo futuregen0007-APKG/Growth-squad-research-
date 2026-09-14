@@ -26,7 +26,38 @@ const baseState = (overrides = {}) => ({
   ...overrides,
 });
 
-test('Phase 2 regression: a replan round that legitimately ends with an empty toolPlan must NOT be treated as "no tools were needed" when real toolResults exist', async () => {
+test('Phase 2 regression + Phase 4A fast path: a replan round that legitimately ends with an empty toolPlan and zero evidence abstains directly, with NO OpenAI call at all', async () => {
+  const originalGetClient = OpenAIClientFactory.getClient;
+  const originalIsConfigured = OpenAIClientFactory.isConfigured;
+  OpenAIClientFactory.isConfigured = () => true;
+  const capturedCalls = [];
+  let called = false;
+  OpenAIClientFactory.getClient = () => { called = true; return makeFakeStreamingClient(capturedCalls); };
+
+  try {
+    // Simulates exactly the live-found scenario: round 2's replan found
+    // nothing actionable and returned toolPlan: [], but toolResults (from
+    // round 1, accumulated via state.js's mergeToolResults) is non-empty.
+    // Phase 4A's zero-evidence fast path (see composeAnswer.js) now
+    // intercepts this exact shape BEFORE any prompt is even built — a
+    // strictly stronger guarantee than the original Phase 2 fix (which
+    // only ensured the RIGHT prompt was used; now no LLM call happens at
+    // all when there is genuinely nothing to compose from).
+    const result = await composeAnswer(baseState({
+      toolPlan: [], // the LATEST round's plan -- legitimately empty
+      toolResults: [{ tool: 'compareStocks', status: 'EMPTY', symbol: null }], // but tools DID run
+      evidence: [], // and came back with nothing
+    }));
+
+    assert.equal(called, false, 'the zero-evidence fast path must skip the OpenAI call entirely, not just pick a different prompt');
+    assert.deepEqual(result, { validationStatus: 'ABSTAINED' });
+  } finally {
+    OpenAIClientFactory.getClient = originalGetClient;
+    OpenAIClientFactory.isConfigured = originalIsConfigured;
+  }
+});
+
+test('Phase 2 regression (nonzero evidence): a replan round ending with an empty toolPlan but real toolResults/evidence still uses the evidence-grounded prompt, never the "no tools were needed" framing', async () => {
   const originalGetClient = OpenAIClientFactory.getClient;
   const originalIsConfigured = OpenAIClientFactory.isConfigured;
   OpenAIClientFactory.isConfigured = () => true;
@@ -34,18 +65,20 @@ test('Phase 2 regression: a replan round that legitimately ends with an empty to
   OpenAIClientFactory.getClient = () => makeFakeStreamingClient(capturedCalls);
 
   try {
-    // Simulates exactly the live-found scenario: round 2's replan found
-    // nothing actionable and returned toolPlan: [], but toolResults (from
-    // round 1, accumulated via state.js's mergeToolResults) is non-empty.
+    // Same "empty latest toolPlan" shape as above, but this time SOME real
+    // evidence exists (e.g. price came through even though financials
+    // didn't) -- the zero-evidence fast path must NOT fire here, and the
+    // original Phase 2 prompt-selection fix must still hold.
     await composeAnswer(baseState({
-      toolPlan: [], // the LATEST round's plan -- legitimately empty
-      toolResults: [{ tool: 'compareStocks', status: 'EMPTY', symbol: null }], // but tools DID run
+      toolPlan: [],
+      toolResults: [{ tool: 'compareStocks', status: 'SUCCESS', symbol: null }],
+      evidence: [{ evidenceId: 'e1', claimType: 'LIVE_PRICE', symbol: 'HAL', title: 'HAL price', excerpt: 'Price 4905' }],
     }));
 
     const userMessage = capturedCalls[0].messages.find((m) => m.role === 'user');
     assert.ok(
       !userMessage.content.includes('no citations needed since no company-specific tool data was used'),
-      'must not fall back to the "no tools were needed" general-education framing when tools genuinely ran this turn',
+      'must not fall back to the "no tools were needed" general-education framing when tools genuinely ran and produced real evidence',
     );
     assert.ok(userMessage.content.includes('Compare HAL and BEL'));
   } finally {

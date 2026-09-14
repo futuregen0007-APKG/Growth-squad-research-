@@ -37,7 +37,14 @@ export const validateFinalAnswer = async (state) => {
   // fallback text) — nothing to re-check, pass straight through. Also
   // covers composeAnswer's genuine-cancellation path (FAILED_SAFE,
   // draftAnswer: null) — already terminal, nothing more to compute.
-  if (state.validationStatus === 'SKIPPED_GENERAL_EDUCATION' || state.validationStatus === 'FAILED_SAFE') {
+  //
+  // ABSTAINED here specifically covers composeAnswer's Phase 4A
+  // zero-evidence fast path (see its own module note): it deliberately
+  // never sets draftAnswer at all (there was nothing worth drafting), so
+  // this MUST be checked before the `draftAnswer == null` branch below —
+  // otherwise a real, deliberate ABSTAINED would be misread as the
+  // cancellation case and mislabeled FAILED_SAFE.
+  if (state.validationStatus === 'SKIPPED_GENERAL_EDUCATION' || state.validationStatus === 'FAILED_SAFE' || state.validationStatus === 'ABSTAINED') {
     return {};
   }
 

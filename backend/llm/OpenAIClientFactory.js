@@ -43,6 +43,12 @@ dotenv.config();
 // an unverified, potentially unavailable or more expensive model.
 const DEFAULT_CHAT_MODEL = 'gpt-4o-mini';
 const DEFAULT_SUMMARY_MODEL = 'gpt-4o-mini';
+// Phase 4A: OpenAI's smallest/cheapest current embedding model
+// (1536 dimensions, $0.02 / 1M tokens as of this model's release) —
+// confirmed supported by the installed openai@6.49.0 SDK's
+// `client.embeddings.create()`. Never defaults to `-large` (5x the cost)
+// or an older `ada-002` model without an explicit env var opt-in.
+const DEFAULT_EMBEDDING_MODEL = 'text-embedding-3-small';
 
 export const LLM_CONFIG = {
   // OPENAI_ROUTING_MODEL / OPENAI_SYNTHESIS_MODEL are the new, explicit
@@ -57,6 +63,18 @@ export const LLM_CONFIG = {
   // original single OPENAI_CHAT_MODEL var, so an existing deployment needs
   // no new env var to get a real, working model here.
   get validationModel() { return process.env.OPENAI_VALIDATION_MODEL || this.routingModel; },
+  // Phase 4A: RAG chunk embeddings. Deliberately its OWN env var with no
+  // fallback chain into the chat models above — an embedding model and a
+  // chat model are never interchangeable, so there is no sensible
+  // "backward compatible" default to inherit the way routing/synthesis
+  // fall back to OPENAI_CHAT_MODEL.
+  get embeddingModel() { return process.env.OPENAI_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL; },
+  // A version tag stored alongside every chunk's embedding — bump this
+  // (via env, e.g. when the SAME model name's behavior is suspected to
+  // have drifted, or to force a deliberate re-embed) so old and new
+  // vectors are never silently compared against each other. Defaults to
+  // '1', not tied to the SDK/package version.
+  get embeddingVersion() { return process.env.OPENAI_EMBEDDING_VERSION || '1'; },
   /** @deprecated use routingModel (or synthesisModel for composeAnswer) — kept only so any caller not yet migrated still resolves a real model. */
   get chatModel() { return this.routingModel; },
   get summaryModel() { return process.env.OPENAI_SUMMARY_MODEL || DEFAULT_SUMMARY_MODEL; },

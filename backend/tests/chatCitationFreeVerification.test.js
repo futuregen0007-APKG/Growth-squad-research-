@@ -152,8 +152,14 @@ test('required test 3: a citation-free UNSUPPORTED claim is removed by repair, n
     verifierResponses: [unsupportedClaim, []], // round 2's repaired draft has no claims left to flag
     repairText: "I don't have verified data about TCS's European insurance market expansion.",
   }, async () => {
+    // "performance" triggers planTools.js's FINANCIALS_KEYWORDS, so the
+    // deterministic COMPANY_RESEARCH plan calls getCompanyFinancials (not
+    // just getCompanyResearch) -- giving this turn real, nonzero evidence
+    // (otherwise Phase 4A's zero-evidence fast path -- composeAnswer.js --
+    // would abstain directly without ever reaching compose/repair at all,
+    // which defeats what THIS test is specifically checking).
     await withMockedFinancials(FIN_EVIDENCE, async () => {
-      const finalState = await graph.invoke({ messages: [new HumanMessage('Tell me about TCS European expansion')], onEvent: () => {} });
+      const finalState = await graph.invoke({ messages: [new HumanMessage("Tell me about TCS's performance and European expansion")], onEvent: () => {} });
       assert.equal(finalState.repairCount, 1);
       // The honest "I don't have data about X" abstention legitimately
       // still names the topic -- what must never survive is the FABRICATED
@@ -287,9 +293,13 @@ test('required test 13: a rejected citation-free draft (repair also fails to fix
       // already exhausted (repairCount 1), so this must fall to buildSafeFallback.
       repairText: 'TCS secretly controls a shadow subsidiary, guaranteed to be worth billions.',
     }, async () => {
+      // "performance" triggers getCompanyFinancials being planned (see the
+      // Phase 4A comment on test 3 above) -- gives this turn real, nonzero
+      // evidence so it reaches compose/repair instead of the zero-evidence
+      // fast path abstaining directly.
       await withMockedFinancials(FIN_EVIDENCE, async () => {
         const finalState = await graph.invoke({
-          messages: [new HumanMessage('Tell me about TCS')],
+          messages: [new HumanMessage("Tell me about TCS's performance")],
           userId: USER_ID, threadId: THREAD_ID, currentMessageId: new mongoose.Types.ObjectId().toString(),
           onEvent: (e) => emitted.push(e),
         });

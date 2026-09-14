@@ -112,7 +112,7 @@ builder.addEdge('composeAnswer', 'validateFinalAnswer');
 export const routeAfterValidation = (state) => {
   if (state.validationStatus === 'PASSED' || state.validationStatus === 'SKIPPED_GENERAL_EDUCATION') return 'publishFinalAnswer';
   if (state.validationStatus === 'REPAIR_REQUIRED' && (state.repairCount || 0) < 1) return 'repairAnswer';
-  return 'buildSafeFallback'; // FAILED_SAFE, or REPAIR_REQUIRED with the one repair already spent
+  return 'buildSafeFallback'; // FAILED_SAFE, ABSTAINED (composeAnswer's Phase 4A zero-evidence fast path), or REPAIR_REQUIRED with the one repair already spent
 };
 builder.addConditionalEdges('validateFinalAnswer', routeAfterValidation);
 builder.addEdge('repairAnswer', 'validateFinalAnswer');
