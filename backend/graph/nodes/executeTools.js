@@ -104,16 +104,24 @@ export const executeTools = async (state) => {
     const outcome = settledByIndex.get(masterIndex);
     const isDeduplicated = masterIndex !== index;
 
+    // The single symbol this step targeted, if any (compareStocks' plural
+    // `symbols` is deliberately excluded here — its own per-symbol
+    // breakdown already lives in its result's `data`; see
+    // evidenceCoverage.js, which reads that nested structure directly for
+    // compareStocks and this top-level `symbol` field for every other
+    // symbol-scoped tool).
+    const stepSymbol = typeof step.args?.symbol === 'string' ? step.args.symbol.toUpperCase() : null;
+
     let toolResult;
     if (outcome.status === 'fulfilled') {
-      toolResult = { ...outcome.value, deduplicated: isDeduplicated };
+      toolResult = { ...outcome.value, deduplicated: isDeduplicated, fingerprint: fingerprints[index], symbol: stepSymbol };
     } else {
       logger.warn(`[Graph] tool ${step.tool} rejected: ${outcome.reason?.message}`);
       toolResult = {
         tool: step.tool, status: 'ERROR', data: null, evidence: [],
         resultCount: 0, evidenceCount: 0, errorCode: 'TOOL_REJECTED',
         fetchedAt: new Date().toISOString(), warning: 'This data source failed unexpectedly.',
-        durationMs: outcome.durationMs, deduplicated: isDeduplicated,
+        durationMs: outcome.durationMs, deduplicated: isDeduplicated, fingerprint: fingerprints[index], symbol: stepSymbol,
       };
     }
 
@@ -136,8 +144,29 @@ export const executeTools = async (state) => {
 
   const evidence = [...evidenceByFingerprint.values()].flat();
 
+  // Underlying-operation fingerprints actually attempted THIS round, for
+  // Phase 2's cross-round toolCallFingerprints (state.js) — used by
+  // replanMissingEvidence.js to recognize a gap already tried (even one
+  // that happened INSIDE a compareStocks step, via its own
+  // operationFingerprints) and never repeat it. Computed once per UNIQUE
+  // executed step (uniqueIndexes), never per deduplicated repeat, since a
+  // repeat never made a real call.
+  const toolCallFingerprints = [];
+  let providerOperationCount = 0;
+  uniqueIndexes.forEach((index) => {
+    const outcome = settledByIndex.get(index);
+    const value = outcome.status === 'fulfilled' ? outcome.value : null;
+    if (Array.isArray(value?.operationFingerprints) && value.operationFingerprints.length) {
+      toolCallFingerprints.push(...value.operationFingerprints);
+      providerOperationCount += value.operationCount ?? value.operationFingerprints.length;
+    } else {
+      toolCallFingerprints.push(fingerprints[index]);
+      providerOperationCount += 1;
+    }
+  });
+
   return {
-    toolResults, evidence, warnings, deduplicatedToolCalls,
+    toolResults, evidence, warnings, deduplicatedToolCalls, toolCallFingerprints, providerOperationCount,
   };
 };
 

@@ -1,6 +1,7 @@
 import { OpenAIClientFactory, LLM_CONFIG } from '../../llm/OpenAIClientFactory.js';
 import { mapOpenAIError } from '../../llm/errors.js';
 import { buildSystemPrompt, answerComposerPrompt } from '../prompts/index.js';
+import { formatMissingEvidenceForPrompt } from '../evidenceCoverage.js';
 import { SAFE_REASONS } from '../safeReasons.js';
 import { boundedTimeout, hasBudgetFor } from '../requestBudget.js';
 import { logger } from '../../utils/logger.js';
@@ -59,11 +60,33 @@ export const composeAnswer = async (state) => {
   const lastMessage = state.messages[state.messages.length - 1];
   const text = String(lastMessage?.content || '');
 
+  // Phase 2 bug found via live evaluation: this used to check
+  // `!state.toolPlan.length` to mean "planTools decided no tool was
+  // needed." That stopped being true once a bounded replan round could
+  // exist (nodes/replanMissingEvidence.js) — a replan round that
+  // correctly finds nothing further worth fetching (e.g. every gap is
+  // UNAVAILABLE with no alternative tool) legitimately returns
+  // `toolPlan: []`, overwriting round 1's real plan even though real
+  // tools DID run and produced real (if empty/unavailable) toolResults.
+  // Composing with GENERAL_EDUCATION_SYSTEM_NOTE in that case is actively
+  // wrong: that note explicitly tells the model "no citations needed,
+  // answer from your own knowledge" for what was really an
+  // evidence-dependent question — confirmed live, this caused a
+  // "Compare HAL and BEL" comparison (both symbols UNAVAILABLE from a
+  // real IndianAPI rate limit) to be answered with fabricated general
+  // knowledge (invented founding years, etc.) instead of the honest
+  // "I don't have data right now" the warnings already correctly said.
+  // toolResults — accumulated across BOTH rounds via state.js's
+  // mergeToolResults — is the reliable signal for "did any tool actually
+  // run this turn," regardless of what the LATEST round's plan was.
   const userPrompt = state.intent === 'UNSUPPORTED'
     ? `${UNSUPPORTED_SYSTEM_NOTE}\n\nUser question: "${text}"`
-    : state.intent === 'GENERAL_EDUCATION' || !state.toolPlan.length
+    : state.intent === 'GENERAL_EDUCATION' || !state.toolResults.length
       ? `${GENERAL_EDUCATION_SYSTEM_NOTE}\n\nUser question: "${text}"`
-      : answerComposerPrompt({ message: text, conversationSummary: state.conversationSummary, evidence: state.evidence, toolResults: state.toolResults, warnings: state.warnings });
+      : answerComposerPrompt({
+        message: text, conversationSummary: state.conversationSummary, evidence: state.evidence, toolResults: state.toolResults,
+        warnings: state.warnings, missingDataNotes: formatMissingEvidenceForPrompt(state.missingEvidence),
+      });
 
   // Never start a synthesis call with essentially no budget left — a
   // partial-evidence, honest "ran out of time" answer beats hanging past

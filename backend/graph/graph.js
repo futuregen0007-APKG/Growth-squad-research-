@@ -8,6 +8,8 @@ import { extractEntities } from './nodes/extractEntities.js';
 import { planTools } from './nodes/planTools.js';
 import { executeTools } from './nodes/executeTools.js';
 import { validateEvidence } from './nodes/validateEvidence.js';
+import { assessEvidenceSufficiency } from './nodes/assessEvidenceSufficiency.js';
+import { replanMissingEvidence } from './nodes/replanMissingEvidence.js';
 import { composeAnswer } from './nodes/composeAnswer.js';
 import { validateFinalAnswer } from './nodes/validateFinalAnswer.js';
 import { logDiagnostics } from './nodes/logDiagnostics.js';
@@ -25,12 +27,22 @@ import { withNodeTiming } from './timing.js';
  *     → (invalid input) ─────────────────────────────────────────► composeAnswer
  *     → loadThreadMemory → loadUserContext → classifyIntent → extractEntities → planTools
  *     → (no tools planned) ──────────────────────────────────────► composeAnswer
- *     → executeTools → validateEvidence → composeAnswer
+ *     → executeTools → validateEvidence → assessEvidenceSufficiency
+ *     → (needsReplan) ──► replanMissingEvidence → executeTools (cycle back)
+ *     → (else) ─────────────────────────────────────────────────► composeAnswer
  *     → validateFinalAnswer → logDiagnostics → saveMemory → END
  *
  * Conditional edges skip tool execution entirely for purely educational
  * questions or when planTools decided no tool is needed — the graph never
  * runs every node for every question (Phase 11).
+ *
+ * Phase 2's assessEvidenceSufficiency → replanMissingEvidence → executeTools
+ * cycle is the graph's only cycle, and is guaranteed to terminate: replanCount
+ * is capped at 1 (assessEvidenceSufficiency's needsReplan check, enforced
+ * again inside replanMissingEvidence itself), so executeTools can run AT
+ * MOST twice in one turn. state.js's mergeToolResults/mergeEvidence
+ * reducers accumulate across both rounds rather than the second round
+ * overwriting the first (see graph/state.js's Phase 2 notes).
  */
 
 const builder = new StateGraph(GraphState);
@@ -47,6 +59,8 @@ builder.addNode('extractEntities', withNodeTiming('extractEntities', extractEnti
 builder.addNode('planTools', withNodeTiming('planTools', planTools));
 builder.addNode('executeTools', withNodeTiming('executeTools', executeTools));
 builder.addNode('validateEvidence', withNodeTiming('validateEvidence', validateEvidence));
+builder.addNode('assessEvidenceSufficiency', withNodeTiming('assessEvidenceSufficiency', assessEvidenceSufficiency));
+builder.addNode('replanMissingEvidence', withNodeTiming('replanMissingEvidence', replanMissingEvidence));
 builder.addNode('composeAnswer', withNodeTiming('composeAnswer', composeAnswer));
 builder.addNode('validateFinalAnswer', withNodeTiming('validateFinalAnswer', validateFinalAnswer));
 builder.addNode('logDiagnostics', withNodeTiming('logDiagnostics', logDiagnostics));
@@ -64,7 +78,10 @@ builder.addEdge('extractEntities', 'planTools');
 builder.addConditionalEdges('planTools', (state) => (state.toolPlan.length ? 'executeTools' : 'composeAnswer'));
 
 builder.addEdge('executeTools', 'validateEvidence');
-builder.addEdge('validateEvidence', 'composeAnswer');
+builder.addEdge('validateEvidence', 'assessEvidenceSufficiency');
+
+builder.addConditionalEdges('assessEvidenceSufficiency', (state) => (state.needsReplan ? 'replanMissingEvidence' : 'composeAnswer'));
+builder.addEdge('replanMissingEvidence', 'executeTools');
 
 builder.addEdge('composeAnswer', 'validateFinalAnswer');
 builder.addEdge('validateFinalAnswer', 'logDiagnostics');

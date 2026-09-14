@@ -1,5 +1,7 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
+import dotenv from 'dotenv';
+import mongoose from 'mongoose';
 import {
   getLiveQuote, getCompanyResearch, getCompanyFinancials, getCompanyNews, getEarningsTimeline,
   getManagementPromiseDetails, searchResearchDocuments, getWatchlist, getPortfolio, compareStocks,
@@ -8,6 +10,19 @@ import {
 import ManagementPromise from '../models/ManagementPromise.js';
 import Watchlist from '../models/Watchlist.js';
 import PortfolioHolding from '../models/PortfolioHolding.js';
+
+// getManagementPromiseDetails(symbol) goes through ManagementPromiseService's
+// getCompanyPromises, which starts with `if (!isDbConnected()) return [];`
+// (a real mongoose.connection.readyState check, not mockable — it's a
+// local, unexported const in that service module) — so the Phase 2
+// regression tests below need a real connection open before their
+// ManagementPromise.find mock is ever reached, exactly like
+// tests/backfillPromises.test.js and this project's other Mongo-backed
+// test files already do.
+dotenv.config();
+if (mongoose.connection.readyState === 0) {
+  await mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/stock_market_ai');
+}
 
 // Every tool call is bounded by an explicit input check before any real
 // service call, so these never touch the network/DB/OpenAI.
@@ -87,6 +102,98 @@ test('getManagementPromiseDetails builds evidence with the real promise source U
   }
 });
 
+// ---------------------------------------------------------------------------
+// Phase 2 regression: getManagementPromiseDetails(symbol) previously
+// returned `evidence: []` unconditionally on the symbol path (the path an
+// actual GUIDANCE-dimension request reaches — see toolRegistry.js's
+// compareStocks), discarding every real promise record it had just
+// fetched. Fixed via the shared buildPromiseEvidence helper. Mocked at the
+// ManagementPromise.find MODEL level (a mutable static, same technique
+// already used above for ManagementPromise.findOne) rather than mocking
+// ManagementPromiseService's getCompanyPromises export directly — that
+// export is a plain ES module named binding and can't be monkey-patched
+// (the same limitation documented in tests/chatToolRegistryPhase1.test.js
+// for NewsAPIService.getStockNews).
+// ---------------------------------------------------------------------------
+const withMockedPromiseFind = async (records, fn) => {
+  const original = ManagementPromise.find;
+  ManagementPromise.find = () => ({ sort: () => ({ lean: async () => records }) });
+  try {
+    await fn();
+  } finally {
+    ManagementPromise.find = original;
+  }
+};
+
+const realResearchPromise = (overrides = {}) => ({
+  symbol: 'TCS',
+  promise: { statement: 'Revenue to grow 12-14% in FY2026', targetPeriod: 'FY2026' },
+  verification: { status: 'PENDING' },
+  evidence: {
+    promiseSource: {
+      sourceUrl: 'https://tcs.com/ir/q1-fy26-call.pdf', sourceDate: '2025-05-01', publicationDate: '2025-05-01',
+      title: 'Q1 FY26 earnings call transcript', excerpt: 'We expect revenue growth of 12-14% for FY2026.', page: 3,
+    },
+  },
+  outcome: {},
+  ...overrides,
+});
+
+test('getManagementPromiseDetails(symbol) builds real evidence from fetched promise records (Phase 2 regression -- previously always [])', async () => {
+  await withMockedPromiseFind([realResearchPromise()], async () => {
+    const result = await getManagementPromiseDetails({ symbol: 'TCS' });
+    assert.equal(result.status, TOOL_STATUS.SUCCESS);
+    assert.ok(result.evidence.length >= 1, 'a genuine promise record must produce at least one citable evidence record');
+    assert.equal(result.evidence[0].claimType, 'MANAGEMENT_PROMISE');
+    assert.equal(result.evidence[0].sourceUrl, 'https://tcs.com/ir/q1-fy26-call.pdf');
+  });
+});
+
+test('getManagementPromiseDetails(symbol) never builds a PROMISE_OUTCOME record for a still-PENDING promise (forecast must never look like an achieved outcome)', async () => {
+  await withMockedPromiseFind([realResearchPromise({ verification: { status: 'PENDING' } })], async () => {
+    const result = await getManagementPromiseDetails({ symbol: 'TCS' });
+    assert.ok(!result.evidence.some((e) => e.claimType === 'PROMISE_OUTCOME'), 'a PENDING promise has no real outcome yet');
+  });
+});
+
+test('getManagementPromiseDetails(symbol) builds a distinct PROMISE_OUTCOME record once a promise has genuinely been evaluated', async () => {
+  const evaluated = realResearchPromise({
+    verification: { status: 'FULFILLED' },
+    evidence: {
+      promiseSource: realResearchPromise().evidence.promiseSource,
+      outcomeSource: {
+        sourceUrl: 'https://tcs.com/ir/q4-fy26-results.pdf', sourceDate: '2026-04-20', publicationDate: '2026-04-20',
+        title: 'Q4 FY26 results', excerpt: 'Full-year revenue grew 13.2%, within guided range.',
+      },
+    },
+  });
+  await withMockedPromiseFind([evaluated], async () => {
+    const result = await getManagementPromiseDetails({ symbol: 'TCS' });
+    const promiseRecord = result.evidence.find((e) => e.claimType === 'MANAGEMENT_PROMISE');
+    const outcomeRecord = result.evidence.find((e) => e.claimType === 'PROMISE_OUTCOME');
+    assert.ok(promiseRecord, 'the original forecast is still cited');
+    assert.ok(outcomeRecord, 'a genuinely evaluated promise gets its own distinct outcome evidence');
+    assert.equal(outcomeRecord.sourceUrl, 'https://tcs.com/ir/q4-fy26-results.pdf');
+    assert.notEqual(promiseRecord.claimType, outcomeRecord.claimType);
+  });
+});
+
+test('getManagementPromiseDetails(symbol) never fabricates evidence for a record missing required provenance', async () => {
+  const malformed = realResearchPromise({ evidence: { promiseSource: { sourceUrl: null, excerpt: null } } });
+  await withMockedPromiseFind([malformed], async () => {
+    const result = await getManagementPromiseDetails({ symbol: 'TCS' });
+    assert.equal(result.status, TOOL_STATUS.EMPTY, 'no citable source means EMPTY, never a fabricated SUCCESS');
+    assert.deepEqual(result.evidence, []);
+  });
+});
+
+test('getManagementPromiseDetails(symbol) returns EMPTY (not an error) when the company has no promise records at all', async () => {
+  await withMockedPromiseFind([], async () => {
+    const result = await getManagementPromiseDetails({ symbol: 'UNKNOWNCO' });
+    assert.equal(result.status, TOOL_STATUS.EMPTY);
+  });
+});
+
 // NOTE: getCompanyResearch/getCompanyFinancials call
 // CompanyResearchService.getCompanyResearchBundle() with no provider
 // override, which resolves the REAL configured IndianAPI provider — since
@@ -96,3 +203,7 @@ test('getManagementPromiseDetails builds evidence with the real promise source U
 // CompanyResearchService's own provider-injected tests (see
 // tests/companyResearchService.test.js) already cover the underlying
 // per-section isolation logic these two thin tool wrappers depend on.
+
+after(async () => {
+  await mongoose.disconnect().catch(() => {});
+});

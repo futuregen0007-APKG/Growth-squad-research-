@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { REQUESTED_DIMENSIONS } from './dimensions.js';
 
 /**
  * schemas.js
@@ -61,6 +62,12 @@ export const ToolArgsSchema = z.object({
   symbol: z.string().nullable(),
   symbols: z.array(z.string()).nullable(),
   promiseId: z.string().nullable(),
+  // Phase 2 "requested-dimension planning" — only compareStocks reads this
+  // (see graph/tools/toolRegistry.js); every other tool ignores an unknown
+  // arg key harmlessly. Validated against the same closed enum
+  // extractEntities resolves deterministically, so the LLM planning
+  // fallback path can never invent a dimension outside it.
+  dimensions: z.array(z.enum(REQUESTED_DIMENSIONS)).nullable(),
 });
 
 export const ToolPlanSchema = z.object({

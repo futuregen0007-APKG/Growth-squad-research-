@@ -2,6 +2,7 @@ import { OpenAIClientFactory, LLM_CONFIG } from '../../llm/OpenAIClientFactory.j
 import { ToolPlanSchema, APPROVED_TOOLS } from '../schemas.js';
 import { toolPlanPrompt } from '../prompts/index.js';
 import { AUTH_REQUIRED_TOOLS } from '../tools/toolRegistry.js';
+import { DEFAULT_COMPARISON_DIMENSIONS } from '../dimensions.js';
 import { invokeRoutingModel } from '../llmInvoke.js';
 import { logger } from '../../utils/logger.js';
 
@@ -32,7 +33,7 @@ const wantsFinancialsSignal = (message, entities) => FINANCIALS_KEYWORDS.test(me
  * chance to see if it can infer one from context; if not, executeTools
  * will simply have nothing to do and composeAnswer explains that).
  */
-const deterministicPlan = (intent, entities, message) => {
+const deterministicPlan = (intent, entities, message, requestedDimensions) => {
   const symbols = (entities.symbols || []).slice(0, 3);
   const primary = symbols[0];
 
@@ -73,8 +74,16 @@ const deterministicPlan = (intent, entities, message) => {
         : [{ tool: 'getEarningsTimeline', args: { symbol: primary } }];
     }
 
+    // Phase 2 canonical comparison planning: ONE compareStocks step,
+    // carrying the requested dimensions through — never a separate
+    // top-level getCompanyFinancials/getCompanyNews call alongside it (the
+    // confirmed regression: comparison planning duplicated financial
+    // calls and omitted requested news). compareStocks itself now fans
+    // out ONLY to these dimensions — see toolRegistry.js.
     case 'STOCK_COMPARISON':
-      return symbols.length >= 2 ? [{ tool: 'compareStocks', args: { symbols } }] : null;
+      return symbols.length >= 2
+        ? [{ tool: 'compareStocks', args: { symbols, dimensions: requestedDimensions?.length ? requestedDimensions : [...DEFAULT_COMPARISON_DIMENSIONS] } }]
+        : null;
 
     case 'COMPANY_RESEARCH': {
       if (!primary) return null;
@@ -121,7 +130,7 @@ export const planTools = async (state) => {
   const text = String(lastMessage?.content || '');
   const warnings = [];
 
-  let plan = deterministicPlan(state.intent, state.entities, text);
+  let plan = deterministicPlan(state.intent, state.entities, text, state.requestedDimensions);
   const llmCalls = [];
 
   if (plan === null) {
@@ -134,7 +143,7 @@ export const planTools = async (state) => {
         maxTokens: 400,
         schema: ToolPlanSchema,
         schemaName: 'tool_plan',
-        prompt: toolPlanPrompt(text, state.intent, state.entities),
+        prompt: toolPlanPrompt(text, state.intent, state.entities, state.requestedDimensions),
         signal: state.abortSignal,
         deadlineAt: state.deadlineAt,
       });

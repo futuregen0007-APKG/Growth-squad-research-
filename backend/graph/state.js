@@ -19,6 +19,82 @@ import { Annotation } from '@langchain/langgraph';
 
 const replace = (_current, update) => update;
 
+/**
+ * mergeToolResults - Phase 2 pre-implementation check #4. Phase 2's bounded
+ * replan cycle (assessEvidenceSufficiency -> replanMissingEvidence ->
+ * executeTools -> validateEvidence) calls executeTools a second time in the
+ * same turn. executeTools.js returns a FRESH {toolResults, evidence, ...}
+ * covering only the steps it just ran -- under the old `replace` reducer,
+ * round 2's return value would silently wipe out every round-1 result the
+ * moment the graph applied the update. This reducer instead accumulates.
+ *
+ * Identity = fingerprint (graph/toolFingerprint.js's normalized
+ * tool+args key -- the same identity executeTools.js already uses for its
+ * own request-local dedup within a single round), so:
+ *   - a genuinely new fingerprint (a different symbol, tool, or args a
+ *     replan round adds) is always appended as its own entry;
+ *   - a round that happens to re-touch the SAME fingerprint (e.g. a retry)
+ *     updates that one entry in place rather than duplicating it;
+ *   - a later FAILURE/ERROR/UNAVAILABLE for a fingerprint that already
+ *     succeeded is dropped -- once real data is in hand for a
+ *     symbol+operation, a subsequent unlucky attempt at the exact same
+ *     fingerprint must never make it look unavailable again. A later
+ *     SUCCESS is still allowed to refresh an earlier SUCCESS's data
+ *     (fresher real data is strictly better than stale real data).
+ * Entries missing a fingerprint (defensive only -- every real executeTools
+ * result carries one) are never merged/deduped against anything, so a
+ * malformed entry can only ever add, never silently vanish.
+ */
+export const mergeToolResults = (current = [], update = []) => {
+  if (!update.length) return current;
+  const merged = new Map();
+  let anonymousCounter = 0;
+  current.forEach((result) => {
+    const key = result?.fingerprint || `__no-fingerprint-current-${anonymousCounter++}`;
+    merged.set(key, result);
+  });
+  update.forEach((result) => {
+    const key = result?.fingerprint;
+    if (!key) { merged.set(`__no-fingerprint-update-${anonymousCounter++}`, result); return; }
+    const existing = merged.get(key);
+    if (existing && existing.status === 'SUCCESS' && result.status !== 'SUCCESS') return;
+    merged.set(key, result);
+  });
+  return [...merged.values()];
+};
+
+/**
+ * mergeEvidence - Phase 2 pre-implementation check #4 (evidence side).
+ * Identity here is deliberately NOT evidenceId: buildEvidenceRecord
+ * (graph/evidence.js) mints a fresh UUID on every single call, so two
+ * evidence records built from the exact same underlying provider fact
+ * (e.g. a replan round re-fetching the same live quote) would never
+ * collide on evidenceId even though they represent the same real-world
+ * fact. Instead this dedupes on the record's actual content identity —
+ * claim type + symbol + source + period + published date + title — so a
+ * second round's re-observation of an already-known fact never duplicates
+ * it, while two genuinely different facts (different symbol, claim type,
+ * source/period) are always both kept.
+ *
+ * An identity MATCH replaces the existing entry in place (never just
+ * dropped) rather than keeping whichever came first — this is what keeps
+ * validateEvidence.js's own dedup+prompt-trim step working correctly:
+ * validateEvidence deliberately re-returns `evidence: evidenceForPrompt(
+ * deduped)`, a TRIMMED transformation of the exact same records already in
+ * state.evidence (same identity, fewer fields) — that update must replace
+ * the untrimmed originals, not be silently discarded as "already seen."
+ */
+const evidenceIdentityKey = (record = {}) => [
+  record.claimType, record.symbol, record.sourceUrl, record.reportingPeriod, record.publishedAt, record.title,
+].map((value) => (value === null || value === undefined ? '' : String(value))).join('|');
+
+export const mergeEvidence = (current = [], update = []) => {
+  if (!update.length) return current;
+  const merged = new Map(current.map((record) => [evidenceIdentityKey(record), record]));
+  update.forEach((record) => { merged.set(evidenceIdentityKey(record), record); });
+  return [...merged.values()];
+};
+
 export const GraphState = Annotation.Root({
   messages: Annotation({
     reducer: (x, y) => x.concat(y),
@@ -70,6 +146,13 @@ export const GraphState = Annotation.Root({
     default: () => ({ symbols: [], companyNames: [], periods: [], comparisonMode: false }),
   }),
 
+  // Phase 2 "requested-dimension planning" (graph/dimensions.js) — the
+  // strict-enum data types the message actually asked for (PRICE,
+  // FINANCIALS, NEWS, GUIDANCE, ...), computed deterministically once in
+  // extractEntities and consumed by planTools' canonical compareStocks
+  // design and by the evidence-coverage matrix below.
+  requestedDimensions: Annotation({ reducer: replace, default: () => [] }),
+
   // Long-term memory (UserPreference) — read-only within a turn; writes go
   // through ChatThreadService.saveExplicitPreferences from saveMemory.
   userContext: Annotation({
@@ -78,8 +161,45 @@ export const GraphState = Annotation.Root({
   }),
 
   toolPlan: Annotation({ reducer: replace, default: () => [] }),
-  toolResults: Annotation({ reducer: replace, default: () => [] }),
-  evidence: Annotation({ reducer: replace, default: () => [] }),
+  // Phase 2 pre-check #4: executeTools may run a second time this turn (the
+  // bounded replan cycle) — these two fields accumulate across rounds
+  // instead of the round-2 return value overwriting round-1's, via
+  // mergeToolResults/mergeEvidence above. toolPlan itself stays `replace`:
+  // each round's plan is a fresh, self-contained instruction to executeTools,
+  // not something later rounds append to.
+  toolResults: Annotation({ reducer: mergeToolResults, default: () => [] }),
+  evidence: Annotation({ reducer: mergeEvidence, default: () => [] }),
+
+  // Phase 2 evidence-coverage matrix (assessEvidenceSufficiency) — recomputed
+  // FRESH from the full accumulated toolResults/evidence every time that
+  // node runs (never incremental itself — `replace` is correct here; the
+  // accumulation already happened one layer down, in toolResults/evidence).
+  evidenceCoverage: Annotation({ reducer: replace, default: () => [] }),
+  missingEvidence: Annotation({ reducer: replace, default: () => [] }),
+  // How many replan cycles have run this turn (hard cap: 1 — see
+  // replanMissingEvidence.js). The node computes current+1 itself and
+  // returns that, so `replace` is correct; this field is never reset mid-turn.
+  replanCount: Annotation({ reducer: replace, default: () => 0 }),
+  // Every tool-call fingerprint attempted this turn, across BOTH rounds —
+  // a deduplicating union (not a plain concat) so a replan round that
+  // happens to re-touch a round-1 fingerprint is still counted once.
+  toolCallFingerprints: Annotation({
+    reducer: (current = [], update = []) => (update.length ? [...new Set([...current, ...update.filter(Boolean)])] : current),
+    default: () => [],
+  }),
+  // Total underlying PROVIDER operations this turn (a single planned step
+  // like compareStocks can internally fan out to several — see its
+  // MAX_COMPARISON_OPERATIONS budget) — distinct from the top-level
+  // MAX_TOOL_CALLS_PER_REQUEST, which counts planned STEPS, not the calls
+  // each step may make underneath. Sums across rounds, never replaced.
+  providerOperationCount: Annotation({
+    reducer: (current = 0, update = 0) => current + (Number.isFinite(update) ? update : 0),
+    default: () => 0,
+  }),
+  // Transient routing signal set by assessEvidenceSufficiency and read
+  // ONLY by graph.js's conditional edge right after it — never persisted,
+  // never read by any other node (same category as onEvent/aborted below).
+  needsReplan: Annotation({ reducer: replace, default: () => false }),
 
   answer: Annotation({ reducer: replace, default: () => null }),
   citations: Annotation({ reducer: replace, default: () => [] }),

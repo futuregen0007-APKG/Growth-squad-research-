@@ -100,3 +100,46 @@ test('one provider opening does not affect a different provider\'s breaker', () 
   assert.equal(angelOne.getState(), CIRCUIT_STATE.OPEN);
   assert.equal(indianApi.getState(), CIRCUIT_STATE.CLOSED, 'an unrelated provider must never be disabled by this one opening');
 });
+
+// Phase 2 pre-implementation check #1: "one breaker per provider" must mean
+// one breaker shared across SEPARATE requests, not a fresh breaker created
+// (and its failure count silently reset to 0) on every tool call. This
+// matters once Phase 2 lets a single request call the same provider twice
+// (the bounded replan cycle) and once many different users' requests hit
+// the same provider concurrently -- in both cases the failure count must
+// accumulate on one instance, never restart per call.
+test('getProviderBreaker shares ONE breaker instance across many separate simulated requests -- failures accumulate cumulatively, never reset per request', () => {
+  __resetAllBreakersForTests();
+
+  // Each iteration re-fetches the breaker exactly the way real request-scoped
+  // code does (toolRegistry.js's withBreaker calls getProviderBreaker(name)
+  // fresh on every tool invocation -- it never holds a reference across
+  // calls) -- simulating N independent requests, each making its own single
+  // call to getProviderBreaker, rather than one test caching the reference.
+  const simulateOneRequestCallingProvider = (outcome) => {
+    const breaker = getProviderBreaker('angel-one', { failureThreshold: 4, cooldownMs: 60000 });
+    breaker.recordOutcome(outcome);
+    return breaker;
+  };
+
+  const firstRequestBreaker = simulateOneRequestCallingProvider({ errorCode: 'TIMEOUT' });
+  assert.equal(firstRequestBreaker.getDiagnostics().consecutiveFailures, 1);
+  assert.equal(firstRequestBreaker.getState(), CIRCUIT_STATE.CLOSED, 'a single request\'s single failure must not itself open the breaker');
+
+  const secondRequestBreaker = simulateOneRequestCallingProvider({ errorCode: 'TIMEOUT' });
+  const thirdRequestBreaker = simulateOneRequestCallingProvider({ errorCode: 'TIMEOUT' });
+  assert.equal(secondRequestBreaker, firstRequestBreaker, 'a later request must observe the SAME breaker instance, not a freshly constructed one');
+  assert.equal(thirdRequestBreaker, firstRequestBreaker);
+  assert.equal(thirdRequestBreaker.getDiagnostics().consecutiveFailures, 3, 'failures from three separate requests must accumulate on the one shared breaker');
+
+  const fourthRequestBreaker = simulateOneRequestCallingProvider({ errorCode: 'TIMEOUT' });
+  assert.equal(fourthRequestBreaker.getState(), CIRCUIT_STATE.OPEN, 'the 4th request\'s failure crosses the threshold on the shared counter');
+
+  // A 5th, otherwise-unrelated request (a different simulated tool call
+  // against the same provider) must see the breaker already OPEN -- proving
+  // state genuinely carries across request boundaries rather than each
+  // request starting from a clean slate.
+  const fifthRequestBreaker = getProviderBreaker('angel-one');
+  assert.equal(fifthRequestBreaker.getState(), CIRCUIT_STATE.OPEN);
+  assert.equal(fifthRequestBreaker.canAttempt(), false);
+});

@@ -40,6 +40,8 @@ import ManagementPromise from '../../models/ManagementPromise.js';
 import Watchlist from '../../models/Watchlist.js';
 import PortfolioHolding from '../../models/PortfolioHolding.js';
 import { buildEvidenceRecord } from '../evidence.js';
+import { DEFAULT_COMPARISON_DIMENSIONS } from '../dimensions.js';
+import { fingerprintToolCall } from '../toolFingerprint.js';
 import { SAFE_REASONS, classifyErrorCode } from '../safeReasons.js';
 import { boundedTimeout } from '../requestBudget.js';
 import { getProviderBreaker, isBreakerCountedFailure } from './circuitBreaker.js';
@@ -187,7 +189,7 @@ export const getLiveQuote = async ({ symbol }, context = {}) => {
 
   let circuitState = null;
   try {
-    const { value: quote, cacheStatus } = await getOrCompute(
+    const { value: quote, cacheStatus, storedAt } = await getOrCompute(
       buildCacheKey('getLiveQuote', normalized),
       CACHE_TTL_MS.LIVE_QUOTE,
       async () => {
@@ -207,7 +209,10 @@ export const getLiveQuote = async ({ symbol }, context = {}) => {
       publishedAt: quote.timestamp || new Date().toISOString(),
       excerpt: `Price ₹${quote.price}, change ${quote.changePct}% as of ${quote.timestamp}`,
     })].filter(Boolean);
-    return result('getLiveQuote', TOOL_STATUS.SUCCESS, quote, evidence, null, null, { cacheStatus, circuitState, cancellationMode: 'SOFT' });
+    // fetchedAt reflects when this value was actually obtained from the
+    // provider (storedAt, from toolCache.js) -- not "now" -- so a cache HIT
+    // never misrepresents its own freshness.
+    return result('getLiveQuote', TOOL_STATUS.SUCCESS, quote, evidence, null, null, { cacheStatus, circuitState, cancellationMode: 'SOFT', fetchedAt: new Date(storedAt).toISOString() });
   } catch (error) {
     const meta = { circuitState, cancellationMode: 'SOFT' };
     if (error.code === 'CANCELLED') return result('getLiveQuote', TOOL_STATUS.ERROR, null, [], 'Request was cancelled.', 'CANCELLED', meta);
@@ -389,7 +394,7 @@ export const getCompanyNews = async ({ symbol }, context = {}) => {
   if (!normalized) return result('getCompanyNews', TOOL_STATUS.ERROR, null, [], 'A symbol is required');
   let circuitState = null;
   try {
-    const { value: articles, cacheStatus } = await getOrCompute(
+    const { value: articles, cacheStatus, storedAt } = await getOrCompute(
       buildCacheKey('getCompanyNews', normalized),
       CACHE_TTL_MS.COMPANY_NEWS,
       async () => {
@@ -401,7 +406,7 @@ export const getCompanyNews = async ({ symbol }, context = {}) => {
         return outcome.value;
       },
     );
-    const meta = { cacheStatus, circuitState, cancellationMode: 'SOFT' };
+    const meta = { cacheStatus, circuitState, cancellationMode: 'SOFT', fetchedAt: new Date(storedAt).toISOString() };
     const evidence = articles.slice(0, 5).map((article) => buildEvidenceRecord({
       claimType: 'COMPANY_NEWS',
       symbol: normalized,
@@ -432,12 +437,12 @@ export const getEarningsTimeline = async ({ symbol }, context = {}) => {
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return result('getEarningsTimeline', TOOL_STATUS.ERROR, null, [], 'A symbol is required');
   try {
-    const { value: timeline, cacheStatus } = await getOrCompute(
+    const { value: timeline, cacheStatus, storedAt } = await getOrCompute(
       buildCacheKey('getEarningsTimeline', normalized),
       CACHE_TTL_MS.EARNINGS_TIMELINE,
       () => withTimeout(getCompanyTimeline(normalized), boundedCallTimeout(10000, context), 'getEarningsTimeline', context.signal),
     );
-    const meta = { cacheStatus, cancellationMode: 'SOFT' };
+    const meta = { cacheStatus, cancellationMode: 'SOFT', fetchedAt: new Date(storedAt).toISOString() };
     const evidence = timeline.promises.slice(0, 8).map((promise) => buildEvidenceRecord({
       claimType: 'PROMISE_OUTCOME',
       symbol: normalized,
@@ -457,29 +462,99 @@ export const getEarningsTimeline = async ({ symbol }, context = {}) => {
   }
 };
 
+// Statuses that mean "not yet evaluated" — a promise still in this state has
+// no real outcome to cite, only the original guidance/forecast itself.
+const UNEVALUATED_PROMISE_STATUSES = new Set(['PENDING', 'INSUFFICIENT_EVIDENCE']);
+
+/**
+ * buildPromiseEvidence - the ONE place a ManagementPromise document is
+ * turned into evidence, shared by both branches of getManagementPromiseDetails
+ * below. Fixes the confirmed Phase 0/1 regression: the symbol-path branch
+ * (the one actually reached by a comparison/GUIDANCE-dimension request —
+ * see toolRegistry.js's compareStocks) previously returned `evidence: []`
+ * unconditionally, discarding every real promise record it had just
+ * fetched. That is fixed here by building real evidence from the SAME
+ * fields the promiseId branch already trusted.
+ *
+ * Builds up to two DISTINCT records per promise, so a forecast is never
+ * presented as an achieved outcome and vice versa:
+ *   - MANAGEMENT_PROMISE: the original guidance/forecast statement itself,
+ *     sourced from evidence.promiseSource (schema-required on every
+ *     REAL_RESEARCH record — see models/ManagementPromise.js — so this is
+ *     always present for a genuine document, never fabricated here).
+ *   - PROMISE_OUTCOME: what actually happened, ONLY when the promise has
+ *     genuinely been evaluated (verification.status is not PENDING/
+ *     INSUFFICIENT_EVIDENCE) AND a real outcome source exists. A pending
+ *     promise never gets a PROMISE_OUTCOME record — there is no outcome
+ *     yet, and inventing one would misrepresent a forecast as fulfilled.
+ * A record missing its required provenance (sourceUrl/title/excerpt) is
+ * simply never built — "records lacking provenance stay non-citable" — and
+ * buildEvidenceRecord itself never invents a missing field.
+ */
+const buildPromiseEvidence = (promise) => {
+  const records = [];
+
+  const promiseSource = promise.evidence?.promiseSource;
+  // title prefers the actual promise statement (what was promised, in the
+  // company's own words) over the source document's title — matching the
+  // field mapping this tool already used before this fix, just now gated
+  // on the source actually being citable.
+  const promiseTitle = promise.promise?.statement || promiseSource?.title;
+  if (promiseSource?.sourceUrl && promiseSource?.excerpt && promiseTitle) {
+    records.push(buildEvidenceRecord({
+      claimType: 'MANAGEMENT_PROMISE',
+      symbol: promise.symbol,
+      title: promiseTitle,
+      sourceUrl: promiseSource.sourceUrl,
+      provider: promiseSource.sourceName || 'document-research',
+      publishedAt: promiseSource.publicationDate || promiseSource.sourceDate,
+      reportingPeriod: promise.promise?.targetPeriod,
+      excerpt: promiseSource.excerpt,
+      pageNumber: promiseSource.page,
+    }));
+  }
+
+  const status = promise.verification?.status;
+  const isEvaluated = status && !UNEVALUATED_PROMISE_STATUSES.has(status);
+  const outcomeSource = promise.evidence?.outcomeSource;
+  const outcomeExcerpt = outcomeSource?.excerpt || promise.outcome?.excerpt;
+  if (isEvaluated && outcomeSource?.sourceUrl && outcomeExcerpt) {
+    records.push(buildEvidenceRecord({
+      claimType: 'PROMISE_OUTCOME',
+      symbol: promise.symbol,
+      title: outcomeSource.title || `${promise.symbol} promise outcome — ${status}`,
+      sourceUrl: outcomeSource.sourceUrl,
+      provider: outcomeSource.sourceName || promise.outcome?.provider || 'document-research',
+      publishedAt: outcomeSource.publicationDate || outcomeSource.sourceDate || promise.outcome?.sourceDate,
+      reportingPeriod: promise.outcome?.actualPeriod || promise.promise?.targetPeriod,
+      excerpt: outcomeExcerpt,
+      pageNumber: null,
+    }));
+  }
+
+  return records.filter(Boolean);
+};
+
 export const getManagementPromiseDetails = async ({ promiseId, symbol, metric, period }) => {
   try {
     if (promiseId) {
       const promise = await ManagementPromise.findOne({ _id: promiseId, dataOrigin: 'REAL_RESEARCH' }).lean();
       if (!promise) return result('getManagementPromiseDetails', TOOL_STATUS.EMPTY, null, [], SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD);
-      const evidence = [buildEvidenceRecord({
-        claimType: 'MANAGEMENT_PROMISE',
-        symbol: promise.symbol,
-        title: promise.promise?.statement,
-        sourceUrl: promise.evidence?.promiseSource?.sourceUrl,
-        provider: 'document-research',
-        publishedAt: promise.evidence?.promiseSource?.publicationDate,
-        reportingPeriod: promise.promise?.targetPeriod,
-        excerpt: promise.evidence?.promiseSource?.excerpt,
-        pageNumber: promise.evidence?.promiseSource?.page,
-      })].filter(Boolean);
-      return result('getManagementPromiseDetails', TOOL_STATUS.SUCCESS, promise, evidence);
+      const evidence = buildPromiseEvidence(promise);
+      return result('getManagementPromiseDetails', evidence.length ? TOOL_STATUS.SUCCESS : TOOL_STATUS.EMPTY, promise, evidence, evidence.length ? null : SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD);
     }
 
     const normalized = normalizeSymbol(symbol);
     if (!normalized) return result('getManagementPromiseDetails', TOOL_STATUS.ERROR, null, [], 'A promiseId or symbol is required');
     const promises = await getCompanyPromises(normalized, { metric, year: period });
-    return result('getManagementPromiseDetails', promises.length ? TOOL_STATUS.SUCCESS : TOOL_STATUS.EMPTY, promises, [], promises.length ? null : SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD);
+    // Dedupe by claim identity is handled centrally by state.js's
+    // mergeEvidence reducer across replan rounds — within a single call,
+    // each Mongo document is distinct, so a plain flatMap is correct here.
+    const evidence = promises.flatMap(buildPromiseEvidence);
+    return result(
+      'getManagementPromiseDetails', evidence.length ? TOOL_STATUS.SUCCESS : TOOL_STATUS.EMPTY,
+      promises, evidence, evidence.length ? null : SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD,
+    );
   } catch (error) {
     logger.warn(`[Tool] getManagementPromiseDetails failed: ${error.message}`);
     return result('getManagementPromiseDetails', TOOL_STATUS.ERROR, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE);
@@ -500,13 +575,13 @@ export const searchResearchDocuments = async ({ symbol }, context = {}) => {
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return result('searchResearchDocuments', TOOL_STATUS.ERROR, null, [], 'A symbol is required');
   try {
-    const { value: collected, cacheStatus } = await getOrCompute(
+    const { value: collected, cacheStatus, storedAt } = await getOrCompute(
       buildCacheKey('searchResearchDocuments', normalized),
       CACHE_TTL_MS.RESEARCH_DOCUMENTS,
       () => withTimeout(collectDocuments(normalized), boundedCallTimeout(25000, context), 'searchResearchDocuments', context.signal),
     );
     const { documents } = collected;
-    const meta = { cacheStatus, cancellationMode: 'SOFT' };
+    const meta = { cacheStatus, cancellationMode: 'SOFT', fetchedAt: new Date(storedAt).toISOString() };
     const evidence = documents.slice(0, 8).map((doc) => buildEvidenceRecord({
       claimType: 'DOCUMENT_EXCERPT',
       symbol: normalized,
@@ -581,36 +656,121 @@ export const getPortfolio = async ({}, { userId } = {}) => {
 };
 
 // ---------------------------------------------------------------------------
-// compareStocks — deterministic combination of already-fetched data; no LLM
-// call happens inside a tool. The comparison explanation is composed later
-// by composeAnswer from this structured data plus its evidence.
+// compareStocks — Phase 2 canonical, DIMENSION-AWARE comparison. Fixes the
+// confirmed regression where compareStocks always fetched quote+research+
+// financials for every symbol and NEVER fetched news or guidance, no
+// matter what the user actually asked for ("using financial growth,
+// management guidance and recent news" got neither guidance nor news).
 //
-// Fetches quote + research + FINANCIALS for every symbol (previously
-// omitted getCompanyFinancials entirely — confirmed as the reason
-// margin/financial-metric comparisons like "HDFCBANK vs ICICIBANK margin
-// trends" had no usable evidence: getCompanyResearch's evidence never
-// included the financials section).
+// {symbols, dimensions} — dimensions is graph/dimensions.js's closed enum
+// (resolved deterministically by extractEntities before planTools ever
+// builds this call; see planTools.js). Only the REQUESTED dimensions are
+// fetched, per symbol, and each dimension is delegated to the SAME
+// existing per-dimension tool function used elsewhere in this file
+// (getLiveQuote/getCompanyFinancials/getCompanyResearch/getCompanyNews/
+// getEarningsTimeline/searchResearchDocuments) — never a second, parallel
+// implementation. That is what structurally prevents mislabeling one
+// dimension's evidence as another's: every evidence record already carries
+// the correct claimType from its OWN tool (LIVE_PRICE, FINANCIAL_DATA,
+// COMPANY_NEWS, PROMISE_OUTCOME/MANAGEMENT_PROMISE, DOCUMENT_EXCERPT, ...),
+// compareStocks never re-labels or re-packages it.
+//
+// No LLM call happens inside a tool — the comparison explanation is
+// composed later by composeAnswer from this structured data plus evidence.
 // ---------------------------------------------------------------------------
-export const compareStocks = async ({ symbols }, context = {}) => {
-  const list = (Array.isArray(symbols) ? symbols : [symbols]).map(normalizeSymbol).filter(Boolean).slice(0, 4);
+const MAX_COMPARISON_SYMBOLS = 4;
+
+// A single planned step (`compareStocks`) still counts as ONE call against
+// MAX_TOOL_CALLS_PER_REQUEST (planTools.js) — this is a SEPARATE, internal
+// budget bounding how many underlying PROVIDER operations that one step may
+// fan out to (symbols x dimensions), so a 4-symbol, 6-dimension request
+// can't silently trigger 24 real provider calls in one turn.
+export const MAX_COMPARISON_OPERATIONS = 12;
+
+// Priority order used only to decide which dimensions survive when the
+// requested set would exceed MAX_COMPARISON_OPERATIONS — price/financials/
+// company research are DEFAULT_COMPARISON_DIMENSIONS (dimensions.js) and
+// are kept first; a request that explicitly asked for more than the budget
+// allows loses its LEAST-prioritized dimensions, never a random subset.
+const COMPARISON_DIMENSION_PRIORITY = ['PRICE', 'FINANCIALS', 'COMPANY_RESEARCH', 'GUIDANCE', 'NEWS', 'DOCUMENTS'];
+
+// Each entry delegates to the EXACT existing tool function for that
+// dimension — see the module note above on why this is what keeps
+// evidence correctly typed per dimension. GUIDANCE maps to
+// getEarningsTimeline (the same management-promise/outcome tracking
+// EARNINGS_INTELLIGENCE already uses), not getManagementPromiseDetails,
+// which is reachable on its own for a targeted promiseId/metric lookup.
+// `toolName` (the exact TOOL_REGISTRY/APPROVED_TOOLS string) lets this
+// step's underlying operations be fingerprinted the SAME way a top-level
+// planned step would be (graph/toolFingerprint.js) — see
+// operationFingerprints below, which is what lets Phase 2's bounded
+// replan (nodes/replanMissingEvidence.js) recognize "this exact
+// symbol+dimension was already tried, even though it happened INSIDE a
+// compareStocks call rather than as its own planned step" and avoid
+// silently repeating it.
+const COMPARISON_DIMENSION_OPERATIONS = Object.freeze({
+  PRICE: { tool: getLiveQuote, toolName: 'getLiveQuote', label: 'price' },
+  FINANCIALS: { tool: getCompanyFinancials, toolName: 'getCompanyFinancials', label: 'financials' },
+  COMPANY_RESEARCH: { tool: getCompanyResearch, toolName: 'getCompanyResearch', label: 'company research' },
+  NEWS: { tool: getCompanyNews, toolName: 'getCompanyNews', label: 'news' },
+  GUIDANCE: { tool: getEarningsTimeline, toolName: 'getEarningsTimeline', label: 'guidance' },
+  DOCUMENTS: { tool: searchResearchDocuments, toolName: 'searchResearchDocuments', label: 'documents' },
+});
+
+/**
+ * Resolves the dimensions compareStocks will actually fetch: only
+ * supported ones, defaulted when none given, truncated (by priority,
+ * never silently dropped without a warning) to fit the operation budget
+ * for however many symbols were requested. Exported (unlike this file's
+ * other internal helpers) so tests can verify the planning logic directly
+ * without triggering the real per-dimension provider calls compareStocks
+ * itself would make.
+ */
+export const resolveComparisonPlan = (requestedDimensions, symbolCount, warnings) => {
+  const supported = (Array.isArray(requestedDimensions) ? requestedDimensions : [])
+    .filter((d) => COMPARISON_DIMENSION_OPERATIONS[d]);
+  let dimensions = [...new Set(supported.length ? supported : DEFAULT_COMPARISON_DIMENSIONS)];
+
+  const maxDimensions = Math.max(1, Math.floor(MAX_COMPARISON_OPERATIONS / Math.max(1, symbolCount)));
+  if (dimensions.length > maxDimensions) {
+    const kept = COMPARISON_DIMENSION_PRIORITY.filter((d) => dimensions.includes(d)).slice(0, maxDimensions);
+    const keptSet = new Set(kept.length ? kept : dimensions.slice(0, maxDimensions));
+    dimensions = dimensions.filter((d) => keptSet.has(d));
+    warnings.push('Limited the comparison to fewer data types to stay within this turn\'s budget.');
+  }
+  return dimensions;
+};
+
+export const compareStocks = async ({ symbols, dimensions } = {}, context = {}) => {
+  const list = (Array.isArray(symbols) ? symbols : [symbols]).map(normalizeSymbol).filter(Boolean).slice(0, MAX_COMPARISON_SYMBOLS);
   if (list.length < 2) return result('compareStocks', TOOL_STATUS.ERROR, null, [], 'At least two symbols are required to compare.');
 
+  const warnings = [];
+  const resolvedDimensions = resolveComparisonPlan(dimensions, list.length, warnings);
+
   const perSymbol = await Promise.all(list.map(async (symbol) => {
-    const [quoteResult, researchResult, financialsResult] = await Promise.all([
-      getLiveQuote({ symbol }, context), getCompanyResearch({ symbol }, context), getCompanyFinancials({ symbol }, context),
-    ]);
-    return {
-      symbol, quote: quoteResult, research: researchResult, financials: financialsResult,
-    };
+    const outcomes = await Promise.all(resolvedDimensions.map((dimension) => COMPARISON_DIMENSION_OPERATIONS[dimension].tool({ symbol }, context)));
+    const byDimension = {};
+    resolvedDimensions.forEach((dimension, i) => { byDimension[dimension] = outcomes[i]; });
+    return { symbol, dimensions: byDimension };
   }));
 
-  const evidence = perSymbol.flatMap((entry) => [
-    ...(entry.quote.evidence || []), ...(entry.research.evidence || []), ...(entry.financials.evidence || []),
-  ]);
-  const anySuccess = perSymbol.some((entry) => [entry.quote.status, entry.research.status, entry.financials.status].includes(TOOL_STATUS.SUCCESS));
+  const allResults = perSymbol.flatMap((entry) => Object.values(entry.dimensions));
+  const evidence = allResults.flatMap((r) => r.evidence || []);
+  const anySuccess = allResults.some((r) => r.status === TOOL_STATUS.SUCCESS);
+  const operationCount = list.length * resolvedDimensions.length;
+  const operationFingerprints = list.flatMap((symbol) => resolvedDimensions.map(
+    (dimension) => fingerprintToolCall({ tool: COMPARISON_DIMENSION_OPERATIONS[dimension].toolName, args: { symbol } }),
+  ));
+  // A missing-data reason takes priority over the (informational-only)
+  // truncation notice — see executeTools.js, which only ever surfaces this
+  // single `warning` string to the user, never a second field.
+  const warning = !anySuccess ? SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD : (warnings[0] || null);
+
   return result(
     'compareStocks', anySuccess ? TOOL_STATUS.SUCCESS : TOOL_STATUS.EMPTY,
-    perSymbol, evidence, anySuccess ? null : SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD,
+    perSymbol, evidence, warning, null,
+    { dimensions: resolvedDimensions, operationCount, operationFingerprints },
   );
 };
 

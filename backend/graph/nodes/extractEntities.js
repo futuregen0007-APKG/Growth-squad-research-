@@ -3,17 +3,78 @@ import { EntitiesSchema } from '../schemas.js';
 import { entitiesPrompt } from '../prompts/index.js';
 import { SUPPORTED_STOCKS, INDEX_SYMBOLS } from '../../utils/constants.js';
 import { invokeRoutingModel } from '../llmInvoke.js';
+import { extractRequestedDimensions } from '../dimensions.js';
 import { logger } from '../../utils/logger.js';
 
 const KNOWN_SYMBOLS = new Set(Object.keys(SUPPORTED_STOCKS));
 const TICKER_PATTERN = /\b([A-Z]{2,15})\b/g;
 
-const deterministicSymbols = (text) => {
-  const found = new Set();
+/**
+ * Company-name directory, derived from SUPPORTED_STOCKS's existing
+ * ticker->name map (single source of truth — never a second, hand-typed
+ * list to fall out of sync). Fixes the confirmed Phase 0/1 regression:
+ * "Compare TCS and Infosys" only ever resolved TCS, because "Infosys" is
+ * the company's real NAME, not its ticker (INFY), so the ticker-only regex
+ * above never saw it, and the old deterministic fast path returned before
+ * anything else even looked at the rest of the message.
+ *
+ * Deliberately matches each symbol's FULL real name only (case-insensitive,
+ * "&"/"and" interchangeable, flexible whitespace) — never a prefix or
+ * partial name. That is what keeps this "never guess": e.g. "HDFC" alone
+ * matches neither "HDFC Bank" nor "HDFC Life" as a whole phrase, so a
+ * genuinely ambiguous short form correctly finds nothing here and falls
+ * through to the LLM path below, rather than silently picking one.
+ */
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const buildCompanyNameRegex = (name) => {
+  const escaped = escapeRegExp(name).replace(/&/g, '(?:&|and)').replace(/ /g, '\\s+');
+  return new RegExp(`\\b${escaped}\\b`, 'i');
+};
+
+const COMPANY_NAME_DIRECTORY = Object.entries(SUPPORTED_STOCKS)
+  .filter(([, info]) => info?.name && info.name.trim().length > 2)
+  .map(([symbol, info]) => ({ symbol, name: info.name, regex: buildCompanyNameRegex(info.name) }));
+
+/** Ticker mentions (e.g. "TCS", "HAL") with their position in the original text, for order-preserving merges with company-name mentions below. */
+const findTickerMentions = (text) => {
+  const mentions = [];
   for (const match of text.toUpperCase().matchAll(TICKER_PATTERN)) {
-    if (KNOWN_SYMBOLS.has(match[1]) || INDEX_SYMBOLS[match[1]]) found.add(match[1]);
+    const token = match[1];
+    if (KNOWN_SYMBOLS.has(token) || INDEX_SYMBOLS[token]) mentions.push({ symbol: token, index: match.index });
   }
-  return [...found];
+  return mentions;
+};
+
+/** Full company-name mentions (e.g. "Infosys", "Tata Consultancy Services") with their position in the original text. */
+const findCompanyNameMentions = (text) => {
+  const mentions = [];
+  for (const entry of COMPANY_NAME_DIRECTORY) {
+    const match = entry.regex.exec(text);
+    if (match) mentions.push({ symbol: entry.symbol, index: match.index });
+  }
+  return mentions;
+};
+
+/**
+ * deterministicSymbols - resolves EVERY symbol mentioned in the full
+ * message, by ticker OR by real company name, in the order first
+ * mentioned, deduplicated. Runs deterministically (no LLM) so it is safe
+ * to always run first — see extractEntities' fast path below, which now
+ * only skips the model call once this has looked at the whole message,
+ * not just its first recognizable token.
+ */
+const deterministicSymbols = (text) => {
+  const combined = [...findTickerMentions(text), ...findCompanyNameMentions(text)]
+    .sort((a, b) => a.index - b.index);
+  const symbols = [];
+  const seen = new Set();
+  for (const { symbol } of combined) {
+    if (seen.has(symbol)) continue;
+    seen.add(symbol);
+    symbols.push(symbol);
+  }
+  return symbols;
 };
 
 // Matches "Q2 FY26", "Q2FY2026", "FY26", "FY2026" (2- or 4-digit year,
@@ -49,6 +110,9 @@ const deterministicPeriods = (text) => {
 // to LLM calls, not just tools).
 const SKIP_ENTITY_EXTRACTION_INTENTS = new Set(['GENERAL_EDUCATION', 'UNSUPPORTED']);
 
+/** Canonical real names for a resolved symbol list — reuses SUPPORTED_STOCKS (the same single source of truth COMPANY_NAME_DIRECTORY is built from) rather than tracking a second parallel list; drops symbols with no directory entry (e.g. an index basket) rather than guessing a name. */
+const companyNamesFor = (symbols) => symbols.map((symbol) => SUPPORTED_STOCKS[symbol]?.name).filter(Boolean);
+
 export const extractEntities = async (state) => {
   if (state.errors.length) return {};
   if (SKIP_ENTITY_EXTRACTION_INTENTS.has(state.intent)) return {};
@@ -57,21 +121,37 @@ export const extractEntities = async (state) => {
   const text = String(lastMessage?.content || '');
   const symbolsFromText = deterministicSymbols(text);
   const periodsFromText = deterministicPeriods(text);
+  // Requested-dimension planning (graph/dimensions.js) — purely a function
+  // of the message text + classified intent, so it's computed once here
+  // and included on every return path below, independent of which symbol-
+  // resolution branch (fast path / LLM / fallback) ends up running.
+  const requestedDimensions = extractRequestedDimensions(text, state.intent);
 
-  // Deterministic fast path: obvious symbols present and the message
-  // doesn't look like a follow-up (no pronoun referring back). Skips the
-  // model call entirely when it's unambiguous. Periods are always
-  // extracted deterministically (see PERIOD_PATTERN above) regardless of
-  // which path runs — this used to be hardcoded to [] here.
+  // Deterministic fast path: skips the model call entirely when the whole
+  // message is unambiguous and doesn't look like a follow-up (no pronoun
+  // referring back). deterministicSymbols above now resolves EVERY symbol
+  // mentioned by ticker OR real company name across the FULL message
+  // (fixing the confirmed regression where "Compare TCS and Infosys" only
+  // ever found TCS, because the old fast path returned as soon as it saw
+  // the first ticker and never looked for "Infosys" by name) — so this
+  // path is safe to take whenever it finds at least one symbol, not just
+  // when the message happens to be a single bare ticker.
   const looksLikeFollowUp = state.intent === 'FOLLOW_UP' || /\b(it|its|that company|them|those)\b/i.test(text);
   if (symbolsFromText.length && !looksLikeFollowUp) {
     return {
-      entities: { symbols: symbolsFromText, companyNames: [], periods: periodsFromText, comparisonMode: /\b(compare|vs\.?|versus)\b/i.test(text) },
+      entities: {
+        symbols: symbolsFromText, companyNames: companyNamesFor(symbolsFromText), periods: periodsFromText,
+        comparisonMode: /\b(compare|vs\.?|versus)\b/i.test(text),
+      },
+      requestedDimensions,
     };
   }
 
   if (!OpenAIClientFactory.isConfigured()) {
-    return { entities: { symbols: symbolsFromText, companyNames: [], periods: periodsFromText, comparisonMode: false } };
+    return {
+      entities: { symbols: symbolsFromText, companyNames: companyNamesFor(symbolsFromText), periods: periodsFromText, comparisonMode: false },
+      requestedDimensions,
+    };
   }
 
   const { parsed, error, diagnostic } = await invokeRoutingModel({
@@ -89,14 +169,17 @@ export const extractEntities = async (state) => {
     // Union deterministic symbol/period matches with the model's — belt-and-braces.
     const symbols = [...new Set([...symbolsFromText, ...parsed.symbols.map((s) => s.toUpperCase())])];
     const periods = [...new Set([...periodsFromText, ...parsed.periods])];
-    return { entities: { ...parsed, symbols, periods }, llmCalls: [diagnostic] };
+    return {
+      entities: { ...parsed, symbols, periods }, llmCalls: [diagnostic], requestedDimensions,
+    };
   }
 
   logger.warn(`[Graph] extractEntities failed: ${error}`);
   return {
-    entities: { symbols: symbolsFromText, companyNames: [], periods: periodsFromText, comparisonMode: false },
+    entities: { symbols: symbolsFromText, companyNames: companyNamesFor(symbolsFromText), periods: periodsFromText, comparisonMode: false },
     llmCalls: [diagnostic],
     warnings: symbolsFromText.length || error === 'CANCELLED' ? [] : ['Could not resolve which company you meant — please name it directly.'],
+    requestedDimensions,
   };
 };
 

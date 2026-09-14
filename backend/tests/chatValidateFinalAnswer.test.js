@@ -38,3 +38,48 @@ test('returns {} immediately when there is no answer to validate', async () => {
   const result = await validateFinalAnswer({ answer: null, intent: 'GENERAL_EDUCATION', toolResults: [] });
   assert.deepEqual(result, {});
 });
+
+// ---------------------------------------------------------------------------
+// Phase 2 item 8: evidence/section mismatch prevention (deterministic
+// detection only — never a repair/regeneration loop, see the module note).
+// ---------------------------------------------------------------------------
+
+test('flags an answer that talks about recent news with no COMPANY_NEWS evidence backing it', async () => {
+  const result = await validateFinalAnswer({
+    answer: 'According to a recent news report, TCS won a major deal.',
+    intent: 'COMPANY_RESEARCH',
+    toolResults: [],
+    evidence: [{ claimType: 'FINANCIAL_DATA', symbol: 'TCS' }],
+  });
+  assert.ok(result.warnings[0].includes('COMPANY_NEWS'));
+});
+
+test('does not flag news language when real COMPANY_NEWS evidence is present', async () => {
+  const result = await validateFinalAnswer({
+    answer: 'According to a recent news report, TCS won a major deal [1].',
+    intent: 'COMPANY_RESEARCH',
+    toolResults: [],
+    evidence: [{ claimType: 'COMPANY_NEWS', symbol: 'TCS' }],
+  });
+  assert.deepEqual(result, {});
+});
+
+test('flags an answer that presents a promise/guidance as achieved with no PROMISE_OUTCOME evidence (forecast presented as fact)', async () => {
+  const result = await validateFinalAnswer({
+    answer: 'TCS achieved its revenue growth guidance for FY2026.',
+    intent: 'EARNINGS_INTELLIGENCE',
+    toolResults: [],
+    evidence: [{ claimType: 'MANAGEMENT_PROMISE', symbol: 'TCS' }],
+  });
+  assert.ok(result.warnings[0].includes('PROMISE_OUTCOME'));
+});
+
+test('does not flag achievement language when a real PROMISE_OUTCOME record backs it', async () => {
+  const result = await validateFinalAnswer({
+    answer: 'TCS achieved its revenue growth guidance for FY2026 [1].',
+    intent: 'EARNINGS_INTELLIGENCE',
+    toolResults: [],
+    evidence: [{ claimType: 'PROMISE_OUTCOME', symbol: 'TCS' }],
+  });
+  assert.deepEqual(result, {});
+});

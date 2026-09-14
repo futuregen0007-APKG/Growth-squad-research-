@@ -87,6 +87,39 @@ test('the angel-one breaker opening never affects the independent news-api break
   assert.notEqual(newsApi, getProviderBreaker('angel-one'), 'getLiveQuote and getCompanyNews must never share one breaker instance');
 });
 
+// Phase 2 pre-implementation check #1, exercised through the real tool
+// entry point (not just the breaker class directly -- see
+// circuitBreaker.test.js's dedicated test for that level): each call below
+// passes its OWN fresh `context` object (a distinct AbortSignal-less
+// object literal), exactly mirroring how two unrelated HTTP requests would
+// each build their own request-scoped context. Different symbols are used
+// so no call is ever cache-served -- every one is a genuine provider
+// attempt whose outcome must land on the one shared 'angel-one' breaker.
+test('getLiveQuote across many separately-scoped simulated requests shares one provider breaker -- failures are cumulative, not per-request', async () => {
+  let calls = 0;
+  await withMockedGetStock(async function mockGetStock() {
+    calls += 1;
+    throw Object.assign(new Error('timeout'), { errorCode: 'TIMEOUT' });
+  }, async () => {
+    const breaker = getProviderBreaker('angel-one', { failureThreshold: 3, cooldownMs: 60000 });
+
+    await getLiveQuote({ symbol: 'REQ1' }, {}); // simulated request #1's own context
+    assert.equal(breaker.getDiagnostics().consecutiveFailures, 1);
+
+    await getLiveQuote({ symbol: 'REQ2' }, {}); // simulated request #2's own context
+    assert.equal(breaker.getDiagnostics().consecutiveFailures, 2, 'request #2\'s failure must accumulate on top of request #1\'s, not start over');
+
+    const thirdResult = await getLiveQuote({ symbol: 'REQ3' }, {}); // simulated request #3
+    assert.equal(breaker.getState(), CIRCUIT_STATE.OPEN, 'the 3rd separately-scoped request\'s failure must cross the shared threshold');
+    assert.equal(thirdResult.status, TOOL_STATUS.UNAVAILABLE);
+
+    const callsBeforeFourthRequest = calls;
+    const fourthResult = await getLiveQuote({ symbol: 'REQ4' }, {}); // simulated request #4, fresh context again
+    assert.equal(calls, callsBeforeFourthRequest, 'a 4th independent request must be short-circuited too -- the OPEN breaker is not scoped to the request that opened it');
+    assert.equal(fourthResult.status, TOOL_STATUS.UNAVAILABLE);
+  });
+});
+
 test('a cancelled getLiveQuote call is reported with errorCode CANCELLED (soft cancellation) and never trips the circuit breaker', async () => {
   const controller = new AbortController();
   await withMockedGetStock(async function mockGetStock() {

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { planTools, MAX_TOOL_CALLS_PER_REQUEST } from '../graph/nodes/planTools.js';
 import { OpenAIClientFactory } from '../llm/OpenAIClientFactory.js';
+import { DEFAULT_COMPARISON_DIMENSIONS } from '../graph/dimensions.js';
 
 const makeState = (message, overrides = {}) => ({
   messages: [{ content: message }],
@@ -73,12 +74,33 @@ test('a follow-up mentioning debt on an active symbol plans getCompanyFinancials
   assert.deepEqual(result.toolPlan, [{ tool: 'getCompanyFinancials', args: { symbol: 'TCS' } }]);
 });
 
-test('stock comparison with two symbols plans a single compareStocks call', async () => {
+// Phase 2: canonical comparison planning. A bare "compare X and Y" (no
+// requestedDimensions resolved -- see graph/dimensions.js) plans a SINGLE
+// compareStocks call carrying the documented DEFAULT_COMPARISON_DIMENSIONS,
+// never a second, separate top-level call for the same data.
+test('stock comparison with two symbols and no explicit dimension plans a single compareStocks call with the default dimensions', async () => {
   const result = await planTools(makeState('Compare TCS and INFY', {
     intent: 'STOCK_COMPARISON',
     entities: { symbols: ['TCS', 'INFY'], companyNames: [], periods: [], comparisonMode: true },
   }));
-  assert.deepEqual(result.toolPlan, [{ tool: 'compareStocks', args: { symbols: ['TCS', 'INFY'] } }]);
+  assert.deepEqual(result.toolPlan, [{ tool: 'compareStocks', args: { symbols: ['TCS', 'INFY'], dimensions: [...DEFAULT_COMPARISON_DIMENSIONS] } }]);
+});
+
+// Phase 2 regression: "Compare TCS and Infosys using financial growth,
+// management guidance and recent news" previously planned compareStocks
+// (which never fetched news/guidance) with no way to ask for what was
+// actually requested. Now the resolved dimensions (extractEntities, run
+// before planTools) flow straight into the ONE compareStocks call, and
+// planTools never adds a redundant separate getCompanyFinancials/
+// getCompanyNews/getEarningsTimeline step for a symbol already inside it.
+test('stock comparison with explicit requestedDimensions plans a single compareStocks call carrying exactly those dimensions -- never a duplicate top-level call', async () => {
+  const result = await planTools(makeState('Compare TCS and Infosys using financial growth, management guidance and recent news', {
+    intent: 'STOCK_COMPARISON',
+    entities: { symbols: ['TCS', 'INFY'], companyNames: ['Tata Consultancy Services', 'Infosys'], periods: [], comparisonMode: true },
+    requestedDimensions: ['FINANCIALS', 'GUIDANCE', 'NEWS'],
+  }));
+  assert.deepEqual(result.toolPlan, [{ tool: 'compareStocks', args: { symbols: ['TCS', 'INFY'], dimensions: ['FINANCIALS', 'GUIDANCE', 'NEWS'] } }]);
+  assert.equal(result.toolPlan.length, 1, 'exactly one planned step -- no separate duplicate getCompanyFinancials/getCompanyNews call alongside it');
 });
 
 test('the tool plan is capped at MAX_TOOL_CALLS_PER_REQUEST, with a warning', async () => {
