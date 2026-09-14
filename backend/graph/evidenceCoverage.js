@@ -27,7 +27,12 @@ export const EVIDENCE_COVERAGE_STATUS = Object.freeze({
 // "real coverage" for each requested dimension. PORTFOLIO/WATCHLIST/
 // GENERAL are handled separately below (account-scoped or no-evidence
 // dimensions, never per-company).
-const DIMENSION_CLAIM_TYPES = Object.freeze({
+// Exported for nodes/buildSafeFallback.js (Phase 3) — the deterministic
+// fallback builds one safe fact-line per COVERED row directly from real
+// evidence, using the SAME claim-type mapping this file already uses to
+// decide COVERED in the first place (a single source of truth, not a
+// second copy that could drift).
+export const DIMENSION_CLAIM_TYPES = Object.freeze({
   PRICE: ['LIVE_PRICE'],
   FINANCIALS: ['FINANCIAL_DATA'],
   COMPANY_RESEARCH: ['COMPANY_PROFILE', 'KEY_METRIC', 'SHAREHOLDING', 'CORPORATE_ACTION', 'ANALYST_FORECAST'],
@@ -127,7 +132,9 @@ const STATUS_PHRASE = Object.freeze({
   AUTH_REQUIRED: 'requires the user to be signed in',
 });
 
-const DIMENSION_LABEL = Object.freeze({
+// Exported for nodes/buildSafeFallback.js — same reuse rationale as
+// DIMENSION_CLAIM_TYPES above.
+export const DIMENSION_LABEL = Object.freeze({
   PRICE: 'price', FINANCIALS: 'financials', COMPANY_RESEARCH: 'company research',
   NEWS: 'news', GUIDANCE: 'management guidance/promise tracking', DOCUMENTS: 'documents',
   PORTFOLIO: 'portfolio', WATCHLIST: 'watchlist',
@@ -150,4 +157,5 @@ export const formatMissingEvidenceForPrompt = (missingEvidence = []) => missingE
 
 export default {
   EVIDENCE_COVERAGE_STATUS, computeEvidenceCoverage, DIMENSION_TOOLS, formatMissingEvidenceForPrompt,
+  DIMENSION_CLAIM_TYPES, DIMENSION_LABEL,
 };

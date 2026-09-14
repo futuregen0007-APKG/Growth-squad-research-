@@ -201,6 +201,32 @@ export const GraphState = Annotation.Root({
   // never read by any other node (same category as onEvent/aborted below).
   needsReplan: Annotation({ reducer: replace, default: () => false }),
 
+  // Phase 3: the PRIVATE, unvalidated draft composeAnswer/repairAnswer
+  // produce. Never emitted over SSE, never persisted — see
+  // nodes/publishFinalAnswer.js, the only place content ever moves from
+  // draftAnswer into the public `answer` field, and only after validation
+  // has actually passed (or a deterministic safe fallback replaces it
+  // entirely — see nodes/buildSafeFallback.js).
+  draftAnswer: Annotation({ reducer: replace, default: () => null }),
+  // One of schemas.js's VALIDATION_STATUSES. Recomputed fresh by
+  // validateFinalAnswer every time it runs (including its second pass
+  // after a repair) — `replace` is correct, this is never accumulated.
+  validationStatus: Annotation({ reducer: replace, default: () => null }),
+  // Safe issue codes only (graph/claimValidation.js's SAFE_VALIDATION_REASONS
+  // + the verifier's own reasonCode strings) — never raw model text,
+  // never chain-of-thought. Reflects the LATEST validation pass only; a
+  // prior round's now-fixed issues are not accumulated (repairCount tells
+  // you whether there was a prior round at all).
+  validationIssues: Annotation({ reducer: replace, default: () => [] }),
+  // The structured claim verifier's per-claim verdicts, when it ran this
+  // pass — {claimId, verdict, evidenceIndexes, reasonCode}[]. Same
+  // "latest pass only" reasoning as validationIssues.
+  claimValidation: Annotation({ reducer: replace, default: () => [] }),
+  // How many repair attempts have run this turn (hard cap: 1 — see
+  // nodes/repairAnswer.js). The node computes current+1 itself and
+  // returns that, so `replace` is correct.
+  repairCount: Annotation({ reducer: replace, default: () => 0 }),
+
   answer: Annotation({ reducer: replace, default: () => null }),
   citations: Annotation({ reducer: replace, default: () => [] }),
   tokenUsage: Annotation({ reducer: replace, default: () => null }),

@@ -83,11 +83,55 @@ export const CitationRefSchema = z.object({
   claim: z.string().max(300),
 });
 
+// Superseded by ClaimVerificationSchema below for Phase 3's actual
+// claim-level verifier — this whole-answer pass/fail shape has no
+// evidence-index or per-claim verdict granularity, so it was not reused.
+// Kept only because it was already exported (unused before Phase 3 too;
+// see the Phase 3 audit report for why extending it wasn't safe/useful).
 export const ValidationResultSchema = z.object({
   passed: z.boolean(),
   issues: z.array(z.string().max(300)),
   missingEvidenceClaims: z.array(z.string().max(300)),
 });
+
+// Phase 3: structured claim verification. Each verdict names exactly what
+// is wrong with one atomic claim — never free-form reasoning, never
+// chain-of-thought (see graph/claimValidation.js and
+// prompts/index.js's claimVerificationPrompt for how this is used).
+export const CLAIM_VERDICTS = Object.freeze([
+  'SUPPORTED',
+  'PARTIALLY_SUPPORTED',
+  'UNSUPPORTED',
+  'WRONG_SYMBOL',
+  'WRONG_PERIOD',
+  'WRONG_DIMENSION',
+  'FORECAST_AS_ACTUAL',
+  'GUIDANCE_AS_OUTCOME',
+  'INVALID_CITATION',
+]);
+
+export const ClaimVerificationSchema = z.object({
+  claims: z.array(z.object({
+    claimId: z.string().max(40),
+    verdict: z.enum(CLAIM_VERDICTS),
+    // 1-based indexes into the SAME numbered evidence list the draft was
+    // given — never a raw evidenceId, so out-of-range values are trivially
+    // checkable the same way extractCitations already checks draft citations.
+    evidenceIndexes: z.array(z.number().int().min(1)).max(10),
+    reasonCode: z.string().max(60),
+  })).max(20),
+});
+
+// Phase 3: strict enum for state.validationStatus — see
+// nodes/validateFinalAnswer.js for what sets each one and graph.js's
+// routeAfterValidation for what each one means for graph routing.
+export const VALIDATION_STATUSES = Object.freeze([
+  'PASSED',
+  'REPAIR_REQUIRED',
+  'ABSTAINED',
+  'FAILED_SAFE',
+  'SKIPPED_GENERAL_EDUCATION',
+]);
 
 export const ConversationSummarySchema = z.object({
   summary: z.string().max(1500),
@@ -119,6 +163,9 @@ export default {
   ToolPlanSchema,
   CitationRefSchema,
   ValidationResultSchema,
+  CLAIM_VERDICTS,
+  ClaimVerificationSchema,
+  VALIDATION_STATUSES,
   ConversationSummarySchema,
   ExplicitPreferenceSchema,
 };

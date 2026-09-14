@@ -1,62 +1,110 @@
+import { LLM_CONFIG } from '../../llm/OpenAIClientFactory.js';
+import { claimVerificationPrompt } from '../prompts/index.js';
+import { ClaimVerificationSchema } from '../schemas.js';
+import { invokeRoutingModel } from '../llmInvoke.js';
+import { runDeterministicChecks, needsClaimVerifier } from '../claimValidation.js';
+import { hasBudgetFor } from '../requestBudget.js';
+
+// Below this remaining budget, the structured verifier call is skipped
+// entirely (fail-closed: see the REPAIR_REQUIRED-with-no-budget path
+// below, which routes straight to buildSafeFallback rather than
+// publishing an unverified draft just because there was no time left to
+// check it).
+const MIN_VERIFIER_BUDGET_MS = 800;
+
+// Claim verdicts that mean "this specific claim is wrong or unsupported
+// and needs fixing" — PARTIALLY_SUPPORTED is included deliberately
+// (partial support for a specific number/detail is still not fully safe
+// to publish as stated).
+const REPAIRABLE_CLAIM_VERDICTS = new Set([
+  'PARTIALLY_SUPPORTED', 'UNSUPPORTED', 'WRONG_SYMBOL', 'WRONG_PERIOD',
+  'WRONG_DIMENSION', 'FORECAST_AS_ACTUAL', 'GUIDANCE_AS_OUTCOME', 'INVALID_CITATION',
+]);
+
 /**
- * validateFinalAnswer - deterministic post-generation audit. No extra
- * model call on the common path (validation here is checkable by rule,
- * not judgement, so an LLM call would be pure added cost/latency — see
- * Phase 11's "do not call the model when deterministic logic suffices").
- * Never blocks/regenerates the answer — flags are recorded as warnings on
- * the persisted message so the composer's behavior stays auditable.
+ * validateFinalAnswer - Phase 3's validation gate. Runs on EVERY draft
+ * (deterministic checks always; the structured claim verifier only when
+ * needsClaimVerifier says it's worth the call), and on the REPAIRED draft
+ * too (repairAnswer.js routes back here — see graph.js's cycle). Never
+ * publishes anything itself; only ever decides state.validationStatus,
+ * which graph.js's routeAfterValidation reads to go to publishFinalAnswer,
+ * repairAnswer, or buildSafeFallback. Never blocks by throwing — a broken
+ * verifier call fails closed (FAILED_SAFE), never silently passes.
  */
-
-const GUARANTEE_PATTERNS = [
-  /\bguaranteed?\s+(returns?|profit|gains?)\b/i,
-  /\bwill\s+definitely\s+(rise|fall|grow|increase|decrease)\b/i,
-  /\brisk[-\s]?free\b/i,
-];
-
-const BUY_SELL_WITHOUT_CONTEXT = /\b(buy|sell)\s+(now|immediately|today)\b/i;
-
-const TIMESTAMP_PATTERN = /\b(\d{1,2}[:.]\d{2}|as of|20\d{2}-\d{2}-\d{2}|\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))/i;
-
-// Phase 2 item 8 (evidence/section mismatch prevention — deterministic
-// detection only, never a repair/regeneration loop; see the module note
-// above on why validateFinalAnswer never blocks or regenerates). These two
-// checks are mechanically verifiable (presence/absence of a claim TYPE in
-// state.evidence), not fuzzy semantic judgement, which is what keeps them
-// deterministic and low-false-positive:
-//   - NEWS_LANGUAGE: the answer talks about news/headlines/announcements
-//     but no COMPANY_NEWS evidence exists at all this turn — the claim
-//     structurally cannot be backed by a real news item.
-//   - ACHIEVED_LANGUAGE: the answer says a target/guidance was achieved,
-//     met, or delivered, but no PROMISE_OUTCOME evidence exists — only a
-//     forecast/pending promise (MANAGEMENT_PROMISE/ANALYST_FORECAST) is
-//     available, which must never be presented as an actual outcome.
-const NEWS_LANGUAGE = /\b(recent news|according to (a |the )?(news|article|report)|news outlets?|headlines?|(has |have )?announced|reported that)\b/i;
-const ACHIEVED_LANGUAGE = /\b(achieved|delivered on|met its (target|guidance)|fulfilled|exceeded its (target|guidance))\b/i;
-
 export const validateFinalAnswer = async (state) => {
-  if (!state.answer) return {};
-
-  const issues = [];
-
-  if (GUARANTEE_PATTERNS.some((pattern) => pattern.test(state.answer))) {
-    issues.push('Answer used guarantee-style language about returns.');
-  }
-  if (BUY_SELL_WITHOUT_CONTEXT.test(state.answer) && !/risk|evidence|however|consider/i.test(state.answer)) {
-    issues.push('Answer gave a directive buy/sell instruction without visible risk/evidence context.');
-  }
-  if (state.intent === 'LIVE_MARKET_DATA' && state.toolResults.some((t) => t.tool === 'getLiveQuote' && t.status === 'SUCCESS') && !TIMESTAMP_PATTERN.test(state.answer)) {
-    issues.push('Live price claim is missing a visible timestamp.');
+  // composeAnswer already decided this draft is a fixed, non-LLM-generated
+  // safe string (input error, not-configured, no-budget, provider-error
+  // fallback text) — nothing to re-check, pass straight through. Also
+  // covers composeAnswer's genuine-cancellation path (FAILED_SAFE,
+  // draftAnswer: null) — already terminal, nothing more to compute.
+  if (state.validationStatus === 'SKIPPED_GENERAL_EDUCATION' || state.validationStatus === 'FAILED_SAFE') {
+    return {};
   }
 
-  const claimTypes = new Set((state.evidence || []).map((e) => e.claimType));
-  if (NEWS_LANGUAGE.test(state.answer) && !claimTypes.has('COMPANY_NEWS')) {
-    issues.push('Answer references news/announcements with no COMPANY_NEWS evidence backing it this turn.');
-  }
-  if (ACHIEVED_LANGUAGE.test(state.answer) && !claimTypes.has('PROMISE_OUTCOME')) {
-    issues.push('Answer describes a target/guidance as achieved without a verified PROMISE_OUTCOME record — a forecast must never be presented as an actual outcome.');
+  // A client disconnect / deadline hit between composeAnswer and here —
+  // stop before spending an extra verifier call on work nobody will see.
+  if (state.aborted?.() || state.draftAnswer == null) {
+    return { validationStatus: 'FAILED_SAFE', validationIssues: ['CANCELLED'] };
   }
 
-  return issues.length ? { warnings: [`Response validation flagged: ${issues.join(' ')}`] } : {};
+  const deterministic = runDeterministicChecks({
+    draftAnswer: state.draftAnswer,
+    evidence: state.evidence,
+    entities: state.entities,
+    missingEvidence: state.missingEvidence,
+    intent: state.intent,
+    toolResults: state.toolResults,
+  });
+
+  let claimValidation = [];
+  let claimIssues = [];
+  let llmCalls;
+
+  if (needsClaimVerifier({ draftAnswer: state.draftAnswer, evidence: state.evidence, intent: state.intent })) {
+    if (!hasBudgetFor(state.deadlineAt, MIN_VERIFIER_BUDGET_MS)) {
+      // Fail-closed: never publish an unverified draft just because time
+      // ran out before it could be checked.
+      return { validationStatus: 'FAILED_SAFE', validationIssues: [...deterministic.issues, 'VERIFIER_SKIPPED_NO_BUDGET'] };
+    }
+
+    const lastMessage = state.messages[state.messages.length - 1];
+    const { parsed, error, diagnostic } = await invokeRoutingModel({
+      node: 'validateFinalAnswer',
+      role: 'verification',
+      model: LLM_CONFIG.validationModel,
+      maxTokens: 900,
+      schema: ClaimVerificationSchema,
+      schemaName: 'claim_verification',
+      prompt: claimVerificationPrompt({
+        message: String(lastMessage?.content || ''), draftAnswer: state.draftAnswer, evidence: state.evidence,
+      }),
+      signal: state.abortSignal,
+      deadlineAt: state.deadlineAt,
+    });
+    llmCalls = [diagnostic];
+
+    if (!parsed) {
+      // Verifier timeout/cancellation/provider failure/invalid structured
+      // output — fail closed, never trust an unverified draft.
+      return {
+        validationStatus: 'FAILED_SAFE',
+        validationIssues: [...deterministic.issues, `VERIFIER_${error || 'FAILED'}`],
+        llmCalls,
+      };
+    }
+
+    claimValidation = parsed.claims;
+    claimIssues = parsed.claims
+      .filter((c) => REPAIRABLE_CLAIM_VERDICTS.has(c.verdict))
+      .map((c) => `${c.claimId}:${c.verdict}:${c.reasonCode}`);
+  }
+
+  const allIssues = [...deterministic.issues, ...claimIssues];
+  const validationStatus = allIssues.length ? 'REPAIR_REQUIRED' : 'PASSED';
+
+  return {
+    validationStatus, validationIssues: allIssues, claimValidation, ...(llmCalls ? { llmCalls } : {}),
+  };
 };
 
 export default validateFinalAnswer;

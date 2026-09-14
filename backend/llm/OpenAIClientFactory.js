@@ -27,10 +27,11 @@ dotenv.config();
  *
  * Conceptual roles — Phase 1 gives each an independently configurable
  * model (previously all three resolved to the same value by construction):
- *   - routing model   (classifyIntent, extractEntities, planTools) → LLM_CONFIG.routingModel
- *   - synthesis model  (composeAnswer)                              → LLM_CONFIG.synthesisModel
- *   - summary model    (preference detection, conversation summary) → LLM_CONFIG.summaryModel
- * All three may be pointed at the same model via configuration (the
+ *   - routing model    (classifyIntent, extractEntities, planTools) → LLM_CONFIG.routingModel
+ *   - synthesis model   (composeAnswer, repairAnswer)                → LLM_CONFIG.synthesisModel
+ *   - summary model     (preference detection, conversation summary) → LLM_CONFIG.summaryModel
+ *   - validation model  (Phase 3 claim verifier)                     → LLM_CONFIG.validationModel
+ * All four may be pointed at the same model via configuration (the
  * default) — nothing requires them to differ. `chatModel` is kept as a
  * deprecated alias of `routingModel` for backward compatibility with any
  * existing caller/env var (OPENAI_CHAT_MODEL still works).
@@ -50,6 +51,12 @@ export const LLM_CONFIG = {
   // an existing deployment's env config keeps working unchanged.
   get routingModel() { return process.env.OPENAI_ROUTING_MODEL || process.env.OPENAI_CHAT_MODEL || DEFAULT_CHAT_MODEL; },
   get synthesisModel() { return process.env.OPENAI_SYNTHESIS_MODEL || process.env.OPENAI_CHAT_MODEL || DEFAULT_CHAT_MODEL; },
+  // Phase 3: the structured claim verifier is a routing-shaped call
+  // (structured JSON output, cheap/fast model) — falls back through the
+  // routing model, exactly like synthesisModel falls back through the
+  // original single OPENAI_CHAT_MODEL var, so an existing deployment needs
+  // no new env var to get a real, working model here.
+  get validationModel() { return process.env.OPENAI_VALIDATION_MODEL || this.routingModel; },
   /** @deprecated use routingModel (or synthesisModel for composeAnswer) — kept only so any caller not yet migrated still resolves a real model. */
   get chatModel() { return this.routingModel; },
   get summaryModel() { return process.env.OPENAI_SUMMARY_MODEL || DEFAULT_SUMMARY_MODEL; },

@@ -3,9 +3,12 @@
  * ==============
  * Shared instrumentation wrapper around the OpenAI SDK calls made by
  * classifyIntent/extractEntities/planTools (all "routing"-role, structured
- * output via zodResponseFormat). Centralizes exactly the cross-cutting
- * Phase 1 behavior every one of those call sites needs, instead of
- * repeating it three times:
+ * output via zodResponseFormat) — and, since Phase 3, validateFinalAnswer's
+ * structured claim verifier (role: 'verification', see its own call site
+ * for why this is the same shape of call: structured JSON output, needs
+ * the same deadline/cancellation/diagnostic treatment). Centralizes
+ * exactly the cross-cutting Phase 1 behavior every one of those call sites
+ * needs, instead of repeating it:
  *   - skip the call entirely once the request's deadline is already
  *     exhausted (never start new LLM work with no budget left)
  *   - bound the per-call timeout to whatever's actually left on the budget
@@ -32,10 +35,10 @@ export const SKIPPED_NO_BUDGET = 'SKIPPED_NO_BUDGET';
  * result", so this never throws.
  */
 export const invokeRoutingModel = async ({
-  node, model, temperature = 0, maxTokens, schema, schemaName, prompt, signal, deadlineAt, minBudgetMs = 500,
+  node, model, temperature = 0, maxTokens, schema, schemaName, prompt, signal, deadlineAt, minBudgetMs = 500, role = 'routing',
 }) => {
   const startedAt = Date.now();
-  const baseDiagnostic = { node, role: 'routing', model };
+  const baseDiagnostic = { node, role, model };
 
   if (!OpenAIClientFactory.isConfigured()) {
     return { parsed: null, error: 'NOT_CONFIGURED', diagnostic: { ...baseDiagnostic, durationMs: 0, timedOut: false, skipped: 'NOT_CONFIGURED' } };
