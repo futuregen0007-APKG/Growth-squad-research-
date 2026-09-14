@@ -60,7 +60,16 @@ export const validateFinalAnswer = async (state) => {
   let claimIssues = [];
   let llmCalls;
 
-  if (needsClaimVerifier({ draftAnswer: state.draftAnswer, evidence: state.evidence, intent: state.intent })) {
+  // Hardening: eligibility is now purely intent + genuine-evidence based —
+  // citation presence/absence/validity plays NO role (see
+  // claimValidation.js's needsClaimVerifier for the full policy and why
+  // the previous citation-gated version was unsafe). deterministic.issues
+  // and deterministic.citedIndexes (already computed above) are exactly
+  // what the narrow isExactlyDeterministicallyVerified exception needs.
+  if (needsClaimVerifier({
+    evidence: state.evidence, intent: state.intent, entities: state.entities,
+    deterministicIssues: deterministic.issues, citedIndexes: deterministic.citedIndexes,
+  })) {
     if (!hasBudgetFor(state.deadlineAt, MIN_VERIFIER_BUDGET_MS)) {
       // Fail-closed: never publish an unverified draft just because time
       // ran out before it could be checked.

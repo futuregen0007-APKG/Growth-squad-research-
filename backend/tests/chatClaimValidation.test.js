@@ -224,24 +224,103 @@ test('an empty draft answer produces no issues and no crash', () => {
 });
 
 // ---------------------------------------------------------------------------
-// needsClaimVerifier — required tests 10/11
+// needsClaimVerifier — HARDENING: eligibility is intent + genuine-evidence
+// based; citation presence/absence/validity plays NO role. This is the
+// fix for the unsafe gating the hardening review flagged: "evidence
+// exists for TCS guidance, draft makes uncited claims about TCS revenue
+// and margins" MUST still be verified.
 // ---------------------------------------------------------------------------
 test('required test 10: GENERAL_EDUCATION never needs the claim verifier', () => {
-  assert.equal(needsClaimVerifier({ draftAnswer: 'A P/E ratio is price / EPS.', evidence: [], intent: 'GENERAL_EDUCATION' }), false);
+  assert.equal(needsClaimVerifier({ evidence: [], intent: 'GENERAL_EDUCATION' }), false);
 });
 
 test('UNSUPPORTED never needs the claim verifier', () => {
-  assert.equal(needsClaimVerifier({ draftAnswer: 'I cannot rank companies by sector.', evidence: [], intent: 'UNSUPPORTED' }), false);
+  assert.equal(needsClaimVerifier({ evidence: [], intent: 'UNSUPPORTED' }), false);
 });
 
-test('required test 11: a safe no-data answer (zero evidence) never needs the claim verifier', () => {
-  assert.equal(needsClaimVerifier({ draftAnswer: "I don't have data for HAL right now.", evidence: [], intent: 'STOCK_COMPARISON' }), false);
+test('required test 11 / test 10 (skip-condition list): a safe no-data answer (zero evidence) never needs the claim verifier -- deterministic ZERO_EVIDENCE_FACTUAL_CLAIM already governs this case', () => {
+  assert.equal(needsClaimVerifier({ evidence: [], intent: 'STOCK_COMPARISON' }), false);
 });
 
-test('an answer with real evidence but no citation markers never needs the claim verifier', () => {
-  assert.equal(needsClaimVerifier({ draftAnswer: 'TCS looks healthy overall.', evidence: [evidenceItem()], intent: 'COMPANY_RESEARCH' }), false);
+// required test 1: evidence exists, draft has factual claims but NO
+// citations at all -- this must now REQUIRE the verifier, not skip it.
+test('required test 1: an evidence-dependent intent with real evidence and NO citation markers at all still needs the claim verifier', () => {
+  const result = needsClaimVerifier({
+    evidence: [evidenceItem()], intent: 'COMPANY_RESEARCH', entities: { symbols: ['TCS'] },
+    deterministicIssues: ['UNCITED_FACTUAL_CLAIM'], citedIndexes: new Set(),
+  });
+  assert.equal(result, true, 'a citation-free evidence-dependent draft is one of the STRONGEST reasons to verify, never a reason to skip');
 });
 
-test('a company-specific answer WITH real evidence and real citations needs the claim verifier', () => {
-  assert.equal(needsClaimVerifier({ draftAnswer: 'TCS revenue grew 12% [1].', evidence: [evidenceItem()], intent: 'COMPANY_RESEARCH' }), true);
+// required test 5/6 context: an invalid citation must also still trigger
+// the verifier (not just "no citation at all").
+test('an evidence-dependent draft with an INVALID citation marker still needs the claim verifier', () => {
+  const result = needsClaimVerifier({
+    evidence: [evidenceItem()], intent: 'COMPANY_RESEARCH', entities: { symbols: ['TCS'] },
+    deterministicIssues: ['CITATION_OUT_OF_RANGE'], citedIndexes: new Set(),
+  });
+  assert.equal(result, true);
+});
+
+test('a company-specific answer WITH real evidence and valid citations still needs the claim verifier (unchanged from before)', () => {
+  const result = needsClaimVerifier({
+    evidence: [evidenceItem()], intent: 'COMPANY_RESEARCH', entities: { symbols: ['TCS'] },
+    deterministicIssues: [], citedIndexes: new Set([1]),
+  });
+  assert.equal(result, true);
+});
+
+test('WATCHLIST_ANALYSIS and PORTFOLIO_ANALYSIS with real evidence need the claim verifier (added to the evidence-dependent set)', () => {
+  assert.equal(needsClaimVerifier({
+    evidence: [evidenceItem({ claimType: 'WATCHLIST_DATA', symbol: null })], intent: 'WATCHLIST_ANALYSIS', entities: {},
+    deterministicIssues: [], citedIndexes: new Set(),
+  }), true);
+  assert.equal(needsClaimVerifier({
+    evidence: [evidenceItem({ claimType: 'PORTFOLIO_DATA', symbol: null })], intent: 'PORTFOLIO_ANALYSIS', entities: {},
+    deterministicIssues: [], citedIndexes: new Set(),
+  }), true);
+});
+
+// required test 9: the ONLY legitimate skip for an evidence-dependent
+// intent with real evidence -- a fully, deterministically verified simple
+// price lookup (exactly one evidence item, exactly one correct citation,
+// exactly the one requested symbol, zero deterministic issues).
+test('required test 9: an exactly-mapped simple LIVE_MARKET_DATA response (one evidence item, one correct citation, clean deterministic pass) skips the verifier', () => {
+  const result = needsClaimVerifier({
+    evidence: [evidenceItem({ claimType: 'LIVE_PRICE', symbol: 'TCS' })], intent: 'LIVE_MARKET_DATA',
+    entities: { symbols: ['TCS'] }, deterministicIssues: [], citedIndexes: new Set([1]),
+  });
+  assert.equal(result, false);
+});
+
+test('required test 9 (negative): the SAME simple-price shape still needs the verifier once there is more than one evidence item', () => {
+  const result = needsClaimVerifier({
+    evidence: [evidenceItem({ claimType: 'LIVE_PRICE', symbol: 'TCS' }), evidenceItem({ claimType: 'FINANCIAL_DATA', symbol: 'TCS', evidenceId: 'e2' })],
+    intent: 'LIVE_MARKET_DATA', entities: { symbols: ['TCS'] }, deterministicIssues: [], citedIndexes: new Set([1]),
+  });
+  assert.equal(result, true);
+});
+
+test('required test 9 (negative): a simple-price shape with ANY deterministic issue (e.g. missing timestamp) still needs the verifier', () => {
+  const result = needsClaimVerifier({
+    evidence: [evidenceItem({ claimType: 'LIVE_PRICE', symbol: 'TCS' })], intent: 'LIVE_MARKET_DATA',
+    entities: { symbols: ['TCS'] }, deterministicIssues: ['MISSING_LIVE_PRICE_TIMESTAMP'], citedIndexes: new Set([1]),
+  });
+  assert.equal(result, true);
+});
+
+test('required test 9 (negative): a simple-price shape with NO citation still needs the verifier -- the exact-mapping exception requires an actual correct citation, not just one evidence item', () => {
+  const result = needsClaimVerifier({
+    evidence: [evidenceItem({ claimType: 'LIVE_PRICE', symbol: 'TCS' })], intent: 'LIVE_MARKET_DATA',
+    entities: { symbols: ['TCS'] }, deterministicIssues: [], citedIndexes: new Set(),
+  });
+  assert.equal(result, true);
+});
+
+test('the exact-mapping skip never applies outside LIVE_MARKET_DATA -- e.g. a single-evidence COMPANY_RESEARCH answer still needs the verifier', () => {
+  const result = needsClaimVerifier({
+    evidence: [evidenceItem()], intent: 'COMPANY_RESEARCH', entities: { symbols: ['TCS'] },
+    deterministicIssues: [], citedIndexes: new Set([1]),
+  });
+  assert.equal(result, true);
 });

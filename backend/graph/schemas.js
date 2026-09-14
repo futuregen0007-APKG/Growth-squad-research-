@@ -83,16 +83,15 @@ export const CitationRefSchema = z.object({
   claim: z.string().max(300),
 });
 
-// Superseded by ClaimVerificationSchema below for Phase 3's actual
-// claim-level verifier — this whole-answer pass/fail shape has no
-// evidence-index or per-claim verdict granularity, so it was not reused.
-// Kept only because it was already exported (unused before Phase 3 too;
-// see the Phase 3 audit report for why extending it wasn't safe/useful).
-export const ValidationResultSchema = z.object({
-  passed: z.boolean(),
-  issues: z.array(z.string().max(300)),
-  missingEvidenceClaims: z.array(z.string().max(300)),
-});
+// Removed in the Phase 3 hardening pass: ValidationResultSchema (a
+// whole-answer pass/fail shape with no per-claim/evidence-index
+// granularity) was unused both before and after Phase 3 — confirmed via a
+// repo-wide grep with zero remaining imports anywhere (including tests) —
+// and could not have been safely extended into the actual claim-level
+// verifier below, which needs per-claim verdicts and evidence indexes
+// this shape never had. Superseded by ClaimVerificationSchema.
+// validationPrompt (prompts/index.js) was removed for the same reason —
+// see this file's history for the removed shapes if ever needed again.
 
 // Phase 3: structured claim verification. Each verdict names exactly what
 // is wrong with one atomic claim — never free-form reasoning, never
@@ -162,7 +161,6 @@ export default {
   APPROVED_TOOLS,
   ToolPlanSchema,
   CitationRefSchema,
-  ValidationResultSchema,
   CLAIM_VERDICTS,
   ClaimVerificationSchema,
   VALIDATION_STATUSES,

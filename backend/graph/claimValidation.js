@@ -37,9 +37,16 @@ export const SAFE_VALIDATION_REASONS = Object.freeze({
 // imported) to avoid a two-way dependency between graph/nodes/* and this
 // plain-data module; kept in sync deliberately (both are short, stable
 // lists changed together whenever intents change).
+//
+// Hardening: WATCHLIST_ANALYSIS/PORTFOLIO_ANALYSIS added here (they were
+// missing from the original Phase 3 list) — a watchlist/portfolio answer
+// makes market claims about the user's real holdings and is exactly as
+// evidence-dependent as a plain company lookup; see the hardening
+// report's required verifier-eligibility policy.
 const EVIDENCE_DEPENDENT_INTENTS = new Set([
   'LIVE_MARKET_DATA', 'COMPANY_RESEARCH', 'EARNINGS_INTELLIGENCE',
   'DOCUMENT_RESEARCH', 'NEWS_RESEARCH', 'STOCK_COMPARISON', 'FOLLOW_UP',
+  'WATCHLIST_ANALYSIS', 'PORTFOLIO_ANALYSIS',
 ]);
 
 const GUARANTEE_PATTERNS = [
@@ -168,28 +175,83 @@ export const runDeterministicChecks = ({
   return { issues, citedIndexes };
 };
 
-// Intents where the LLM claim verifier is never worth its cost — either
-// there is no company-specific factual content to verify at all
-// (GENERAL_EDUCATION/UNSUPPORTED), or the deterministic pass has already
-// fully settled the question (see needsClaimVerifier below).
+// Intents that skip the verifier unconditionally — nothing company-
+// specific is ever being asserted, so there is nothing for a claim
+// verifier to check (GENERAL_EDUCATION covers greetings too — see
+// classifyIntent.js, there is no separate "greeting" intent).
 const SKIP_VERIFIER_INTENTS = new Set(['GENERAL_EDUCATION', 'UNSUPPORTED']);
+
+// The ONLY intent family narrow enough that a fully deterministic mapping
+// can stand in for the verifier at all — see isExactlyDeterministicallyVerified.
+const SIMPLE_DETERMINISTIC_MAPPING_INTENTS = new Set(['LIVE_MARKET_DATA']);
+
+/**
+ * isExactlyDeterministicallyVerified - hardening fix: the ONLY way an
+ * evidence-dependent draft with real evidence may skip the semantic
+ * verifier. Deliberately narrow — every one of these must hold:
+ *   - the intent is in SIMPLE_DETERMINISTIC_MAPPING_INTENTS (a plain
+ *     "what's the price of X" lookup, not a comparison/analysis/news/
+ *     guidance question where a citation-free or wrong-citation claim is
+ *     exactly the failure mode a regex can miss — see the hardening
+ *     report's worked example: "evidence exists for TCS guidance, draft
+ *     makes uncited claims about TCS revenue and margins" must NOT be
+ *     allowed to skip verification just because a plain price answer can);
+ *   - the deterministic pass found ZERO issues already (a missing
+ *     timestamp, an out-of-range citation, anything — any issue at all
+ *     means this was not a clean, fully-mapped response);
+ *   - there is EXACTLY one evidence item, cited EXACTLY once, and it
+ *     belongs to the single symbol this turn was about.
+ * Any answer with more than one evidence item, more than one requested
+ * symbol, zero citations, or any deterministic issue always goes to the
+ * verifier — citation presence/absence/validity plays NO role in this
+ * decision (the previous, unsafe gating this replaces).
+ */
+const isExactlyDeterministicallyVerified = ({
+  intent, evidence, entities, deterministicIssues, citedIndexes,
+}) => {
+  if (!SIMPLE_DETERMINISTIC_MAPPING_INTENTS.has(intent)) return false;
+  if (deterministicIssues.length) return false;
+  if (evidence.length !== 1) return false;
+  if (citedIndexes.size !== 1 || !citedIndexes.has(1)) return false;
+  const symbols = (entities.symbols || []).map((s) => String(s).toUpperCase());
+  if (symbols.length !== 1) return false;
+  return evidence[0].symbol && String(evidence[0].symbol).toUpperCase() === symbols[0];
+};
 
 /**
  * needsClaimVerifier - decides whether the extra structured-verification
- * LLM call (nodes/validateFinalAnswer.js) is worth making at all. Skips
- * it for: general education / unsupported-capability answers (nothing
- * company-specific to check), zero-evidence turns (the deterministic
- * ZERO_EVIDENCE_FACTUAL_CLAIM check already forces abstention — nothing
- * left for a verifier to add), and answers with no citation markers at
- * all (nothing cited means nothing to cross-check against evidence
- * indexes; the UNCITED_FACTUAL_CLAIM check already caught the unsafe
- * case, and a citation-free answer with no numeric claim is just prose).
+ * LLM call (nodes/validateFinalAnswer.js) is worth making. Hardened
+ * policy (citation presence is NEVER part of this decision):
+ *
+ *   REQUIRED for every evidence-dependent intent (company research,
+ *   financials, comparison, news, guidance/promise outcomes, research
+ *   documents, watchlist/portfolio) whenever genuine evidence exists —
+ *   regardless of whether the draft has valid citations, invalid
+ *   citations, or none at all. A citation-free evidence-dependent answer
+ *   is NOT a reason to skip verification; it is one of the strongest
+ *   reasons to run it (deterministic regex cannot reliably recognize
+ *   every unmarked factual claim).
+ *
+ *   SKIPPED only for: pure general education / unsupported-capability
+ *   answers (SKIP_VERIFIER_INTENTS — nothing company-specific asserted at
+ *   all); zero-evidence turns (nothing exists to verify claims against —
+ *   runDeterministicChecks' ZERO_EVIDENCE_FACTUAL_CLAIM check is what
+ *   actually guards this case, forcing repair/fallback whenever the draft
+ *   isn't already a clean, honest abstention); and the narrow
+ *   isExactlyDeterministicallyVerified case above.
  */
-export const needsClaimVerifier = ({ draftAnswer, evidence = [], intent = null }) => {
+export const needsClaimVerifier = ({
+  evidence = [], intent = null, entities = {}, deterministicIssues = [], citedIndexes = new Set(),
+}) => {
   if (SKIP_VERIFIER_INTENTS.has(intent)) return false;
+  if (!EVIDENCE_DEPENDENT_INTENTS.has(intent)) return false;
   if (!evidence.length) return false;
-  const { valid } = extractCitationIndexes(draftAnswer, evidence.length);
-  return valid.size > 0;
+  if (isExactlyDeterministicallyVerified({
+    intent, evidence, entities, deterministicIssues, citedIndexes,
+  })) return false;
+  return true;
 };
 
-export default { SAFE_VALIDATION_REASONS, runDeterministicChecks, needsClaimVerifier, extractCitationIndexes };
+export default {
+  SAFE_VALIDATION_REASONS, runDeterministicChecks, needsClaimVerifier, extractCitationIndexes,
+};

@@ -39,7 +39,7 @@ export const repairAnswer = async (state) => {
     evidence: state.evidence,
     draftAnswer: state.draftAnswer,
     deterministicIssues: state.validationIssues,
-    claimIssues: state.claimValidation,
+    claimValidation: state.claimValidation,
     missingDataNotes: formatMissingEvidenceForPrompt(state.missingEvidence),
   });
 
