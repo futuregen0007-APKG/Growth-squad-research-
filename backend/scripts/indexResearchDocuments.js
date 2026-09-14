@@ -41,6 +41,7 @@ import { chunkDocument, CHUNKING_VERSION } from '../services/DocumentChunkingSer
 import { embedChunks } from '../services/EmbeddingService.js';
 import { LLM_CONFIG } from '../llm/OpenAIClientFactory.js';
 import { logger } from '../utils/logger.js';
+import { CHUNK_DOCUMENT_TYPES } from '../models/ResearchDocumentChunk.js';
 
 dotenv.config();
 
@@ -82,6 +83,7 @@ export const run = async (options = {}) => {
     documentsProcessed: 0,
     documentsSkippedResume: 0,
     documentsFailed: 0,
+    documentsTruncated: 0,
     pagesExtracted: 0,
     pagesRejected: 0,
     chunksCreated: 0,
@@ -145,16 +147,35 @@ export const run = async (options = {}) => {
         continue; // never deletes any previously-successful chunks for this or any other document
       }
 
+      const documentType = registryDoc.sourceType && CHUNK_DOCUMENT_TYPES.includes(registryDoc.sourceType)
+        ? registryDoc.sourceType : 'OTHER';
+
       const pages = await extractPdfPages(buffer);
       summary.pagesExtracted += pages.length;
 
-      const { chunks, rejectedPages, pagesConsidered, truncatedToPageLimit, truncatedToChunkLimit } = chunkDocument(pages, {
+      const {
+        chunks, rejectedPages, pagesTotal, processedPages, totalChunks,
+        truncatedToPageLimit, truncatedToChunkLimit, truncated, truncationReason, extractionCoveragePct,
+      } = chunkDocument(pages, {
         documentHash: registryDoc.pdfHash,
+        documentType,
         ...chunkingOptions,
       });
       summary.pagesRejected += rejectedPages.length;
+      if (truncated) summary.documentsTruncated += 1;
       docSummary.pagesExtracted = pages.length;
       docSummary.pagesRejected = rejectedPages.length;
+      docSummary.pagesTotal = pagesTotal;
+      docSummary.processedPages = processedPages;
+      docSummary.totalChunks = totalChunks;
+      // Phase 4A.1: a truncated document must never look indistinguishable
+      // from a fully-covered one — these three fields are the explicit,
+      // machine-checkable signal a downstream caller (or a future Phase
+      // 4B evidence consumer) needs to tell the difference.
+      docSummary.truncated = truncated;
+      docSummary.truncationReason = truncationReason;
+      docSummary.extractionCoveragePct = extractionCoveragePct;
+      // Retained for exact backward compatibility with the Phase 4A summary shape.
       docSummary.truncatedToPageLimit = truncatedToPageLimit;
       docSummary.truncatedToChunkLimit = truncatedToChunkLimit;
 
@@ -179,8 +200,8 @@ export const run = async (options = {}) => {
           registryDocumentId: registryDoc._id,
           documentHash: registryDoc.pdfHash,
           chunkHash: chunk.chunkHash,
-          documentType: registryDoc.sourceType && ['ANNUAL_REPORT', 'FINANCIAL_RESULTS', 'INVESTOR_PRESENTATION', 'EARNINGS_CALL_TRANSCRIPT', 'PRESS_RELEASE', 'EXCHANGE_FILING'].includes(registryDoc.sourceType)
-            ? registryDoc.sourceType : 'OTHER',
+          normalizedTextHash: chunk.normalizedTextHash,
+          documentType,
           title: registryDoc.companyName ? `${registryDoc.companyName} — ${registryDoc.sourceType}` : null,
           fiscalYear: registryDoc.fiscalYear,
           publishedAt: registryDoc.publicationDate || null,
@@ -194,6 +215,8 @@ export const run = async (options = {}) => {
           storageBackend: registryDoc.storageBackend,
           storageKey: registryDoc.storageKey,
           extractedWithVersion: CHUNKING_VERSION,
+          documentTruncated: truncated,
+          documentExtractionCoveragePct: extractionCoveragePct,
         };
 
         const setFields = { ...baseDoc };
@@ -209,8 +232,12 @@ export const run = async (options = {}) => {
           setFields.indexedAt = new Date();
         }
 
+        // Phase 4A.1: upsert on the COMPOUND STRUCTURAL key (documentHash,
+        // pageStart, chunkIndex) — the actual enforced identity — never on
+        // chunkHash alone (see DocumentChunkingService.js's identity note
+        // for why that would fight the unique index on a content change).
         await ResearchDocumentChunk.updateOne(
-          { chunkHash: chunk.chunkHash },
+          { documentHash: registryDoc.pdfHash, pageStart: chunk.pageStart, chunkIndex: chunk.chunkIndex },
           { $set: setFields },
           { upsert: true },
         );
@@ -222,7 +249,11 @@ export const run = async (options = {}) => {
       summary.chunksSkippedUnchanged += embedDiag.skipped;
       summary.chunksFailed += embedDiag.failed;
 
-      docSummary.status = 'PROCESSED';
+      // A truncated document is reported with an explicitly distinct
+      // status — never plain 'PROCESSED' — so a caller scanning
+      // perDocument[].status for "fully indexed" documents can never
+      // mistake a truncated one for complete coverage.
+      docSummary.status = truncated ? 'PROCESSED_TRUNCATED' : 'PROCESSED';
       docSummary.chunksCreated = created;
       docSummary.chunksEmbedded = embedDiag.embedded;
       docSummary.chunksFailed = embedDiag.failed;

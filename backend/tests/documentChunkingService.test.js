@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  chunkPages, chunkDocument, computeChunkHash, stripRepeatedHeaderFooter, approximateTokenCount,
+  chunkPages, chunkDocument, computeChunkHash, computeNormalizedTextHash, stripRepeatedHeaderFooter, approximateTokenCount,
+  resolveChunkingOptions, DOCUMENT_TYPE_CHUNKING_LIMITS,
 } from '../services/DocumentChunkingService.js';
 
 const page = (pageNumber, text) => ({ pageNumber, text });
@@ -44,6 +45,97 @@ test('required test: changed-document versioning -- a different documentHash (th
   const v2 = chunkDocument(pages, { documentHash: 'hash-v2' });
   assert.ok(v1.chunks.length > 0 && v2.chunks.length > 0, 'sanity: both versions must actually produce chunks');
   assert.notDeepEqual(v1.chunks.map((c) => c.chunkHash), v2.chunks.map((c) => c.chunkHash));
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4A.1 hardening: chunk identity/provenance
+// ---------------------------------------------------------------------------
+
+test('required (Phase 4A.1): identical text in two DIFFERENT documents remains two independently citable identities', () => {
+  const pages = [page(1, 'The exact same paragraph appears verbatim in two unrelated filings for this test.')];
+  const docA = chunkDocument(pages, { documentHash: 'doc-A-hash' });
+  const docB = chunkDocument(pages, { documentHash: 'doc-B-hash' });
+  assert.notEqual(docA.chunks[0].chunkHash, docB.chunks[0].chunkHash, 'two different documents must never share a chunk identity, even with byte-identical text');
+  // Same normalizedTextHash (content is genuinely identical) but the
+  // compound identity (documentHash, pageStart, chunkIndex) still differs.
+  assert.equal(docA.chunks[0].normalizedTextHash, docB.chunks[0].normalizedTextHash);
+});
+
+test('required (Phase 4A.1): identical text on two DIFFERENT PAGES of the SAME document preserves both page references as independent identities', () => {
+  const sameText = 'A boilerplate risk-factors paragraph that happens to repeat verbatim on two pages.';
+  const pages = [page(3, sameText), page(47, sameText)];
+  const { chunks } = chunkDocument(pages, { documentHash: 'doc-hash-shared' });
+  assert.equal(chunks.length, 2);
+  assert.notEqual(chunks[0].chunkHash, chunks[1].chunkHash, 'same document, same text, different page -- must still be a distinct identity');
+  assert.deepEqual(new Set(chunks.map((c) => c.pageStart)), new Set([3, 47]), 'both original page numbers must survive');
+});
+
+test('required (Phase 4A.1): computeNormalizedTextHash is whitespace/case-insensitive, so chunkHash is robust to non-semantic extraction jitter', () => {
+  const a = computeNormalizedTextHash('Revenue   grew 12%   this quarter.');
+  const b = computeNormalizedTextHash('revenue grew 12% this quarter.');
+  assert.equal(a, b, 'differing only in whitespace runs/case must normalize to the same hash');
+  const differentContent = computeNormalizedTextHash('Revenue grew 13% this quarter.');
+  assert.notEqual(a, differentContent);
+});
+
+test('required (Phase 4A.1): re-indexing an unchanged document is still idempotent under the new identity formula', () => {
+  const pages = [page(1, 'Some real extracted page text about company financial performance for identity testing.')];
+  const first = chunkDocument(pages, { documentHash: 'doc-hash-idempotent' });
+  const second = chunkDocument(pages, { documentHash: 'doc-hash-idempotent' });
+  assert.deepEqual(first.chunks.map((c) => c.chunkHash), second.chunks.map((c) => c.chunkHash));
+  assert.deepEqual(first.chunks.map((c) => c.normalizedTextHash), second.chunks.map((c) => c.normalizedTextHash));
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4A.1 hardening: document-type-aware limits + explicit truncation metadata
+// ---------------------------------------------------------------------------
+
+test('resolveChunkingOptions applies document-type-aware limits, with explicit caller overrides always winning', () => {
+  const annualReport = resolveChunkingOptions('ANNUAL_REPORT');
+  assert.equal(annualReport.maxPagesPerDocument, DOCUMENT_TYPE_CHUNKING_LIMITS.ANNUAL_REPORT.maxPagesPerDocument);
+  assert.ok(annualReport.maxPagesPerDocument > DOCUMENT_TYPE_CHUNKING_LIMITS.PRESS_RELEASE.maxPagesPerDocument, 'an annual report must get a materially larger page budget than a press release');
+  const overridden = resolveChunkingOptions('ANNUAL_REPORT', { maxPagesPerDocument: 3 });
+  assert.equal(overridden.maxPagesPerDocument, 3, 'an explicit caller override always wins over the type default');
+});
+
+test('required (Phase 4A.1): a truncated document reports truncated=true, a real truncationReason, and extractionCoveragePct < 100', () => {
+  const manyPages = Array.from({ length: 10 }, (_, i) => page(i + 1, `Real page content number ${i}, containing actual annual report text.`));
+  const result = chunkDocument(manyPages, { documentHash: 'h-trunc', maxPagesPerDocument: 4 });
+  assert.equal(result.truncated, true);
+  assert.equal(result.truncationReason, 'PAGE_LIMIT');
+  assert.equal(result.pagesTotal, 10);
+  assert.equal(result.processedPages, 4);
+  assert.ok(result.extractionCoveragePct < 100 && result.extractionCoveragePct > 0);
+});
+
+test('required (Phase 4A.1): a chunk-limit truncation is reported distinctly from a page-limit truncation', () => {
+  const manyPages = Array.from({ length: 20 }, (_, i) => page(i + 1, `Real page content number ${i}, containing text about the business and operations.`));
+  const result = chunkDocument(manyPages, { documentHash: 'h-trunc-chunks', maxChunksPerDocument: 5, maxPagesPerDocument: 60 });
+  assert.equal(result.truncated, true);
+  assert.equal(result.truncationReason, 'CHUNK_LIMIT');
+  assert.ok(result.processedPages < result.pagesTotal, 'late pages beyond the chunk cap must not count as processed');
+});
+
+test('required (Phase 4A.1): a fully-covered document (no truncation) reports truncated=false and 100% coverage', () => {
+  const pages = [page(1, 'Short real content about the fiscal year results and operating performance.')];
+  const result = chunkDocument(pages, { documentHash: 'h-full' });
+  assert.equal(result.truncated, false);
+  assert.equal(result.truncationReason, null);
+  assert.equal(result.extractionCoveragePct, 100);
+});
+
+test('required (Phase 4A.1): late-page evidence is either indexed, or clearly reported as outside coverage -- never silently absent', () => {
+  const pages = Array.from({ length: 8 }, (_, i) => page(i + 1, `Filler content for page ${i + 1} of this test document about operations.`));
+  pages.push(page(9, 'The critical late-page guidance figure investors are looking for appears only here.'));
+  const truncatedResult = chunkDocument(pages, { documentHash: 'h-late-trunc', maxPagesPerDocument: 8 });
+  const truncatedText = truncatedResult.chunks.map((c) => c.text).join(' ');
+  assert.ok(!truncatedText.includes('critical late-page guidance'), 'sanity: the truncated run really did drop page 9');
+  assert.equal(truncatedResult.truncated, true, 'a document missing real evidence due to a page cap must be flagged truncated, never silently reported as complete');
+
+  const fullResult = chunkDocument(pages, { documentHash: 'h-late-full', maxPagesPerDocument: 20 });
+  const fullText = fullResult.chunks.map((c) => c.text).join(' ');
+  assert.ok(fullText.includes('critical late-page guidance'), 'with a sufficient page cap, the same late-page evidence is genuinely indexed');
+  assert.equal(fullResult.truncated, false);
 });
 
 test('computeChunkHash is a pure function of its inputs -- changing any one field changes the hash', () => {
