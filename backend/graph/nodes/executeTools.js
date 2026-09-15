@@ -1,7 +1,7 @@
 import { TOOL_REGISTRY } from '../tools/toolRegistry.js';
 import { fingerprintToolCall } from '../toolFingerprint.js';
 import { hasBudgetFor } from '../requestBudget.js';
-import { mergeEarningsIntelligenceEvidence } from '../../services/EvidenceEnvelope.js';
+import { mergeEarningsIntelligenceEvidence, reconcileEvidenceEnvelope } from '../../services/EvidenceEnvelope.js';
 import { SUPPORTED_STOCKS } from '../../utils/constants.js';
 import { logger } from '../../utils/logger.js';
 
@@ -199,8 +199,22 @@ export const executeTools = async (state) => {
     researchEvidence = merged.items;
   }
 
+  // Phase 4D Part 4: cross-source temporal reconciliation — runs on the
+  // FINAL combined envelope (documents + any merged Earnings Intelligence
+  // items) so a document chunk and a later Earnings-Intelligence record
+  // for the exact same guidance lineage are compared by canonical scope,
+  // never by documentType (see services/EvidenceEnvelope.js's
+  // reconcileEvidenceEnvelope for the full rationale). Only runs on a
+  // genuinely grounded turn — a no-op (empty items) otherwise.
+  let researchRelationships = [];
+  if (researchEvidence.length) {
+    const reconciled = reconcileEvidenceEnvelope({ items: researchEvidence });
+    researchEvidence = reconciled.items;
+    researchRelationships = reconciled.relationships;
+  }
+
   return {
-    toolResults, evidence, warnings, deduplicatedToolCalls, toolCallFingerprints, providerOperationCount, researchEvidence, retrievalMode,
+    toolResults, evidence, warnings, deduplicatedToolCalls, toolCallFingerprints, providerOperationCount, researchEvidence, retrievalMode, researchRelationships,
   };
 };
 

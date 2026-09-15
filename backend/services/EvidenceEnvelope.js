@@ -26,6 +26,9 @@
  * into anything that could be read as a system/developer instruction.
  */
 
+import { normalizeGuidanceEvidence } from './guidanceNormalization.js';
+import { detectRelationships } from './temporalRelationships.js';
+
 /**
  * A deterministic, pattern-based detector for obvious instruction-like
  * phrasing inside retrieved document text — DIAGNOSTICS ONLY. It never
@@ -149,10 +152,33 @@ export const buildResearchEvidenceEnvelope = (retrieverResults = [], { retrieval
   const deduped = dedupeByChunkId(retrieverResults || []);
   const ranked = deterministicRank(deduped);
 
+  // Phase 4D: "reconciliation occurs before context budgeting so the
+  // budget does not discard the only current/revised record while
+  // retaining an obsolete one." Computed on the FULL ranked pool (using
+  // chunkId as the temporary identity — real "E#" ids don't exist yet at
+  // this stage) purely to decide which items get first claim on the
+  // MAX_EVIDENCE_ITEMS/MAX_TOTAL_TEXT_CHARS budget below; it never
+  // changes the underlying retrieval SCORE or reorders anything among
+  // items with no temporal relationship to each other. A chunk found
+  // SUPERSEDED by another chunk THAT IS ALSO in this pool is moved behind
+  // every non-superseded item (but still kept, budget permitting) — its
+  // superseding sibling is guaranteed to compete for a budget slot first.
+  const canonicalForBudgeting = ranked
+    .map((r) => normalizeGuidanceEvidence({ ...r, evidenceId: r.chunkId }))
+    .filter((c) => c.confidence !== 'unresolved');
+  const supersededChunkIds = new Set(
+    detectRelationships(canonicalForBudgeting)
+      .filter((rel) => rel.type === 'SUPERSEDES')
+      .map((rel) => rel.toEvidenceId),
+  );
+  const prioritized = ranked.filter((r) => !supersededChunkIds.has(r.chunkId));
+  const deprioritized = ranked.filter((r) => supersededChunkIds.has(r.chunkId));
+  const budgetOrder = [...prioritized, ...deprioritized];
+
   const included = [];
   let excludedByBudget = 0;
   let totalChars = 0;
-  ranked.forEach((r) => {
+  budgetOrder.forEach((r) => {
     if (included.length >= MAX_EVIDENCE_ITEMS) { excludedByBudget += 1; return; }
     const textLength = String(r.text || '').length;
     // The FIRST item is always included even if it alone exceeds the
@@ -263,6 +289,15 @@ export const buildEarningsIntelligenceEnvelopeItems = (timeline, { symbol, compa
         pageEnd: Number.isInteger(promise.evidence.page) ? promise.evidence.page : null,
         text: promise.evidence.excerpt,
         score: null,
+        // Phase 4D Part 2: the REAL structured guidance fields
+        // ManagementPromiseService.js's getCompanyTimeline already
+        // normalizes (metric/targetValue/targetUnit) — carried through so
+        // graph/guidanceNormalization.js can use them DIRECTLY instead of
+        // re-parsing the excerpt text, which is strictly more reliable
+        // for an Earnings-Intelligence-sourced record.
+        structuredGuidance: promise.metric ? {
+          metric: promise.metric, targetValue: promise.targetValue, targetUnit: promise.targetUnit, operator: promise.operator || null,
+        } : null,
       });
     }
 
@@ -284,6 +319,9 @@ export const buildEarningsIntelligenceEnvelopeItems = (timeline, { symbol, compa
         pageEnd: null,
         text: outcomeExcerpt,
         score: null,
+        structuredGuidance: promise.metric && Number.isFinite(promise.outcome?.actualValue) ? {
+          metric: promise.metric, targetValue: promise.outcome.actualValue, targetUnit: promise.outcome.actualUnit || promise.targetUnit, operator: null,
+        } : null,
       });
     }
   }
@@ -330,6 +368,7 @@ export const mergeEarningsIntelligenceEvidence = (envelope, timeline, { symbol, 
     retrievalMode: 'EARNINGS_INTELLIGENCE_MERGE',
     untrustedContent: true,
     injectionSignal: detectInjectionSignals(item.text),
+    structuredGuidance: item.structuredGuidance || null,
   }));
 
   return {
@@ -339,7 +378,102 @@ export const mergeEarningsIntelligenceEvidence = (envelope, timeline, { symbol, 
   };
 };
 
+// ---------------------------------------------------------------------------
+// Phase 4D Part 4: EvidenceEnvelope temporal annotations. Runs on the
+// FINAL, already-budgeted envelope (documents + any merged Earnings
+// Intelligence items, real "E#" ids assigned) — this is what actually
+// fixes the root cause: relationships are computed by CANONICAL scope
+// (symbol/metricKey/targetFiscalYear/targetQuarter), never by
+// documentType, so a document chunk and a later Earnings-Intelligence
+// record for the exact same guidance lineage are correctly compared.
+// Every value here is server-computed and deterministic — the model never
+// creates or modifies temporalStatus/supersededByEvidenceId/
+// supersedesEvidenceIds/relationshipIds (Part 4's explicit requirement).
+// ---------------------------------------------------------------------------
+
+/**
+ * temporalStatusFor - the single per-item status derived from this
+ * item's relationships:
+ *   - UNRESOLVED: normalization itself was uncertain (never guessed).
+ *   - HISTORICAL: an outcome-kind record (a realized past fact is never
+ *     "current guidance") or a record that OUTCOME_FOR's another.
+ *   - CONFLICTING: involved in a CONFLICTS relationship either way — a
+ *     real disagreement this deterministic layer could not safely
+ *     resolve (never silently picked).
+ *   - SUPERSEDED: is the `toEvidenceId` of a SUPERSEDES relationship.
+ *   - CURRENT: everything else — including a lone, unchallenged
+ *     disclosure, and the `fromEvidenceId` side of a SUPERSEDES.
+ */
+const temporalStatusFor = (evidenceId, canonicalById, relationships) => {
+  const canonical = canonicalById.get(evidenceId);
+  if (!canonical || canonical.confidence === 'unresolved') return 'UNRESOLVED';
+  if (canonical.guidanceKind === 'outcome') return 'HISTORICAL';
+
+  const involving = relationships.filter((r) => r.fromEvidenceId === evidenceId || r.toEvidenceId === evidenceId);
+  if (involving.some((r) => r.type === 'CONFLICTS')) return 'CONFLICTING';
+  if (involving.some((r) => r.type === 'SUPERSEDES' && r.toEvidenceId === evidenceId)) return 'SUPERSEDED';
+  if (involving.some((r) => r.type === 'OUTCOME_FOR' && r.fromEvidenceId === evidenceId)) return 'HISTORICAL';
+  return 'CURRENT';
+};
+
+/**
+ * reconcileEvidenceEnvelope - Part 4's main entry point. Takes the
+ * complete, already-budgeted envelope (buildResearchEvidenceEnvelope's
+ * output, optionally already merged with Earnings Intelligence items) and
+ * returns a NEW envelope whose items carry additive temporal fields:
+ * `temporalStatus`, `supersededByEvidenceId`, `supersedesEvidenceIds`,
+ * `relationshipIds`, and the canonical guidance fields themselves
+ * (`canonicalGuidance`) when normalization succeeded. `envelope.relationships`
+ * carries the full relationship list. Every existing field (evidenceId,
+ * citation provenance, dedup, ordering) is passed through completely
+ * unchanged — this only ever ADDS metadata, never removes or reorders.
+ */
+export const reconcileEvidenceEnvelope = (envelope) => {
+  const items = envelope?.items || [];
+  const canonicalRecords = items.map((item) => normalizeGuidanceEvidence(item, { structured: item.structuredGuidance || null }));
+  const canonicalById = new Map(canonicalRecords.map((c) => [c.evidenceId, c]));
+  const relationships = detectRelationships(canonicalRecords).map((rel, index) => ({ ...rel, relationshipId: `R${index + 1}` }));
+
+  const relationshipIdsFor = (evidenceId) => relationships
+    .filter((r) => r.fromEvidenceId === evidenceId || r.toEvidenceId === evidenceId)
+    .map((r) => r.relationshipId);
+
+  const supersededByFor = (evidenceId) => {
+    const rel = relationships.find((r) => r.type === 'SUPERSEDES' && r.toEvidenceId === evidenceId);
+    return rel ? rel.fromEvidenceId : null;
+  };
+  const supersedesFor = (evidenceId) => relationships
+    .filter((r) => r.type === 'SUPERSEDES' && r.fromEvidenceId === evidenceId)
+    .map((r) => r.toEvidenceId);
+
+  const annotatedItems = items.map((item) => {
+    const canonical = canonicalById.get(item.evidenceId);
+    return {
+      ...item,
+      temporalStatus: temporalStatusFor(item.evidenceId, canonicalById, relationships),
+      supersededByEvidenceId: supersededByFor(item.evidenceId),
+      supersedesEvidenceIds: supersedesFor(item.evidenceId),
+      relationshipIds: relationshipIdsFor(item.evidenceId),
+      canonicalGuidance: canonical && canonical.confidence !== 'unresolved' ? {
+        metric: canonical.metric,
+        metricKey: canonical.metricKey,
+        targetFiscalYear: canonical.targetFiscalYear,
+        targetQuarter: canonical.targetQuarter,
+        guidanceKind: canonical.guidanceKind,
+        valueType: canonical.valueType,
+        lowerBound: canonical.lowerBound,
+        upperBound: canonical.upperBound,
+        exactValue: canonical.exactValue,
+        unit: canonical.unit,
+        currency: canonical.currency,
+      } : null,
+    };
+  });
+
+  return { ...envelope, items: annotatedItems, relationships };
+};
+
 export default {
   detectInjectionSignals, toUntrustedEvidenceEnvelope, toUntrustedEvidenceEnvelopes, buildResearchEvidenceEnvelope,
-  buildEarningsIntelligenceEnvelopeItems, mergeEarningsIntelligenceEvidence,
+  buildEarningsIntelligenceEnvelopeItems, mergeEarningsIntelligenceEvidence, reconcileEvidenceEnvelope,
 };

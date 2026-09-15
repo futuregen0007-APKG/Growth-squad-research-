@@ -109,3 +109,73 @@ test('an ordinary user message renders unchanged (right-aligned bubble, no markd
   render(<ChatMessageBubble message={{ role: 'user', content: 'What is a P/E ratio?' }} />);
   expect(screen.getByTestId('msg-user')).toHaveTextContent('What is a P/E ratio?');
 });
+
+// ---------------------------------------------------------------------------
+// Phase 4D Part 7: temporal citation labels (current/revised/superseded).
+// ---------------------------------------------------------------------------
+
+test('a SUPERSEDED citation is clearly labeled, and its historical citation is never removed', () => {
+  const message = baseAssistantMessage({
+    citations: [{
+      evidenceId: 'E1', symbol: 'INFY', documentTitle: 'INFY Q1 FY2023 Earnings Call', sourceUrl: 'https://example.com/infy-q1.pdf',
+      temporalStatus: 'SUPERSEDED', supersededBy: 'E2', canonicalGuidance: { valueType: 'range', lowerBound: 21, upperBound: 23, unit: 'PERCENTAGE' },
+    }],
+  });
+  render(<ChatMessageBubble message={message} />);
+  openSources();
+  expect(screen.getByText('Superseded')).toBeInTheDocument();
+  expect(screen.getByText('INFY Q1 FY2023 Earnings Call')).toBeInTheDocument();
+});
+
+test('a CURRENT citation that supersedes a shown SUPERSEDED sibling renders "Revised from X to Y"', () => {
+  const message = baseAssistantMessage({
+    citations: [
+      {
+        evidenceId: 'E1', symbol: 'INFY', documentTitle: 'INFY Q1 FY2023 Earnings Call', sourceUrl: 'https://example.com/infy-q1.pdf',
+        temporalStatus: 'SUPERSEDED', supersededBy: 'E2', canonicalGuidance: { valueType: 'range', lowerBound: 21, upperBound: 23, unit: 'PERCENTAGE' },
+      },
+      {
+        evidenceId: 'E2', symbol: 'INFY', documentTitle: 'INFY Revised Guidance', sourceUrl: 'https://example.com/infy-revised.pdf',
+        temporalStatus: 'CURRENT', supersedes: ['E1'], canonicalGuidance: { valueType: 'range', lowerBound: 21, upperBound: 22, unit: 'PERCENTAGE' },
+      },
+    ],
+  });
+  render(<ChatMessageBubble message={message} />);
+  openSources();
+  expect(screen.getByText('Revised from 21%-23% to 21%-22%')).toBeInTheDocument();
+  expect(screen.getByText('Current')).toBeInTheDocument();
+});
+
+test('a CONFLICTING citation is honestly labeled, never silently hidden', () => {
+  const message = baseAssistantMessage({
+    citations: [{
+      evidenceId: 'E1', symbol: 'INFY', documentTitle: 'Conflicting Source', sourceUrl: 'https://example.com/c.pdf', temporalStatus: 'CONFLICTING',
+    }],
+  });
+  render(<ChatMessageBubble message={message} />);
+  openSources();
+  expect(screen.getByText('Conflicting source')).toBeInTheDocument();
+});
+
+test('an ordinary (non-guidance) citation with no temporalStatus shows no temporal label at all', () => {
+  const message = baseAssistantMessage({
+    citations: [{ evidenceId: 'E1', symbol: 'TCS', documentTitle: 'TCS News', sourceUrl: 'https://example.com/n.pdf' }],
+  });
+  render(<ChatMessageBubble message={message} />);
+  openSources();
+  expect(screen.queryByText('Current')).toBeNull();
+  expect(screen.queryByText('Superseded')).toBeNull();
+});
+
+test('internal verifier diagnostics (reasonCode, relationshipId, confidence) are never rendered in the citation card', () => {
+  const message = baseAssistantMessage({
+    citations: [{
+      evidenceId: 'E1', symbol: 'INFY', documentTitle: 'INFY Guidance', sourceUrl: 'https://example.com/g.pdf',
+      temporalStatus: 'CURRENT', reasonCode: 'SECRET_INTERNAL_REASON', relationshipId: 'R1', confidence: 'high',
+    }],
+  });
+  render(<ChatMessageBubble message={message} />);
+  openSources();
+  expect(screen.queryByText(/SECRET_INTERNAL_REASON/)).toBeNull();
+  expect(screen.queryByText(/R1/)).toBeNull();
+});

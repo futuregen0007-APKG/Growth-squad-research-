@@ -83,7 +83,7 @@ export const RESEARCH_QUESTION_TYPES = Object.freeze([
 ]);
 
 const REVISED_GUIDANCE_TYPE_PATTERN = /\brevis(e|ed|ion|ing)\b|\bupdated\s+(guidance|outlook|forecast|target)\b|\b(raised?|lowered|cut|narrowed)\s+(its\s+)?(guidance|outlook|forecast|target)\b|\bchanged\s+(its\s+)?guidance\b|\boriginal\s+and\s+revised\s+guidance\b/i;
-const PROMISE_VS_OUTCOME_TYPE_PATTERN = /\bdid\s+.{0,30}?\b(meet|achieve|deliver|fulfil{1,2}|keep|beat|miss)\b|\bpromise[sd]?\b.{0,30}?\b(deliver(ed)?|achiev(e|ed)|meet|met|fulfil{1,2}(led)?|keep|kept)\b|\b(deliver(ed)?|achiev(e|ed)|meet|met|fulfil{1,2}(led)?)\b.{0,30}?\bpromise[sd]?\b|\bpromise[sd]?\s+vs\.?\s+(outcome|actual|result)\b|\btrack\s+record\b|\bmissed\s+target\b/i;
+const PROMISE_VS_OUTCOME_TYPE_PATTERN = /\bdid\s+.{0,30}?\b(meet|achieve|deliver|fulfil{1,2}|keep|beat|miss)\b|\bpromise[sd]?\b.{0,30}?\b(deliver(ed)?|achiev(e|ed)|meet|met|fulfil{1,2}(led)?|keep|kept)\b|\b(deliver(ed)?|achiev(e|ed)|meet|met|fulfil{1,2}(led)?)\b.{0,30}?\bpromise[sd]?\b|\bpromise[sd]?\s+vs\.?\s+(outcome|actual|result)\b|\btrack\s+record\b|\bmissed\s+target\b|\bpromise[sd]?\b[^.?!]{0,60}?\boutcome\b|\boutcome\b[^.?!]{0,60}?\bpromise[sd]?\b/i;
 const MANAGEMENT_GUIDANCE_TYPE_PATTERN = /\bguidance\b|\boutlook\b|\bforecast\b/i;
 const EARNINGS_CALL_TYPE_PATTERN = /\bearnings\s+call\b|\bconference\s+call\b|\bcall\s+transcript\b|\bmanagement\s+(say|says|said|state|states|stated|comment|commented|remark|remarked|commentary)\b/i;
 const DOCUMENT_FILING_TYPE_PATTERN = /\b(documents?|filings?|filed|annual\s+report|prospectus|excerpts?)\b|\bsearch\b.{0,20}\b(documents?|filings?|reports?)\b|\bfind\b.{0,20}\b(documents?|filings?|reports?|mentions?)\b|\blook\s+through\b/i;

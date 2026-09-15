@@ -61,7 +61,7 @@ export const generateGroundedAnswer = async (state, scope) => {
     maxTokens: LLM_CONFIG.maxOutputTokens,
     schema: GroundedAnswerSchema,
     schemaName: 'grounded_answer',
-    prompt: groundedAnswerPrompt({ message: text, scope, evidenceEnvelope: state.researchEvidence }),
+    prompt: groundedAnswerPrompt({ message: text, scope, evidenceEnvelope: state.researchEvidence, relationships: state.researchRelationships }),
     signal: state.abortSignal,
     deadlineAt: state.deadlineAt,
     minBudgetMs: MIN_GENERATE_BUDGET_MS,
@@ -155,7 +155,7 @@ export const repairGroundedAnswerNode = async (state) => {
     schema: GroundedAnswerSchema,
     schemaName: 'grounded_answer_repair',
     prompt: groundedRepairPrompt({
-      message: text, scope, evidenceEnvelope: state.researchEvidence, draft: state.groundedAnswer, claims: state.groundedClaims,
+      message: text, scope, evidenceEnvelope: state.researchEvidence, relationships: state.researchRelationships, draft: state.groundedAnswer, claims: state.groundedClaims,
     }),
     signal: state.abortSignal,
     deadlineAt: state.deadlineAt,
@@ -201,6 +201,15 @@ const citationFromEvidence = (item) => ({
   pageStart: item.pageStart,
   pageEnd: item.pageEnd,
   excerpt: item.text ? String(item.text).slice(0, 500) : null,
+  // Phase 4D Part 7: backward-compatible additive temporal metadata —
+  // trusted, server-computed (see services/EvidenceEnvelope.js's
+  // reconcileEvidenceEnvelope), never model-generated. `null`/absent for
+  // any non-guidance citation, so an existing client reading only the
+  // fields above is completely unaffected.
+  temporalStatus: item.temporalStatus || null,
+  supersededBy: item.supersededByEvidenceId || null,
+  supersedes: item.supersedesEvidenceIds && item.supersedesEvidenceIds.length ? item.supersedesEvidenceIds : null,
+  canonicalGuidance: item.canonicalGuidance || null,
   // Back-compat aliases so the EXISTING SourcesSection component (which
   // reads c.title/c.provider) renders sensibly with zero frontend changes
   // required — see components/chat/ChatMessageBubble.jsx.

@@ -241,6 +241,15 @@ export const GraphState = Annotation.Root({
   // mergeEvidence — Phase 4B's bounded repair never re-retrieves), so
   // `replace` is correct.
   researchEvidence: Annotation({ reducer: replace, default: () => [] }),
+  // Phase 4D: the trusted, server-computed cross-source temporal
+  // relationships between researchEvidence items (SUPERSEDES/REPEATS/
+  // SUPPORTS/CONFLICTS/OUTCOME_FOR/UNRESOLVED — see
+  // services/temporalRelationships.js), attached by executeTools.js's
+  // reconcileEvidenceEnvelope call alongside researchEvidence itself.
+  // Shown to the model as reference-only context (graph/prompts/index.js)
+  // and consulted directly by graph/groundedVerification.js — never
+  // created or modified by the model.
+  researchRelationships: Annotation({ reducer: replace, default: () => [] }),
   // The actual ResearchRetrieverService mode used this turn (e.g.
   // 'LOCAL_HYBRID_RERANK') — always the REAL mode the retriever reports,
   // never the requested one if it silently fell back (see

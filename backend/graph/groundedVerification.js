@@ -93,6 +93,83 @@ const factsSubsetOf = (claimFacts, evidenceFacts) => [...claimFacts].every((fact
 
 const NUMERIC_OR_MATERIAL_PATTERN = /₹\s?[\d,]+(\.\d+)?|\$\s?[\d,]+(\.\d+)?|\b\d+(\.\d+)?\s?%|\bcrore|\blakh|\bmillion|\bbillion|\bQ[1-4]\b|\bFY\d{2,4}\b/i;
 
+// Phase 4D Part 6: cross-source temporal-reconciliation checks. Reads
+// ONLY the server-computed, trusted annotations
+// services/EvidenceEnvelope.js's reconcileEvidenceEnvelope already
+// attached to every cited item (temporalStatus/supersededByEvidenceId/
+// supersedesEvidenceIds/relationshipIds) — never re-derives supersession
+// itself, and never trusts anything the model says about a relationship
+// beyond checking a model-provided `relationshipId` against the real list.
+const CONFLICT_DISCLOSURE_PATTERN = /\bconflict|\bconflicting|\bdiffer(?:s|ing)?\b|\bdiscrepanc|\bunclear\b|\bambiguous\b|\bmixed\s+signals?\b|\btwo\s+different\s+(figures|values|numbers)\b|\bunresolved\b/i;
+const UNCHANGED_CLAIM_PATTERN = /\bunchanged\b|\bno\s+change\b|\bremained?\s+the\s+same\b|\bnot\s+revised\b|\bsame\s+as\s+(before|original)\b/i;
+// A "historical_fact" claim citing SUPERSEDED evidence is only safe when
+// its OWN text clearly frames the figure as past/original — otherwise it
+// reads as asserting the (now-outdated) figure is still true today.
+// claimType "management_guidance" is deliberately EXEMPT from this check:
+// per its own definition (see graph/prompts/index.js's groundedAnswerPrompt)
+// it always means "the target AS ORIGINALLY STATED," so citing a
+// SUPERSEDED item there is exactly correct usage — this is precisely how
+// a "what was the ORIGINAL guidance?" answer (Part 5) is expected to cite
+// evidence, never an error.
+const ORIGINAL_QUALIFIER_PATTERN = /\boriginally\b|\binitially\b|\bat\s+the\s+time\b|\bpreviously\b|\bhad\s+(guided|given|stated)\b|\bearlier\s+guidance\b|\bprior\s+guidance\b|\bformer(ly)?\s+guidance\b/i;
+
+export const checkTemporalConsistency = (claim, cited, allEnvelopeItems) => {
+  // Fabricated relationship id: the model MAY optionally reference a
+  // relationshipId (e.g. when explicitly describing a revision), but
+  // never REQUIRES it — if provided, it must exist among the relationships
+  // this turn's real reconciliation actually computed.
+  if (claim?.relationshipId) {
+    const known = allEnvelopeItems.some((item) => (item.relationshipIds || []).includes(claim.relationshipId));
+    if (!known) return { verdict: 'TEMPORAL_RELATIONSHIP_MISMATCH', reasonCode: `FABRICATED_RELATIONSHIP_ID:${claim.relationshipId}` };
+  }
+
+  // A plain "historical_fact" claim presenting guidance as CURRENT must
+  // never cite an item the server has already determined is SUPERSEDED,
+  // unless its own text clearly frames the figure as past/original — this
+  // is the exact cross-source case the old same-documentType heuristic
+  // missed (a document chunk superseded by a later Earnings-Intelligence
+  // record, or vice versa).
+  if (claim?.claimType === 'historical_fact') {
+    const supersededCite = cited.find((item) => item.temporalStatus === 'SUPERSEDED');
+    if (supersededCite && !ORIGINAL_QUALIFIER_PATTERN.test(String(claim?.text || ''))) {
+      return { verdict: 'SUPERSEDED_AS_CURRENT', reasonCode: `CITES_SUPERSEDED:${supersededCite.evidenceId}:SUPERSEDED_BY:${supersededCite.supersededByEvidenceId}` };
+    }
+  }
+
+  // A revision claim citing ONLY superseded (old) evidence never supports
+  // a claim that guidance changed (Part 6: "a revision claim citing only
+  // the old evidence" is a required reject). Citing the new value alone
+  // is fine (a plain "guidance is now X" statement); citing both is also
+  // fine and is how a compare-original-and-revised answer is expected to
+  // work (Part 5).
+  if (claim?.claimType === 'revised_guidance' && cited.length) {
+    const allSuperseded = cited.every((item) => item.temporalStatus === 'SUPERSEDED');
+    if (allSuperseded) {
+      return { verdict: 'REVISION_NOT_SUPPORTED', reasonCode: 'REVISION_CLAIM_CITES_ONLY_SUPERSEDED_EVIDENCE' };
+    }
+  }
+
+  // "Guidance was unchanged" claims are rejected outright when a real,
+  // verified SUPERSEDES relationship exists for the cited scope — never
+  // let an "unchanged" claim stand when the server knows it changed.
+  if (UNCHANGED_CLAIM_PATTERN.test(String(claim?.text || ''))) {
+    const involvesSupersession = cited.some((item) => item.temporalStatus === 'SUPERSEDED' || (item.supersedesEvidenceIds || []).length > 0);
+    if (involvesSupersession) {
+      return { verdict: 'REVISION_NOT_SUPPORTED', reasonCode: 'UNCHANGED_CLAIM_CONTRADICTS_KNOWN_REVISION' };
+    }
+  }
+
+  // Undisclosed conflict: citing evidence the server flagged CONFLICTING
+  // (a real disagreement it could not safely resolve) without any
+  // disclosure language in the claim text would silently hide it.
+  const conflictingCite = cited.find((item) => item.temporalStatus === 'CONFLICTING');
+  if (conflictingCite && !CONFLICT_DISCLOSURE_PATTERN.test(String(claim?.text || ''))) {
+    return { verdict: 'UNDISCLOSED_CONFLICT', reasonCode: `UNDISCLOSED_CONFLICT:${conflictingCite.evidenceId}` };
+  }
+
+  return null;
+};
+
 /**
  * verifyGroundedClaim - one claim's full deterministic check, in the exact
  * priority order Part 6 implies (an id that doesn't exist makes every
@@ -135,21 +212,16 @@ export const verifyGroundedClaim = (claim, {
     if (wrongQuarter) return { verdict: 'PERIOD_MISMATCH', reasonCode: 'QUARTERLY_VS_ANNUAL_OR_WRONG_QUARTER' };
   }
 
-  // 8. Superseded guidance: a management_guidance/revised_guidance claim
-  // must cite the LATEST disclosure the envelope has for this exact
-  // (symbol, fiscalYear, fiscalQuarter) — never an older one presented as
-  // current, when metadata (publishedAt) actually proves a newer one
-  // exists among the evidence the model was given.
-  if (claim?.claimType === 'management_guidance' || claim?.claimType === 'revised_guidance') {
-    for (const item of cited) {
-      const siblings = allEnvelopeItems.filter((e) => e.symbol === item.symbol
-        && e.fiscalYear === item.fiscalYear
-        && e.fiscalQuarter === item.fiscalQuarter
-        && (e.documentType === 'GUIDANCE' || e.documentType === item.documentType));
-      const newer = siblings.find((e) => e.publishedAt && item.publishedAt && new Date(e.publishedAt) > new Date(item.publishedAt));
-      if (newer) return { verdict: 'SUPERSEDED_GUIDANCE', reasonCode: `NEWER_DISCLOSURE_EXISTS:${newer.evidenceId}` };
-    }
-  }
+  // 8. Phase 4D: cross-source temporal consistency — uses the trusted,
+  // server-computed temporalStatus/relationship annotations
+  // reconcileEvidenceEnvelope already attached to every envelope item
+  // (see services/EvidenceEnvelope.js), never re-derives supersession
+  // from documentType/publishedAt itself. This is what fixes the root
+  // cause: a document chunk and a LATER Earnings-Intelligence record for
+  // the same canonical guidance scope are now compared correctly,
+  // regardless of documentType.
+  const temporalVerdict = checkTemporalConsistency(claim, cited, allEnvelopeItems);
+  if (temporalVerdict) return temporalVerdict;
 
   // 6. Numbers/percentages/ranges/dates/currency in the claim must be
   // present in (or directly supported by) the cited text — no unit
@@ -214,4 +286,4 @@ export const verifyGroundedAnswer = ({ claims = [], evidenceEnvelope = [], scope
   return { claims: verified, groundingStatus, allVerified: verified.length > 0 && !anyFailed };
 };
 
-export default { extractNumberFacts, verifyGroundedClaim, verifyGroundedAnswer, GROUNDED_VERDICTS };
+export default { extractNumberFacts, verifyGroundedClaim, verifyGroundedAnswer, checkTemporalConsistency, GROUNDED_VERDICTS };

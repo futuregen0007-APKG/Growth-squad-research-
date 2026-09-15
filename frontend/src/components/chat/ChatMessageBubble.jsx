@@ -104,9 +104,37 @@ const ToolActivityPanel = ({ activity }) => {
 // javascript:).
 const isSafeHref = (href) => /^https?:\/\//.test(href || '');
 
+// Phase 4D Part 7: temporal citation labels. `temporalStatus`/`supersededBy`/
+// `supersedes`/`canonicalGuidance` are trusted, server-computed metadata
+// (see services/EvidenceEnvelope.js's reconcileEvidenceEnvelope) — this
+// component only ever DISPLAYS them, never re-derives or second-guesses
+// them, and never shows any internal verifier diagnostic (reasonCode,
+// relationshipId, confidence) in this production UI.
+const TEMPORAL_LABEL_STYLE = {
+  SUPERSEDED: { label: 'Superseded', className: 'text-gs-textDim border-gs-border bg-gs-panel' },
+  CURRENT: { label: 'Current', className: 'text-gs-pos border-gs-pos/30 bg-gs-posBg' },
+  HISTORICAL: { label: 'Historical outcome', className: 'text-gs-textDim border-gs-border bg-gs-panel' },
+  CONFLICTING: { label: 'Conflicting source', className: 'text-gs-neg border-gs-neg/30 bg-gs-negBg' },
+  UNRESOLVED: { label: 'Unverified figure', className: 'text-gs-textDim border-gs-border bg-gs-panel' },
+};
+
+/** formatGuidanceRange - a short "21%-23%" / "22%" label from canonicalGuidance, or null when nothing was safely extracted -- never guessed here either. */
+const formatGuidanceRange = (canonicalGuidance) => {
+  if (!canonicalGuidance) return null;
+  const unitSuffix = canonicalGuidance.unit === 'PERCENTAGE' ? '%' : '';
+  if (canonicalGuidance.valueType === 'range' && canonicalGuidance.lowerBound != null && canonicalGuidance.upperBound != null) {
+    return `${canonicalGuidance.lowerBound}${unitSuffix}-${canonicalGuidance.upperBound}${unitSuffix}`;
+  }
+  if (canonicalGuidance.valueType === 'exact' && canonicalGuidance.exactValue != null) {
+    return `${canonicalGuidance.exactValue}${unitSuffix}`;
+  }
+  return null;
+};
+
 const SourcesSection = ({ citations }) => {
   const [open, setOpen] = useState(false);
   if (!citations?.length) return null;
+  const byId = new Map(citations.map((c) => [c.evidenceId, c]));
   return (
     <div className="mt-2.5 pt-2.5 border-t border-gs-border" data-testid="sources-section">
       <button onClick={() => setOpen((o) => !o)} className="flex items-center gap-1 text-[10.5px] font-mono uppercase tracking-wider text-gs-textDim hover:text-gs-text">
@@ -126,6 +154,18 @@ const SourcesSection = ({ citations }) => {
               c.symbol, c.reportingPeriod, c.sourceAuthority || c.provider,
               c.pageStart ? `p.${c.pageStart}${c.pageEnd && c.pageEnd !== c.pageStart ? `-${c.pageEnd}` : ''}` : null,
             ].filter(Boolean);
+            const temporalStyle = TEMPORAL_LABEL_STYLE[c.temporalStatus];
+            // "Revised from X to Y" — only rendered when the OLD value it
+            // superseded is ALSO one of this answer's real citations (never
+            // fabricated from a value the user can't independently see).
+            const supersededSibling = c.supersedes?.length ? byId.get(c.supersedes[0]) : null;
+            const revisionSummary = c.temporalStatus === 'CURRENT' && supersededSibling
+              ? (() => {
+                const from = formatGuidanceRange(supersededSibling.canonicalGuidance);
+                const to = formatGuidanceRange(c.canonicalGuidance);
+                return from && to ? `Revised from ${from} to ${to}` : null;
+              })()
+              : null;
             return (
               <div key={c.evidenceId || i} className="text-[11px] text-gs-textMuted flex items-start gap-1.5">
                 <span className="text-gs-textDim shrink-0">[{i + 1}]</span>
@@ -137,12 +177,18 @@ const SourcesSection = ({ citations }) => {
                   ) : (
                     <span className="break-words">{label}</span>
                   )}
+                  {temporalStyle && (
+                    <span className={`ml-1.5 inline-flex items-center font-mono text-[9px] uppercase tracking-wider px-1 py-0.5 rounded-sm border ${temporalStyle.className}`}>
+                      {temporalStyle.label}
+                    </span>
+                  )}
                   {(metaParts.length > 0 || c.publishedAt) && (
                     <div className="text-gs-textDim">
                       {metaParts.join(' · ')}
                       {c.publishedAt && ` ${metaParts.length ? '· ' : ''}${new Date(c.publishedAt).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}`}
                     </div>
                   )}
+                  {revisionSummary && <div className="mt-0.5 text-gs-gold">{revisionSummary}</div>}
                 </div>
               </div>
             );

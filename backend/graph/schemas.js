@@ -171,6 +171,12 @@ export const GroundedAnswerSchema = z.object({
     // Stable "E1"/"E2" ids from the numbered envelope the model was
     // given — never a raw evidenceId string the model invents.
     evidenceIds: z.array(z.string().max(10)).max(10),
+    // Phase 4D: OPTIONAL — the model may reference one of the trusted
+    // relationshipIds it was shown (e.g. "R2") when explicitly describing
+    // a revision/comparison; never required, and checked against the
+    // real server-computed list, never trusted at face value (see
+    // graph/groundedVerification.js's checkTemporalConsistency).
+    relationshipId: z.string().max(10).nullable(),
   })).max(20),
   // The model's OWN self-assessment — informational only; the server
   // recomputes the trusted groundingStatus from final verified claims
@@ -201,6 +207,15 @@ export const GROUNDED_VERDICTS = Object.freeze([
   'PROVENANCE_MISMATCH',
   'SUPERSEDED_GUIDANCE',
   'UNCITED_MATERIAL_CLAIM',
+  // Phase 4D Part 6: cross-source temporal-reconciliation verdicts — see
+  // graph/groundedVerification.js's checkTemporalConsistency for what
+  // sets each one. Kept distinct from SUPERSEDED_GUIDANCE above (the
+  // Phase 4B same-documentType check, now subsumed by these but left in
+  // the enum for backward compatibility with any existing reference).
+  'SUPERSEDED_AS_CURRENT',
+  'REVISION_NOT_SUPPORTED',
+  'TEMPORAL_RELATIONSHIP_MISMATCH',
+  'UNDISCLOSED_CONFLICT',
 ]);
 
 export const ConversationSummarySchema = z.object({

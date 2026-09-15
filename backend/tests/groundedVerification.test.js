@@ -87,35 +87,158 @@ test('extractNumberFacts never merges a plain number with a range that contains 
   assert.ok(facts.has('num:%:22'));
 });
 
-test('superseded guidance: citing an older guidance disclosure when a newer one for the same period exists is SUPERSEDED_GUIDANCE', () => {
+// Phase 4D: temporalStatus/supersededByEvidenceId/supersedesEvidenceIds
+// are now trusted, server-computed annotations reconcileEvidenceEnvelope
+// already attaches to every real envelope item (see
+// services/EvidenceEnvelope.js) — these fixtures set them directly,
+// exactly like production evidence would arrive at the verifier.
+test('a claim presenting SUPERSEDED guidance as current is rejected (SUPERSEDED_AS_CURRENT)', () => {
   const older = evidence({
-    evidenceId: 'E1', documentType: 'GUIDANCE', publishedAt: '2023-01-01T00:00:00.000Z', text: 'FY2024 revenue guidance: 10-12% growth.',
+    evidenceId: 'E1', documentType: 'EARNINGS_CALL_TRANSCRIPT', publishedAt: '2023-01-01T00:00:00.000Z', text: 'FY2024 revenue guidance: 10-12% growth.',
+    temporalStatus: 'SUPERSEDED', supersededByEvidenceId: 'E2', supersedesEvidenceIds: [],
   });
   const newer = evidence({
-    evidenceId: 'E2', documentType: 'GUIDANCE', publishedAt: '2023-06-01T00:00:00.000Z', text: 'Revised FY2024 revenue guidance: 8-10% growth.',
+    evidenceId: 'E2', documentType: 'MANAGEMENT_PROMISE', publishedAt: '2023-06-01T00:00:00.000Z', text: 'Revised FY2024 revenue guidance: 8-10% growth.',
+    temporalStatus: 'CURRENT', supersededByEvidenceId: null, supersedesEvidenceIds: ['E1'],
   });
-  const c = claim({ claimType: 'management_guidance', text: 'FY2024 revenue guidance is 10-12% growth.', evidenceIds: ['E1'] });
+  const c = claim({ claimType: 'historical_fact', text: 'FY2024 revenue guidance is 10-12% growth.', evidenceIds: ['E1'] });
   const { verdict, reasonCode } = verifyGroundedClaim(c, {
     evidenceById: new Map([['E1', older], ['E2', newer]]),
     scope: { symbol: 'TCS', fiscalYear: 'FY2023', fiscalQuarter: null },
     allEnvelopeItems: [older, newer],
   });
-  assert.equal(verdict, 'SUPERSEDED_GUIDANCE');
+  assert.equal(verdict, 'SUPERSEDED_AS_CURRENT');
   assert.match(reasonCode, /E2/);
 });
 
-test('citing the LATEST guidance disclosure for the period is verified, not flagged as superseded', () => {
+test('a "management_guidance" claim (originally-stated target, by definition) MAY cite SUPERSEDED evidence -- this is the correct way to answer "what was the ORIGINAL guidance?" (Part 5)', () => {
   const older = evidence({
-    evidenceId: 'E1', documentType: 'GUIDANCE', publishedAt: '2023-01-01T00:00:00.000Z', text: 'FY2024 revenue guidance: 10-12% growth.',
+    evidenceId: 'E1', documentType: 'EARNINGS_CALL_TRANSCRIPT', publishedAt: '2023-01-01T00:00:00.000Z', text: 'FY2024 revenue guidance: 10-12% growth.',
+    temporalStatus: 'SUPERSEDED', supersededByEvidenceId: 'E2', supersedesEvidenceIds: [],
+  });
+  const c = claim({ claimType: 'management_guidance', text: 'The original FY2024 revenue guidance was 10-12% growth.', evidenceIds: ['E1'] });
+  const { verdict } = verifyGroundedClaim(c, {
+    evidenceById: new Map([['E1', older]]),
+    scope: { symbol: 'TCS', fiscalYear: 'FY2023', fiscalQuarter: null },
+    allEnvelopeItems: [older],
+  });
+  assert.equal(verdict, 'VERIFIED');
+});
+
+test('a "historical_fact" claim citing SUPERSEDED evidence IS allowed when its own text clearly frames it as past/original', () => {
+  const older = evidence({
+    evidenceId: 'E1', documentType: 'EARNINGS_CALL_TRANSCRIPT', publishedAt: '2023-01-01T00:00:00.000Z', text: 'FY2024 revenue guidance: 10-12% growth.',
+    temporalStatus: 'SUPERSEDED', supersededByEvidenceId: 'E2', supersedesEvidenceIds: [],
+  });
+  const c = claim({ claimType: 'historical_fact', text: 'TCS originally guided FY2024 revenue growth of 10-12%.', evidenceIds: ['E1'] });
+  const { verdict } = verifyGroundedClaim(c, {
+    evidenceById: new Map([['E1', older]]),
+    scope: { symbol: 'TCS', fiscalYear: 'FY2023', fiscalQuarter: null },
+    allEnvelopeItems: [older],
+  });
+  assert.equal(verdict, 'VERIFIED');
+});
+
+test('citing the CURRENT (superseding) disclosure for a revision claim is verified, not flagged as superseded -- across DIFFERENT document types (the exact root-cause scenario)', () => {
+  const older = evidence({
+    evidenceId: 'E1', documentType: 'EARNINGS_CALL_TRANSCRIPT', publishedAt: '2023-01-01T00:00:00.000Z', text: 'FY2024 revenue guidance: 10-12% growth.',
+    temporalStatus: 'SUPERSEDED', supersededByEvidenceId: 'E2', supersedesEvidenceIds: [],
   });
   const newer = evidence({
-    evidenceId: 'E2', documentType: 'GUIDANCE', publishedAt: '2023-06-01T00:00:00.000Z', text: 'Revised FY2024 revenue guidance: 8-10% growth.',
+    evidenceId: 'E2', documentType: 'MANAGEMENT_PROMISE', publishedAt: '2023-06-01T00:00:00.000Z', text: 'Revised FY2024 revenue guidance: 8-10% growth.',
+    temporalStatus: 'CURRENT', supersededByEvidenceId: null, supersedesEvidenceIds: ['E1'],
   });
   const c = claim({ claimType: 'revised_guidance', text: 'Revised FY2024 revenue guidance is 8-10% growth.', evidenceIds: ['E2'] });
   const { verdict } = verifyGroundedClaim(c, {
     evidenceById: new Map([['E1', older], ['E2', newer]]),
     scope: { symbol: 'TCS', fiscalYear: 'FY2023', fiscalQuarter: null },
     allEnvelopeItems: [older, newer],
+  });
+  assert.equal(verdict, 'VERIFIED');
+});
+
+test('a revision claim citing ONLY the superseded (old) evidence is rejected (REVISION_NOT_SUPPORTED)', () => {
+  const older = evidence({
+    evidenceId: 'E1', publishedAt: '2023-01-01T00:00:00.000Z', text: 'FY2024 revenue guidance: 10-12% growth.',
+    temporalStatus: 'SUPERSEDED', supersededByEvidenceId: 'E2', supersedesEvidenceIds: [],
+  });
+  const c = claim({ claimType: 'revised_guidance', text: 'FY2024 revenue guidance was revised.', evidenceIds: ['E1'] });
+  const { verdict, reasonCode } = verifyGroundedClaim(c, {
+    evidenceById: new Map([['E1', older]]),
+    scope: { symbol: 'TCS', fiscalYear: 'FY2023', fiscalQuarter: null },
+    allEnvelopeItems: [older],
+  });
+  assert.equal(verdict, 'REVISION_NOT_SUPPORTED');
+  assert.equal(reasonCode, 'REVISION_CLAIM_CITES_ONLY_SUPERSEDED_EVIDENCE');
+});
+
+test('an "unchanged" claim contradicting a known SUPERSEDES relationship is rejected (REVISION_NOT_SUPPORTED)', () => {
+  const older = evidence({
+    evidenceId: 'E1', publishedAt: '2023-01-01T00:00:00.000Z', text: 'FY2024 margin guidance: 10-12%.',
+    temporalStatus: 'SUPERSEDED', supersededByEvidenceId: 'E2', supersedesEvidenceIds: [],
+  });
+  const c = claim({ claimType: 'interpretation', text: 'The FY2024 margin guidance remained the same as before.', evidenceIds: ['E1'] });
+  const { verdict, reasonCode } = verifyGroundedClaim(c, {
+    evidenceById: new Map([['E1', older]]),
+    scope: { symbol: 'TCS', fiscalYear: 'FY2023', fiscalQuarter: null },
+    allEnvelopeItems: [older],
+  });
+  assert.equal(verdict, 'REVISION_NOT_SUPPORTED');
+  assert.equal(reasonCode, 'UNCHANGED_CLAIM_CONTRADICTS_KNOWN_REVISION');
+});
+
+test('citing evidence flagged CONFLICTING without disclosing the conflict is rejected (UNDISCLOSED_CONFLICT)', () => {
+  const conflicting = evidence({
+    evidenceId: 'E1', text: 'FY2024 margin guidance: 10-12%.', temporalStatus: 'CONFLICTING', supersedesEvidenceIds: [],
+  });
+  const c = claim({ claimType: 'management_guidance', text: 'FY2024 margin guidance is 10-12%.', evidenceIds: ['E1'] });
+  const { verdict, reasonCode } = verifyGroundedClaim(c, {
+    evidenceById: new Map([['E1', conflicting]]),
+    scope: { symbol: 'TCS', fiscalYear: 'FY2023', fiscalQuarter: null },
+    allEnvelopeItems: [conflicting],
+  });
+  assert.equal(verdict, 'UNDISCLOSED_CONFLICT');
+  assert.match(reasonCode, /E1/);
+});
+
+test('disclosing a CONFLICTING evidence item explicitly is verified, never silently hidden', () => {
+  const conflicting = evidence({
+    evidenceId: 'E1', text: 'FY2024 margin guidance: 10-12%.', temporalStatus: 'CONFLICTING', supersedesEvidenceIds: [],
+  });
+  const c = claim({
+    claimType: 'interpretation', text: 'Two sources report conflicting FY2024 margin guidance figures.', evidenceIds: ['E1'],
+  });
+  const { verdict } = verifyGroundedClaim(c, {
+    evidenceById: new Map([['E1', conflicting]]),
+    scope: { symbol: 'TCS', fiscalYear: 'FY2023', fiscalQuarter: null },
+    allEnvelopeItems: [conflicting],
+  });
+  assert.equal(verdict, 'VERIFIED');
+});
+
+test('a fabricated relationshipId (not among the real trusted relationships) is rejected (TEMPORAL_RELATIONSHIP_MISMATCH)', () => {
+  const item = evidence({ evidenceId: 'E1', text: 'FY2024 margin guidance: 10-12%.', relationshipIds: ['R1'] });
+  const c = claim({
+    claimType: 'revised_guidance', text: 'Guidance was revised per R9.', evidenceIds: ['E1'], relationshipId: 'R9',
+  });
+  const { verdict, reasonCode } = verifyGroundedClaim(c, {
+    evidenceById: new Map([['E1', item]]),
+    scope: { symbol: 'TCS', fiscalYear: 'FY2023', fiscalQuarter: null },
+    allEnvelopeItems: [item],
+  });
+  assert.equal(verdict, 'TEMPORAL_RELATIONSHIP_MISMATCH');
+  assert.match(reasonCode, /R9/);
+});
+
+test('a REAL relationshipId the trusted envelope actually computed is accepted', () => {
+  const item = evidence({ evidenceId: 'E1', text: 'FY2024 margin guidance: 10-12%.', relationshipIds: ['R1'] });
+  const c = claim({
+    claimType: 'historical_fact', text: 'FY2024 margin guidance is 10-12%.', evidenceIds: ['E1'], relationshipId: 'R1',
+  });
+  const { verdict } = verifyGroundedClaim(c, {
+    evidenceById: new Map([['E1', item]]),
+    scope: { symbol: 'TCS', fiscalYear: 'FY2023', fiscalQuarter: null },
+    allEnvelopeItems: [item],
   });
   assert.equal(verdict, 'VERIFIED');
 });
