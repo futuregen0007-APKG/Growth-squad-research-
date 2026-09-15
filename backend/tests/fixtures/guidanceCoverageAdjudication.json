@@ -1,0 +1,471 @@
+{
+  "_meta": {
+    "createdBy": "Phase 4E manual adjudication",
+    "createdAt": "2026-09-15T21:40:11.969Z",
+    "sourceRun": "extractionVersion 1, full TCS+INFY corpus (2274 chunks), post SECOND_PERSON_ADDRESS gate",
+    "method": "Each entry was read directly against its live ResearchGuidanceAnnotation row (supportingSpan is the exact extracted span) and against the underlying ResearchDocumentChunk text; labels are the adjudicator's judgment of whether the span is genuinely management-asserted, forward-looking guidance."
+  },
+  "entries": [
+    {
+      "chunkId": "6aa83667078e904772d31a5e",
+      "supportingSpan": "With this strong momentum in the business and robust pipeline we are increasing our annual revenue growth guidance from 16.5% to 17.5% moving up to 19.5% to 20% in constant currency.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/28eec8d6-de9e-4e4d-92d8-beff066c9b25.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 16.5,
+        "upperBound": 17.5,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a5e",
+      "supportingSpan": "Our operating margin guidance remains at 22% to 24%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/28eec8d6-de9e-4e4d-92d8-beff066c9b25.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 22,
+        "upperBound": 24,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a68",
+      "supportingSpan": "Driven by robust demand environment and our continued market share gains, we are further increasing our revenue guidance for FY22 to 19.5% to 20% in constant currency terms from 16.5% to 17.5% earlier and the margin guidance remains unchanged at 22% to 24%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/28eec8d6-de9e-4e4d-92d8-beff066c9b25.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 19.5,
+        "upperBound": 20,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a78",
+      "supportingSpan": "Our operating margin guidance remains at 22% to 24%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/28eec8d6-de9e-4e4d-92d8-beff066c9b25.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 22,
+        "upperBound": 24,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa8366f078e904772d31b56",
+      "supportingSpan": "This is reflected in an upgrade in our revenue guidance to 19.5%-20.0% for FY22.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/70d6a777-9538-453b-9450-a07113349c9e.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 19.5,
+        "upperBound": 20,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa8366f078e904772d31bb6",
+      "supportingSpan": "This is reflected in an upgrade in our revenue guidance to 19.5%-20.0% for FY22.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/70d6a777-9538-453b-9450-a07113349c9e.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 19.5,
+        "upperBound": 20,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83674078e904772d31c44",
+      "supportingSpan": "Based on our sustained momentum in the financial year '23, the strong pipeline of opportunities, especially the ones in cost efficiency and consolidation, while also keeping in mind the uncertain environment, our revenue growth guidance for this financial year is 4% to 7% in constant currency.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2024",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c94d45c5-a44a-49d9-89af-6ef6532c4a30.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 4,
+        "upperBound": 7,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83674078e904772d31c44",
+      "supportingSpan": "Our operating margin guidance for the financial year is 20% to 22%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2024",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c94d45c5-a44a-49d9-89af-6ef6532c4a30.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 20,
+        "upperBound": 22,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83674078e904772d31c92",
+      "supportingSpan": "Based on our sustained momentum in financial year ‘23, a strong pipeline of opportunities, especially focused on cost, efficiency and consolidation, while also keeping in mind the uncertain environment, our revenue growth guidance for this financial year is 4% to 7% in constant currency.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2024",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c94d45c5-a44a-49d9-89af-6ef6532c4a30.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 4,
+        "upperBound": 7,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83674078e904772d31c92",
+      "supportingSpan": "Operating margin guidance for this financial year is 20% to 22%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2024",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c94d45c5-a44a-49d9-89af-6ef6532c4a30.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 20,
+        "upperBound": 22,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83674078e904772d31c9e",
+      "supportingSpan": "We expect our revenues to grow by 4% to 7% in constant currency terms in FY '24.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2024",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c94d45c5-a44a-49d9-89af-6ef6532c4a30.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 4,
+        "upperBound": 7,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83674078e904772d31c9e",
+      "supportingSpan": "Operating margin guidance stands at 20% to 22%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2024",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c94d45c5-a44a-49d9-89af-6ef6532c4a30.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 20,
+        "upperBound": 22,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83674078e904772d31cca",
+      "supportingSpan": "ng fiscal '24 with a net new deal wins of $3.9 bn, which is pretty similar to last year, but the guidance implies incremental revenues of $1 bn at the midpoint.",
+      "expectedLabel": "FALSE_POSITIVE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2024",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c94d45c5-a44a-49d9-89af-6ef6532c4a30.pdf",
+      "expectedGuidanceKind": null,
+      "expectedNumeric": null,
+      "note": "Deal-win figure ($3.9bn) misattributed as revenue guidance; the second-person marker (\"You are entering fiscal 24...\") that would normally trigger SECOND_PERSON_ADDRESS rejection fell in the PRECEDING sentence, outside this fragment -- a sentence-splitting boundary limitation, documented in the Phase 4E final report."
+    },
+    {
+      "chunkId": "6aa83683078e904772d31e0f",
+      "supportingSpan": "We are retaining our operating margin guidance for FY '23 at 21% to 22%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/01712d63-9662-4355-8b54-0534f66678d8.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 21,
+        "upperBound": 22,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83683078e904772d31e39",
+      "supportingSpan": "We are retaining our operating margin guidance for FY23 at 21% to 22%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/01712d63-9662-4355-8b54-0534f66678d8.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 21,
+        "upperBound": 22,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83683078e904772d31e45",
+      "supportingSpan": "With strong revenue performance in the first nine months of the year, the revenue guidance for FY23 has changed to 16% - 16.5%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/01712d63-9662-4355-8b54-0534f66678d8.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 16,
+        "upperBound": 16.5,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83683078e904772d31e45",
+      "supportingSpan": "Operating margin guidance band remains at 21% - 22% for the year.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/01712d63-9662-4355-8b54-0534f66678d8.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 21,
+        "upperBound": 22,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa8368a078e904772d31ee3",
+      "supportingSpan": "We change our operating margin guidance for FY2023, only for this year to 21% to 22%, which was earlier 21% to 23%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/48580c91-e22d-4d3c-aa9f-56c255914c14.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 21,
+        "upperBound": 22,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa8368a078e904772d31ef0",
+      "supportingSpan": "The revenue guidance for the year is changed to 15% to 16%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/48580c91-e22d-4d3c-aa9f-56c255914c14.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 15,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa8368f078e904772d31f83",
+      "supportingSpan": "This is reflected in our revised revenue guidance of 15%-16% for FY 23”, he added.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/29600a7e-9d02-4ae7-a619-26267f2115fa.pdf",
+      "expectedGuidanceKind": "REVISED",
+      "expectedNumeric": {
+        "lowerBound": 15,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa8368f078e904772d31f85",
+      "supportingSpan": "revenue guidance of 15%-16% for FY 23”, he added.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/29600a7e-9d02-4ae7-a619-26267f2115fa.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 15,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa8368f078e904772d31fa1",
+      "supportingSpan": "This is reflected in our revised revenue guidance of 15%-16% for FY 23”, he added.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/29600a7e-9d02-4ae7-a619-26267f2115fa.pdf",
+      "expectedGuidanceKind": "REVISED",
+      "expectedNumeric": {
+        "lowerBound": 15,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa8368f078e904772d31fa3",
+      "supportingSpan": "revenue guidance of 15%-16% for FY 23”, he added.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/29600a7e-9d02-4ae7-a619-26267f2115fa.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 15,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83690078e904772d3204e",
+      "supportingSpan": "Whilst we retain our operating margin guidance of 21% to 23%, we expect to be at the bottom end of the range.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/55d91053-dd92-4ca3-bd1d-4e419043f37a.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 21,
+        "upperBound": 23,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83690078e904772d3204e",
+      "supportingSpan": "The revenue guidance for the year has been revised to 14% to 16% from 13% to 15% earlier.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/55d91053-dd92-4ca3-bd1d-4e419043f37a.pdf",
+      "expectedGuidanceKind": "REVISED",
+      "expectedNumeric": {
+        "lowerBound": 14,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83697078e904772d32100",
+      "supportingSpan": "This has resulted in a strong performance in Q1 and increase in FY 23 revenue guidance to 14%-16%”, he added.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/86e25aea-a857-4c0b-9ee6-fe60b21a168c.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 14,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83697078e904772d32166",
+      "supportingSpan": "This has resulted in a strong performance in Q1 and increase in FY 23 revenue guidance to 14%-16%”, he added.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/86e25aea-a857-4c0b-9ee6-fe60b21a168c.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 14,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa8369a078e904772d321ea",
+      "supportingSpan": "As we look ahead – as we build our new strategy, that is looking at cloud and the digital ecosystem, our focus on employees and the costs related to the post-COVID work environment, result in our operating margin guidance to be at 21% to 23% for FY2023.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c07b78e8-687e-47ef-a212-41f9057b81ea.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 21,
+        "upperBound": 23,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa8369a078e904772d32252",
+      "supportingSpan": "Our focus on staying ahead in the cloud and digital ecosystem, and the focus on employees, and some of the costs which are coming back after the COVID phase is behind us, result in operating margin guidance to be at 21% to 23% for FY23.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c07b78e8-687e-47ef-a212-41f9057b81ea.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 21,
+        "upperBound": 23,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa8369a078e904772d32268",
+      "supportingSpan": "There is some seasonality on the revenue line as well, which I talked about, but I think overall giving the guidance of 13% to 15% - I do not recall in the last 10 years that we have given such a guidance.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c07b78e8-687e-47ef-a212-41f9057b81ea.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 13,
+        "upperBound": 15,
+        "exactValue": null
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    },
+    {
+      "chunkId": "6aa83df1078e904772d33856",
+      "supportingSpan": "Rajesh Gopinathan: I think it’s a combination of everything; delayed decision making, but TCV will not be as linear as revenue, which is why we have given a band of 7 billion to 9 billion where we think the TCV will remain during the course of this year and it has stayed well within that band throughout for the last three quarters.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "TCS",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/76ba7959-5943-41bd-9410-a53f3de41e26.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": null,
+        "upperBound": null,
+        "exactValue": 7
+      },
+      "note": "Manually verified against the real stored chunk text: genuine management guidance statement."
+    }
+  ]
+}

@@ -8,19 +8,26 @@
  * fact it actually asserts, if any. The original evidence item is never
  * mutated — normalization is pure metadata layered alongside it.
  *
- * Two very different provenance paths feed this:
- *   - Earnings Intelligence items (documentType MANAGEMENT_PROMISE/
- *     PROMISE_OUTCOME, built by EvidenceEnvelope.js's
- *     buildEarningsIntelligenceEnvelopeItems) carry REAL STRUCTURED data
- *     (metric/targetValue/targetUnit/operator, from
- *     models/ManagementPromise.js's own required schema fields) — this is
- *     used DIRECTLY, never re-parsed from text, and gets 'high' confidence.
- *   - Retrieved document chunks (any other documentType) have no
- *     structured guidance fields at all — only free excerpt text. Metric
- *     and value are extracted with a small, explicit, conservative
- *     pattern set. Anything not confidently recognized is left
- *     unresolved (Part 2: "if normalization is uncertain, leave the
- *     relationship unresolved") rather than guessed.
+ * Three provenance paths feed this, tried in order (Phase 4E Part 6):
+ *   1. Earnings Intelligence items (documentType MANAGEMENT_PROMISE/
+ *      PROMISE_OUTCOME, built by EvidenceEnvelope.js's
+ *      buildEarningsIntelligenceEnvelopeItems) carry REAL STRUCTURED data
+ *      (metric/targetValue/targetUnit/operator, from
+ *      models/ManagementPromise.js's own required schema fields) — this is
+ *      used DIRECTLY, never re-parsed from text, and gets 'high' confidence.
+ *   2. A retrieved document chunk that has a verified, offline-extracted
+ *      annotation (models/ResearchGuidanceAnnotation.js, status VERIFIED
+ *      only — see services/guidanceAnnotationLookup.js, threaded in by
+ *      EvidenceEnvelope.js as `item.chunkAnnotation`) — produced entirely
+ *      offline by scripts/enrichGuidanceCorpus.js, never at request time,
+ *      and never anything but a VERIFIED row (an unverified one is simply
+ *      never looked up).
+ *   3. Retrieved document chunks with no such annotation fall back to this
+ *      module's own runtime parsing: metric and value are extracted with a
+ *      small, explicit, conservative pattern set. Anything not confidently
+ *      recognized is left unresolved (Part 2: "if normalization is
+ *      uncertain, leave the relationship unresolved") rather than guessed.
+ *   4. Otherwise: UNRESOLVED.
  *
  * Safety rules enforced here (never anywhere else downstream):
  *   - Different units (INR_CRORE vs USD_MILLION, a bare number vs a
@@ -103,9 +110,19 @@ export const normalizeMetric = (text) => {
 // copied through unchanged, never re-derived.
 export const STRUCTURED_UNIT_VALUES = new Set(['INR_CRORE', 'INR_LAKH', 'USD_MILLION', 'USD_BILLION', 'PERCENTAGE', 'COUNT', 'OTHER']);
 
-const RANGE_PATTERN = /(-?\d[\d,]*(?:\.\d+)?)\s*(%)?\s*(?:-|to|–|—)\s*(-?\d[\d,]*(?:\.\d+)?)\s*(%)?/i;
-const PERCENT_PATTERN = /(-?\d[\d,]*(?:\.\d+)?)\s*%/i;
-const CURRENCY_UNIT_PATTERN = /(₹|\$|inr|usd)?\s*(-?\d[\d,]*(?:\.\d+)?)\s*(crore|crores|lakh|lakhs|million|mn|billion|bn)\b/i;
+// Phase 4E finding (a real, reproducible bug surfaced by running extraction
+// against the genuine corpus): every number match below requires a
+// negative lookbehind for a preceding letter/digit so a fiscal-period token
+// like "FY22" or "Q4" can never have its trailing digits mistaken for the
+// START of a value — without it, "...guidance for FY22 to 19.5% to 20%..."
+// matched RANGE_PATTERN as "22 to 19.5%" (the "22" borrowed from "FY22"),
+// fabricating a 22 lower bound that was never actually part of the
+// guidance figure. This affects the SAME runtime text-parsing path this
+// module already used before Phase 4E existed, not just the new offline
+// extraction pipeline that reuses it.
+const RANGE_PATTERN = /(?<![A-Za-z0-9])(-?\d[\d,]*(?:\.\d+)?)\s*(%)?\s*(?:-|to|–|—)\s*(-?\d[\d,]*(?:\.\d+)?)\s*(%)?/i;
+const PERCENT_PATTERN = /(?<![A-Za-z0-9])(-?\d[\d,]*(?:\.\d+)?)\s*%/i;
+const CURRENCY_UNIT_PATTERN = /(₹|\$|inr|usd)?\s*(?<![A-Za-z0-9])(-?\d[\d,]*(?:\.\d+)?)\s*(crore|crores|lakh|lakhs|million|mn|billion|bn)\b/i;
 
 const toNumber = (raw) => {
   const cleaned = String(raw).replace(/[₹$,]/g, '').trim();
@@ -192,16 +209,35 @@ export const inferGuidanceKind = (item) => {
   return 'original';
 };
 
+// A verified offline chunk annotation's own guidanceKind (Phase 4E's finer
+// ORIGINAL/MAINTAINED/RAISED/LOWERED/REVISED enum — see
+// models/ResearchGuidanceAnnotation.js) collapses onto this module's
+// coarser original/revised distinction: anything other than ORIGINAL is
+// unambiguous, explicit revision-indicating language (that is exactly what
+// the offline verifier already required to reach VERIFIED status), so it
+// maps to 'revised' — the only value detectRelationships' SUPERSEDES rule
+// ever looks for.
+const mapAnnotationGuidanceKind = (guidanceKind) => (guidanceKind && guidanceKind !== 'ORIGINAL' ? 'revised' : 'original');
+
 /**
  * normalizeGuidanceEvidence - the Part 2 canonical record for ONE envelope
- * item. `structured`, when provided, is the REAL ManagementPromise fields
- * (metric/targetValue/targetUnit/operator) threaded through by
- * EvidenceEnvelope.js for an Earnings-Intelligence-sourced item — always
- * preferred over text parsing when present.
+ * item, extended in Phase 4E Part 6 with a second trusted input:
+ *   - `structured`: REAL ManagementPromise fields (metric/targetValue/
+ *     targetUnit/operator) threaded through by EvidenceEnvelope.js for an
+ *     Earnings-Intelligence-sourced item — highest priority.
+ *   - `chunkAnnotation`: a VERIFIED offline ResearchGuidanceAnnotation row
+ *     for this item's chunk (see guidanceAnnotationLookup.js) — used only
+ *     when `structured` is absent, and only ever a VERIFIED row (an
+ *     annotation lookup that found nothing, or found something not yet
+ *     VERIFIED, is simply not passed in at all).
+ * Runtime text parsing (this module's original behavior) is the fallback
+ * when neither is present — Part 6: "existing behavior unchanged for
+ * chunks without annotations."
  */
-export const normalizeGuidanceEvidence = (item, { structured = null } = {}) => {
+export const normalizeGuidanceEvidence = (item, { structured = null, chunkAnnotation = null } = {}) => {
   let metricResult;
   let valueResult;
+  let guidanceKind;
 
   if (structured?.metric) {
     metricResult = normalizeMetric(structured.metric);
@@ -212,12 +248,25 @@ export const normalizeGuidanceEvidence = (item, { structured = null } = {}) => {
     } else {
       valueResult = { ...normalizeValue(item.text), confidence: 'low' };
     }
+    guidanceKind = inferGuidanceKind(item);
+  } else if (chunkAnnotation && chunkAnnotation.status === 'VERIFIED' && chunkAnnotation.metricKey) {
+    metricResult = { metricKey: chunkAnnotation.metricKey, metric: chunkAnnotation.metric, confidence: 'high' };
+    valueResult = {
+      valueType: chunkAnnotation.valueType,
+      lowerBound: chunkAnnotation.lowerBound,
+      upperBound: chunkAnnotation.upperBound,
+      exactValue: chunkAnnotation.exactValue,
+      unit: chunkAnnotation.unit,
+      currency: chunkAnnotation.currency,
+      confidence: 'high',
+    };
+    guidanceKind = mapAnnotationGuidanceKind(chunkAnnotation.guidanceKind);
   } else {
     metricResult = normalizeMetric(item.text);
     valueResult = normalizeValue(item.text);
+    guidanceKind = inferGuidanceKind(item);
   }
 
-  const guidanceKind = inferGuidanceKind(item);
   const targetFiscalYear = item.fiscalYear || null; // never guessed — see module note
   const targetQuarter = item.fiscalQuarter || null;
 
@@ -254,8 +303,11 @@ export const normalizeGuidanceEvidence = (item, { structured = null } = {}) => {
   };
 };
 
-/** Batch form over a full evidence envelope array. `structuredById` maps evidenceId -> {metric,targetValue,targetUnit,operator} for Earnings-Intelligence-sourced items only. */
-export const normalizeGuidanceEnvelope = (items = [], structuredById = {}) => items.map((item) => normalizeGuidanceEvidence(item, { structured: structuredById[item.evidenceId] || null }));
+/** Batch form over a full evidence envelope array. `structuredById` maps evidenceId -> {metric,targetValue,targetUnit,operator} for Earnings-Intelligence-sourced items only. `chunkAnnotationById` maps evidenceId -> a VERIFIED ResearchGuidanceAnnotation row for document-chunk items only. */
+export const normalizeGuidanceEnvelope = (items = [], structuredById = {}, chunkAnnotationById = {}) => items.map((item) => normalizeGuidanceEvidence(item, {
+  structured: structuredById[item.evidenceId] || null,
+  chunkAnnotation: chunkAnnotationById[item.evidenceId] || null,
+}));
 
 export default {
   METRIC_ALIASES, normalizeMetric, normalizeValue, inferGuidanceKind, normalizeGuidanceEvidence, normalizeGuidanceEnvelope, STRUCTURED_UNIT_VALUES,

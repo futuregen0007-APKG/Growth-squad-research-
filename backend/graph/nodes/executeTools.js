@@ -1,7 +1,7 @@
 import { TOOL_REGISTRY } from '../tools/toolRegistry.js';
 import { fingerprintToolCall } from '../toolFingerprint.js';
 import { hasBudgetFor } from '../requestBudget.js';
-import { mergeEarningsIntelligenceEvidence, reconcileEvidenceEnvelope } from '../../services/EvidenceEnvelope.js';
+import { mergeEarningsIntelligenceEvidence, reconcileEvidenceEnvelope, attachVerifiedChunkAnnotations } from '../../services/EvidenceEnvelope.js';
 import { SUPPORTED_STOCKS } from '../../utils/constants.js';
 import { logger } from '../../utils/logger.js';
 
@@ -208,7 +208,14 @@ export const executeTools = async (state) => {
   // genuinely grounded turn — a no-op (empty items) otherwise.
   let researchRelationships = [];
   if (researchEvidence.length) {
-    const reconciled = reconcileEvidenceEnvelope({ items: researchEvidence });
+    // Phase 4E Part 6: attach any VERIFIED offline chunk annotations
+    // before reconciling — additive and DB-backed (the only async step in
+    // this whole block), so it runs here rather than inside
+    // buildResearchEvidenceEnvelope/reconcileEvidenceEnvelope themselves,
+    // which stay synchronous for Phase 4D test compatibility (see
+    // EvidenceEnvelope.js's attachVerifiedChunkAnnotations docstring).
+    const withAnnotations = await attachVerifiedChunkAnnotations({ items: researchEvidence });
+    const reconciled = reconcileEvidenceEnvelope(withAnnotations);
     researchEvidence = reconciled.items;
     researchRelationships = reconciled.relationships;
   }

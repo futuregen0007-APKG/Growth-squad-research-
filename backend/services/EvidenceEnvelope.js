@@ -28,6 +28,7 @@
 
 import { normalizeGuidanceEvidence } from './guidanceNormalization.js';
 import { detectRelationships } from './temporalRelationships.js';
+import { getVerifiedAnnotationsByChunkIds } from './guidanceAnnotationLookup.js';
 
 /**
  * A deterministic, pattern-based detector for obvious instruction-like
@@ -430,7 +431,14 @@ const temporalStatusFor = (evidenceId, canonicalById, relationships) => {
  */
 export const reconcileEvidenceEnvelope = (envelope) => {
   const items = envelope?.items || [];
-  const canonicalRecords = items.map((item) => normalizeGuidanceEvidence(item, { structured: item.structuredGuidance || null }));
+  // `chunkAnnotation`, when present, was attached by attachVerifiedChunkAnnotations
+  // below (Phase 4E Part 6) — an item with no such field (every existing
+  // Phase 4D test fixture, and any item nobody has annotated yet) falls
+  // through to `null` here exactly as before this field existed.
+  const canonicalRecords = items.map((item) => normalizeGuidanceEvidence(item, {
+    structured: item.structuredGuidance || null,
+    chunkAnnotation: item.chunkAnnotation || null,
+  }));
   const canonicalById = new Map(canonicalRecords.map((c) => [c.evidenceId, c]));
   const relationships = detectRelationships(canonicalRecords).map((rel, index) => ({ ...rel, relationshipId: `R${index + 1}` }));
 
@@ -473,7 +481,40 @@ export const reconcileEvidenceEnvelope = (envelope) => {
   return { ...envelope, items: annotatedItems, relationships };
 };
 
+/**
+ * attachVerifiedChunkAnnotations - Phase 4E Part 6: the ONLY place a
+ * document-chunk evidence item is ever given a `chunkAnnotation` field.
+ * A deliberately separate, ADDITIVE, async step — never folded into
+ * buildResearchEvidenceEnvelope or reconcileEvidenceEnvelope themselves,
+ * both of which stay fully synchronous and DB-free so every existing
+ * Phase 4D test (which calls them synchronously, with no `await`) keeps
+ * working completely unchanged. A caller inserts this between building
+ * the envelope (+ any Earnings Intelligence merge) and reconciling it —
+ * see graph/nodes/executeTools.js.
+ *
+ * Only ever attaches a VERIFIED annotation (guidanceAnnotationLookup.js
+ * never returns anything else); an item with no VERIFIED annotation for
+ * its chunkId is returned completely unchanged (no `chunkAnnotation` key
+ * at all), which is exactly the "existing behavior unchanged for chunks
+ * without annotations" the fallback order in guidanceNormalization.js
+ * depends on.
+ */
+export const attachVerifiedChunkAnnotations = async (envelope) => {
+  const items = envelope?.items || [];
+  const chunkIds = items.map((item) => item.chunkId).filter(Boolean);
+  if (!chunkIds.length) return envelope;
+
+  const annotationsByChunkId = await getVerifiedAnnotationsByChunkIds(chunkIds);
+  if (!annotationsByChunkId.size) return envelope;
+
+  const annotatedItems = items.map((item) => {
+    const annotation = item.chunkId ? annotationsByChunkId.get(String(item.chunkId)) : null;
+    return annotation ? { ...item, chunkAnnotation: annotation } : item;
+  });
+  return { ...envelope, items: annotatedItems };
+};
+
 export default {
   detectInjectionSignals, toUntrustedEvidenceEnvelope, toUntrustedEvidenceEnvelopes, buildResearchEvidenceEnvelope,
-  buildEarningsIntelligenceEnvelopeItems, mergeEarningsIntelligenceEvidence, reconcileEvidenceEnvelope,
+  buildEarningsIntelligenceEnvelopeItems, mergeEarningsIntelligenceEvidence, reconcileEvidenceEnvelope, attachVerifiedChunkAnnotations,
 };
