@@ -13,8 +13,8 @@ const formatMoney = (value) => safeNumber(value) === null ? '—' : `₹${safeNu
 const formatPercent = (value) => safeNumber(value) === null ? '—' : `${safeNumber(value) >= 0 ? '+' : ''}${safeNumber(value).toFixed(2)}%`;
 const normalizeStocks = (stocks) => (Array.isArray(stocks) ? stocks : []).map((item) => ({ ...item, symbol: String(first(item?.symbol, item?.ticker, '')).trim().toUpperCase(), name: first(item?.name, item?.companyName, item?.symbol, item?.ticker, '—') })).filter((item) => item.symbol);
 
-function StateMessage({ children }) {
-  return <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-gs-textMuted"><AlertCircle className="h-4 w-4 text-gs-textDim" />{children}</div>;
+function StateMessage({ children, testId }) {
+  return <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-gs-textMuted" data-testid={testId}><AlertCircle className="h-4 w-4 text-gs-textDim" />{children}</div>;
 }
 
 function Metric({ label, value }) {
@@ -87,7 +87,7 @@ export default function StockDetail() {
   };
   const selectStock = (nextSymbol) => navigate(`/stock/${encodeURIComponent(String(nextSymbol).trim().toUpperCase())}`);
 
-  if (!symbol) return <StateMessage>No stock selected. Choose a symbol from the directory.</StateMessage>;
+  if (!symbol) return <StateMessage testId="stock-detail-invalid">No stock selected. Choose a symbol from the directory.</StateMessage>;
   if (loading && !stock && !details) return <div className="space-y-4 animate-pulse" data-testid="stock-detail-loading"><div className="h-36 rounded-sm border border-gs-border bg-gs-card" /><div className="h-[560px] rounded-sm border border-gs-border bg-gs-card" /></div>;
 
   return <div className="space-y-4" data-testid="stock-detail-page">
