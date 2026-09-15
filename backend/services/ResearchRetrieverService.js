@@ -37,7 +37,16 @@ import { embedChunks } from './EmbeddingService.js';
 export const RETRIEVAL_MODES = Object.freeze({
   LEXICAL_FALLBACK: 'LEXICAL_FALLBACK',
   LOCAL_HYBRID_RERANK: 'LOCAL_HYBRID_RERANK',
+  // ATLAS_VECTOR is this project's existing name for a real Atlas
+  // $vectorSearch-only mode (Phase 4A.1) — kept as-is rather than
+  // renamed to "ATLAS_VECTOR_SEARCH" (Phase 4A.4 follows the project's
+  // own established naming convention here, per instruction). Both
+  // Atlas modes require VECTOR_SEARCH_ENABLED=true AND a real Atlas
+  // cluster/index — never selected by default, never live-verified from
+  // this environment (see the Phase 4A.4 report's Atlas-blocker
+  // section).
   ATLAS_VECTOR: 'ATLAS_VECTOR',
+  ATLAS_HYBRID_FUSION: 'ATLAS_HYBRID_FUSION',
   // Phase 4A.3 item 4/5: evaluation-only comparison arms, never selected
   // by any env-driven default (see the mode-selection logic below) and
   // structurally refused outside TCS/INFY or in a production runtime.
@@ -693,7 +702,15 @@ const localHybridRerank = async ({
     // relevance floor — a candidate needs REAL lexical grounding
     // (not just a lucky cosine score) to ever be returned.
     .filter((item) => item.finalScore >= minRelevanceScore * HYBRID_LEXICAL_ELIGIBILITY_FRACTION)
-    .sort((a, b) => b.rrfScore - a.rrfScore);
+    // Deterministic tie-breaking: with exactly two candidates whose two
+    // rank lists symmetrically swap (A wins primary, B wins semantic by
+    // the same margin), their RRF sums can tie EXACTLY — a plain
+    // rrfScore sort would then fall back to whatever order the DB
+    // happened to return, which is not a real preference. Ties break on
+    // recencyScore (general: prefer the more recently published filing)
+    // and finally on chunk id, so the SAME input always produces the
+    // SAME output order.
+    .sort((a, b) => b.rrfScore - a.rrfScore || b.recencyScore - a.recencyScore || String(a.doc._id).localeCompare(String(b.doc._id)));
 
   if (!eligible.length) {
     return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
@@ -880,7 +897,10 @@ const localExactVectorHybridFusion = async ({
   const eligible = enriched
     .map((item, index) => ({ ...item, index, rrfScore: rrfScores.get(index) || 0 }))
     .filter((item) => item.finalScore >= minRelevanceScore * HYBRID_LEXICAL_ELIGIBILITY_FRACTION)
-    .sort((a, b) => b.rrfScore - a.rrfScore);
+    // Deterministic tie-breaking — see localHybridRerank's identical note:
+    // an exact RRF tie falls back to cosineScore, then chunk id, never to
+    // incidental DB return order.
+    .sort((a, b) => b.rrfScore - a.rrfScore || b.cosineScore - a.cosineScore || String(a.doc._id).localeCompare(String(b.doc._id)));
   if (!eligible.length) {
     return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
   }
@@ -904,59 +924,64 @@ const localExactVectorHybridFusion = async ({
   };
 };
 
-// Phase 4A.1 Atlas-readiness audit (item 8): never live-verified against a
-// real Atlas cluster/index (no Atlas access from this environment — see
-// the Phase 4A.1 report) — these constants and the filter/timeout logic
-// below are STRUCTURALLY correct and unit-tested against a real MongoDB
-// connection using a real (non-Atlas) aggregate() call that exercises the
-// same pipeline shape, but "structurally tested" is not "live verified".
+// Phase 4A.1/4A.4 Atlas-readiness: never live-verified against a real
+// Atlas cluster/index (this environment's MONGODB_URI is a plain
+// mongodb://127.0.0.1:27017 connection, confirmed again in Phase 4A.4 —
+// no Atlas credentials, no SRV string, no network path to a real Atlas
+// cluster) — these constants and the filter/timeout logic below are
+// STRUCTURALLY correct and unit-tested (mocked aggregate + a real,
+// non-Atlas MongoDB connection that genuinely exercises the same
+// pipeline shape and throws the real "Unrecognized pipeline stage"
+// error), but "structurally tested" is not "live verified". See the
+// Phase 4A.4 report's Atlas-blocker section for the exact evidence and
+// the proposed index definition this code expects to find once real
+// Atlas access exists.
 const ATLAS_VECTOR_INDEX_NAME = 'research_chunk_vector_index';
 const ATLAS_VECTOR_PATH = 'embedding';
-const ATLAS_QUERY_EMBED_TIMEOUT_MS = 10000;
+// Bounded candidate pool for Atlas hybrid fusion's lexical rescoring
+// pass — mirrors HYBRID_CANDIDATE_POOL_SIZE's rationale: Atlas itself is
+// asked for at most this many candidates via numCandidates/limit, so
+// downstream lexical/sentence/recency scoring is always bounded and
+// predictable regardless of corpus size.
+const ATLAS_HYBRID_POOL_SIZE = 50;
 
-const atlasVectorRetrieve = async ({
-  query, symbols, fiscalYears, documentTypes, topK, minRelevanceScore, signal,
+/** Shared by both Atlas modes: embeds the query (cached, timeout-bounded) and builds the mandatory metadata + model/version pre-filter. Returns `{queryEmbedding, filter}` or an early `{outcome}` to return as-is (UNSUPPORTED/UNAVAILABLE). */
+const prepareAtlasQuery = async ({
+  query, symbols, fiscalYears, documentTypes, signal,
 }) => {
   if (!OpenAIClientFactory.isConfigured()) {
-    return { status: RETRIEVAL_STATUS.UNSUPPORTED, results: [], reason: 'OpenAI not configured, cannot embed the query' };
+    return { outcome: { status: RETRIEVAL_STATUS.UNSUPPORTED, results: [], reason: 'OpenAI not configured, cannot embed the query' } };
   }
   const embeddingModel = LLM_CONFIG.embeddingModel;
   const embeddingVersion = LLM_CONFIG.embeddingVersion;
-
-  let queryEmbedding;
-  try {
-    const client = OpenAIClientFactory.getClient();
-    // Deadline/timeout behavior: the query embedding call is bounded by
-    // its own timeout (never allowed to hang indefinitely) combined with
-    // any caller-supplied abort signal — the same AbortSignal.any pattern
-    // services/EmbeddingService.js uses for the indexing-time embedding
-    // calls, so both embedding call sites behave consistently.
-    const localController = new AbortController();
-    const timeoutHandle = setTimeout(() => localController.abort(), ATLAS_QUERY_EMBED_TIMEOUT_MS);
-    const combinedSignal = signal ? AbortSignal.any([signal, localController.signal]) : localController.signal;
-    let response;
-    try {
-      response = await client.embeddings.create({ model: embeddingModel, input: [query] }, { signal: combinedSignal });
-    } finally {
-      clearTimeout(timeoutHandle);
-    }
-    queryEmbedding = response.data?.[0]?.embedding;
-  } catch (error) {
-    logger.warn(`[ResearchRetrieverService] failed to embed query for Atlas vector search: ${error.message}`);
-    return { status: RETRIEVAL_STATUS.UNAVAILABLE, results: [], reason: 'Query embedding failed' };
+  const { embedding: queryEmbedding, reason } = await embedQueryCached(query, { signal });
+  if (!queryEmbedding) {
+    return { outcome: { status: RETRIEVAL_STATUS.UNAVAILABLE, results: [], reason: reason || 'Query embedding failed' } };
   }
-  if (!queryEmbedding) return { status: RETRIEVAL_STATUS.UNAVAILABLE, results: [], reason: 'Query embedding failed' };
-
   // Model/version mismatch guard: vectors from a DIFFERENT embedding
   // model (or a different dimensionality) must never be compared against
   // this query's vector — added directly to the Atlas pre-filter so a
   // stale/mixed index can never silently return garbage-similarity
-  // results from an incompatible embedding generation.
+  // results from an incompatible embedding generation. Mandatory
+  // symbol/fiscalYear/documentType filters are applied in this SAME
+  // filter object, before Atlas ever computes a single similarity score.
   const filter = {
     ...buildMetadataFilter({ symbols, fiscalYears, documentTypes }),
     embeddingModel,
     embeddingVersion,
   };
+  return { queryEmbedding, filter };
+};
+
+const atlasVectorRetrieve = async ({
+  query, symbols, fiscalYears, documentTypes, topK, minRelevanceScore, signal,
+}) => {
+  const prepared = await prepareAtlasQuery({
+    query, symbols, fiscalYears, documentTypes, signal,
+  });
+  if (prepared.outcome) return prepared.outcome;
+  const { queryEmbedding, filter } = prepared;
+
   try {
     // Genuine Atlas Vector Search aggregation syntax — NOT a stub. Only
     // ever reached when VECTOR_SEARCH_ENABLED=true was explicitly set;
@@ -980,11 +1005,132 @@ const atlasVectorRetrieve = async ({
     const filtered = docs.filter((d) => d.__score >= minRelevanceScore);
     if (!filtered.length) return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
     const deduped = dropNearDuplicates(filtered, NEAR_DUPLICATE_JACCARD_THRESHOLD);
-    return { status: RETRIEVAL_STATUS.SUCCESS, results: deduped.slice(0, topK).map((doc) => toEvidenceShape(doc, doc.__score)) };
+    return {
+      status: RETRIEVAL_STATUS.SUCCESS,
+      results: deduped.slice(0, topK).map((doc) => toEvidenceShape(doc, doc.__score, { vectorSearchScore: doc.__score, finalScore: doc.__score })),
+    };
   } catch (error) {
     logger.warn(`[ResearchRetrieverService] Atlas $vectorSearch failed (index may not exist on this cluster): ${error.message}`);
     return { status: RETRIEVAL_STATUS.UNAVAILABLE, results: [], reason: 'Vector search unavailable on this cluster' };
   }
+};
+
+/**
+ * atlasHybridFusion - Phase 4A.4 item 2's ATLAS_HYBRID_FUSION mode.
+ *
+ * Same mandatory-filters-first, bounded-pool, never-expose-vectors
+ * contract as LOCAL_HYBRID_RERANK, but the semantic half of the fusion
+ * is a REAL Atlas `$vectorSearch` call instead of locally-computed
+ * cosine similarity: Atlas returns a bounded (ATLAS_HYBRID_POOL_SIZE)
+ * candidate set with its own vectorSearchScore, which is then rescored
+ * lexically (same scorer LEXICAL_FALLBACK uses) and combined via
+ * Reciprocal Rank Fusion with the SAME general recency signal
+ * LOCAL_HYBRID_RERANK uses — no company- or question-specific rule.
+ * A candidate must independently clear the full lexical relevance bar to
+ * be eligible at all (semantic similarity cannot rescue a chunk with no
+ * real lexical grounding — the same safety property LOCAL_HYBRID_RERANK
+ * enforces). Never live-verified (see atlasVectorRetrieve's note above).
+ */
+const atlasHybridFusion = async ({
+  query, symbols, fiscalYears, documentTypes, topK, minRelevanceScore, signal,
+}) => {
+  const aliasIndex = await getAliasIndex();
+  const queryTokensFull = tokenize(query, aliasIndex);
+  const meaningfulQuery = meaningfulTokens(queryTokensFull);
+  if (!meaningfulQuery.length) {
+    return { status: RETRIEVAL_STATUS.EMPTY, results: [], reason: 'Query has no meaningful (non-generic) search terms' };
+  }
+
+  const prepared = await prepareAtlasQuery({
+    query, symbols, fiscalYears, documentTypes, signal,
+  });
+  if (prepared.outcome) return prepared.outcome;
+  const { queryEmbedding, filter } = prepared;
+
+  let atlasDocs;
+  try {
+    atlasDocs = await ResearchDocumentChunk.aggregate([
+      {
+        $vectorSearch: {
+          index: ATLAS_VECTOR_INDEX_NAME,
+          path: ATLAS_VECTOR_PATH,
+          queryVector: queryEmbedding,
+          numCandidates: Math.max(100, ATLAS_HYBRID_POOL_SIZE * 4),
+          limit: ATLAS_HYBRID_POOL_SIZE,
+          filter,
+        },
+      },
+      { $addFields: { __atlasScore: { $meta: 'vectorSearchScore' } } },
+    ]);
+  } catch (error) {
+    logger.warn(`[ResearchRetrieverService] Atlas $vectorSearch failed in hybrid fusion (index may not exist on this cluster): ${error.message}`);
+    return { status: RETRIEVAL_STATUS.UNAVAILABLE, results: [], reason: 'Vector search unavailable on this cluster' };
+  }
+  if (!atlasDocs.length) return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
+
+  const queryFiscalYears = extractFiscalYearMentions(query);
+  const lexicallyScored = scoreCandidatesLexically({
+    candidates: atlasDocs, meaningfulQuery, queryTokensFull, queryFiscalYears, aliasIndex,
+  });
+  if (!lexicallyScored.length) {
+    return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
+  }
+  const lexicalById = new Map(lexicallyScored.map((item) => [String(item.doc._id), item]));
+
+  const publishedTimes = atlasDocs.map((d) => (d.publishedAt ? new Date(d.publishedAt).getTime() : null)).filter((t) => Number.isFinite(t));
+  const minPublished = publishedTimes.length ? Math.min(...publishedTimes) : null;
+  const maxPublished = publishedTimes.length ? Math.max(...publishedTimes) : null;
+  const RECENCY_WEIGHT = 0.15;
+  const recencyScoreFor = (doc) => {
+    if (!doc.publishedAt || minPublished == null || maxPublished === minPublished) return 0;
+    const t = new Date(doc.publishedAt).getTime();
+    if (!Number.isFinite(t)) return 0;
+    return ((t - minPublished) / (maxPublished - minPublished)) * RECENCY_WEIGHT;
+  };
+
+  const enriched = atlasDocs
+    .map((doc) => {
+      const lexicalEntry = lexicalById.get(String(doc._id));
+      if (!lexicalEntry) return null; // never eligible — failed the meaningful-overlap gate
+      const sentenceSupport = computeSentenceSupportScore(meaningfulQuery, doc.text, aliasIndex);
+      return {
+        doc, finalScore: lexicalEntry.finalScore, debug: lexicalEntry.debug, atlasScore: doc.__atlasScore, sentenceSupport, recencyScore: recencyScoreFor(doc),
+      };
+    })
+    .filter(Boolean);
+  if (!enriched.length) return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
+
+  const byPrimaryIndex = [...enriched.keys()].sort(
+    (a, b) => (Math.max(enriched[b].finalScore, enriched[b].sentenceSupport.score) + enriched[b].recencyScore)
+      - (Math.max(enriched[a].finalScore, enriched[a].sentenceSupport.score) + enriched[a].recencyScore),
+  );
+  const byAtlasScoreIndex = [...enriched.keys()].sort((a, b) => enriched[b].atlasScore - enriched[a].atlasScore);
+  const rrfScores = reciprocalRankFusion([byPrimaryIndex, byAtlasScoreIndex]);
+
+  const eligible = enriched
+    .map((item, index) => ({ ...item, index, rrfScore: rrfScores.get(index) || 0 }))
+    .filter((item) => item.finalScore >= minRelevanceScore * HYBRID_LEXICAL_ELIGIBILITY_FRACTION)
+    // Deterministic tie-breaking — see localHybridRerank's identical note.
+    .sort((a, b) => b.rrfScore - a.rrfScore || b.recencyScore - a.recencyScore || String(a.doc._id).localeCompare(String(b.doc._id)));
+  if (!eligible.length) return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
+
+  const deduped = dropNearDuplicates(
+    eligible.map((item) => ({
+      ...item.doc,
+      __score: item.rrfScore,
+      __debug: {
+        ...item.debug, vectorSearchScore: item.atlasScore, sentenceScore: item.sentenceSupport.score, supportingSentence: item.sentenceSupport.sentence, recencyScore: item.recencyScore, rrfScore: item.rrfScore, finalScore: item.rrfScore,
+      },
+      text: item.doc.text,
+    })),
+    NEAR_DUPLICATE_JACCARD_THRESHOLD,
+    aliasIndex,
+  );
+
+  return {
+    status: RETRIEVAL_STATUS.SUCCESS,
+    results: deduped.slice(0, topK).map((doc) => toEvidenceShape(doc, doc.__score, doc.__debug)),
+  };
 };
 
 /**
@@ -1044,7 +1190,7 @@ export const retrieveResearchEvidence = async ({
     if (minRelevanceScore != null) return minRelevanceScore;
     if (mode === RETRIEVAL_MODES.ATLAS_VECTOR) return DEFAULT_MIN_VECTOR_RELEVANCE_SCORE;
     if (mode === RETRIEVAL_MODES.LOCAL_EXACT_VECTOR_CANARY) return DEFAULT_MIN_EXACT_VECTOR_RELEVANCE_SCORE;
-    return DEFAULT_MIN_RELEVANCE_SCORE; // LEXICAL_FALLBACK, LOCAL_HYBRID_RERANK, LOCAL_EXACT_VECTOR_HYBRID_FUSION all gate on the lexical composite scale
+    return DEFAULT_MIN_RELEVANCE_SCORE; // LEXICAL_FALLBACK, LOCAL_HYBRID_RERANK, ATLAS_HYBRID_FUSION, LOCAL_EXACT_VECTOR_HYBRID_FUSION all gate on the lexical composite scale
   };
   const effectiveMinRelevanceScore = defaultForMode();
 
@@ -1052,6 +1198,10 @@ export const retrieveResearchEvidence = async ({
     let outcome;
     if (mode === RETRIEVAL_MODES.ATLAS_VECTOR) {
       outcome = await atlasVectorRetrieve({
+        query, symbols: normalizedSymbols, fiscalYears, documentTypes, topK: boundedTopK, minRelevanceScore: effectiveMinRelevanceScore, signal,
+      });
+    } else if (mode === RETRIEVAL_MODES.ATLAS_HYBRID_FUSION) {
+      outcome = await atlasHybridFusion({
         query, symbols: normalizedSymbols, fiscalYears, documentTypes, topK: boundedTopK, minRelevanceScore: effectiveMinRelevanceScore, signal,
       });
     } else if (mode === RETRIEVAL_MODES.LOCAL_HYBRID_RERANK) {

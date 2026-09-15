@@ -1,0 +1,24 @@
+{
+  "_comment": "Phase 4A.4 -- proposed Atlas Vector Search index for ResearchDocumentChunk. NEVER LIVE-VERIFIED: this environment's MongoDB is a plain mongodb://127.0.0.1:27017 connection with no Atlas cluster, credentials, or network path to Atlas (see the Phase 4A.4 report's Atlas-blocker section). This file documents exactly what services/ResearchRetrieverService.js's atlasVectorRetrieve/atlasHybridFusion expect to find once real Atlas access exists -- create it via the Atlas UI (Atlas Search > Create Search Index > Atlas Vector Search > JSON Editor) or the Atlas CLI/API, against the SAME database + collection this project's MONGODB_URI already points to.",
+  "database": "<same database MONGODB_URI resolves to -- run `mongoose.connection.db.databaseName` to confirm; never hardcoded here since it is environment-specific>",
+  "collection": "researchdocumentchunks",
+  "indexName": "research_chunk_vector_index",
+  "type": "vectorSearch",
+  "definition": {
+    "fields": [
+      {
+        "type": "vector",
+        "path": "embedding",
+        "numDimensions": 1536,
+        "similarity": "cosine"
+      },
+      { "type": "filter", "path": "symbol" },
+      { "type": "filter", "path": "fiscalYear" },
+      { "type": "filter", "path": "fiscalQuarter" },
+      { "type": "filter", "path": "documentType" },
+      { "type": "filter", "path": "sourceAuthority" },
+      { "type": "filter", "path": "embeddingModel" },
+      { "type": "filter", "path": "embeddingVersion" }
+    ]
+  }
+}
