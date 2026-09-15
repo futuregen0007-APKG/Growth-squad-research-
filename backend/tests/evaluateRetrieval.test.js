@@ -2,6 +2,7 @@ import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
+import { ResearchDocumentChunk } from '../models/ResearchDocumentChunk.js';
 import { runEvaluation } from '../scripts/evaluateRetrieval.js';
 import { GOLDEN_DATASET } from '../fixtures/ragGoldenDataset.js';
 import { HOLDOUT_DATASET } from '../fixtures/ragHoldoutDataset.js';
@@ -11,7 +12,10 @@ if (mongoose.connection.readyState === 0) {
   await mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/stock_market_ai');
 }
 
-after(async () => { await mongoose.disconnect().catch(() => {}); });
+after(async () => {
+  await ResearchDocumentChunk.deleteMany({ symbol: 'ZZEVALCITETEST' }).catch(() => {});
+  await mongoose.disconnect().catch(() => {});
+});
 
 // ---------------------------------------------------------------------------
 // Evaluator-contract audit (Phase 4A.2 item 1): recall@1/@3/@k are exactly
@@ -96,4 +100,96 @@ test('runEvaluation reports mode-labeled results so lexical and hybrid runs are 
   for (const entry of lexicalReport.entries) {
     if (entry.retrievalMode) assert.notEqual(entry.retrievalMode, 'ATLAS_VECTOR');
   }
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4A.3 item 1/2: citation adjudication -- exact-page vs
+// acceptable-page accuracy are tracked SEPARATELY, and acceptableCitations
+// entries are genuinely honored (an alternate real page counts, an
+// unlisted page does not).
+// ---------------------------------------------------------------------------
+const TEST_PREFIX = 'ZZEVALCITETEST';
+const cleanupCiteFixtures = async () => { await ResearchDocumentChunk.deleteMany({ symbol: TEST_PREFIX }); };
+test.beforeEach(cleanupCiteFixtures);
+
+const fakeGoldenEntryWithAcceptableCitations = () => ([{
+  id: 'fake-citation-test-1',
+  category: 'test_only',
+  description: 'test fixture',
+  query: 'operating margin guidance fiscal year',
+  symbols: [TEST_PREFIX],
+  expected: {
+    status: 'SUCCESS',
+    sourceUrlContains: 'pinned-doc',
+    pageIn: [1, 1],
+    acceptableCitations: [
+      { sourceUrlContains: 'alternate-doc', pageIn: [2, 2], justification: 'test-only alternate' },
+    ],
+  },
+}]);
+
+test('required: exact-page and acceptable-page accuracy are reported as separate metrics', async () => {
+  await ResearchDocumentChunk.create({
+    symbol: TEST_PREFIX,
+    registryDocumentId: new mongoose.Types.ObjectId(),
+    documentHash: `alt-${Math.random()}`,
+    documentType: 'ANNUAL_REPORT',
+    fiscalYear: 'FY2099',
+    sourceUrl: 'https://example.com/alternate-doc.pdf',
+    pageStart: 2,
+    pageEnd: 2,
+    chunkIndex: 0,
+    text: 'Operating margin guidance for the fiscal year was reaffirmed by management today on the call, per our records.',
+    approximateTokenCount: 12,
+  });
+  const report = await runEvaluation({ dataset: fakeGoldenEntryWithAcceptableCitations(), mode: 'LEXICAL_FALLBACK', datasetName: 'test' });
+  const entry = report.entries[0];
+  const exactCheck = entry.checks.find((c) => c.name === 'citation_source_url');
+  const acceptableCheck = entry.checks.find((c) => c.name === 'citation_acceptable_page');
+  assert.equal(exactCheck.pass, false, 'the top result is the alternate doc, not the exact pin -- exact check must fail');
+  assert.equal(acceptableCheck.pass, true, 'the alternate doc IS a verified acceptableCitations entry -- acceptable check must pass');
+  assert.ok(report.exactCitationAccuracy < report.citationAccuracy, 'acceptable-page accuracy must be >= exact-page accuracy whenever they differ');
+});
+
+test('required: a page matching NEITHER the pin nor any acceptableCitations entry fails both checks', async () => {
+  await ResearchDocumentChunk.create({
+    symbol: TEST_PREFIX,
+    registryDocumentId: new mongoose.Types.ObjectId(),
+    documentHash: `unrelated-${Math.random()}`,
+    documentType: 'ANNUAL_REPORT',
+    fiscalYear: 'FY2099',
+    sourceUrl: 'https://example.com/completely-unrelated-doc.pdf',
+    pageStart: 9,
+    pageEnd: 9,
+    chunkIndex: 0,
+    text: 'Operating margin guidance for the fiscal year was reaffirmed by management today on the call, per our records.',
+    approximateTokenCount: 12,
+  });
+  const report = await runEvaluation({ dataset: fakeGoldenEntryWithAcceptableCitations(), mode: 'LEXICAL_FALLBACK', datasetName: 'test' });
+  const entry = report.entries[0];
+  const acceptableCheck = entry.checks.find((c) => c.name === 'citation_acceptable_page');
+  assert.equal(acceptableCheck.pass, false);
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4A.3: UNSUPPORTED (a mode-imposed structural scope refusal) must
+// never be miscounted as a safety-metric failure.
+// ---------------------------------------------------------------------------
+test('required: a scope-limited UNSUPPORTED outcome is excluded from absent-answer-abstention and prompt-injection-execution metrics, never counted as a failure', async () => {
+  const fakeDataset = [
+    {
+      id: 'fake-absent-1', category: 'absent_answer', description: 'test', query: 'irrelevant query text here', symbols: ['NOT_A_REAL_SYMBOL'], expected: { status: 'EMPTY' },
+    },
+    {
+      id: 'fake-injection-1', category: 'prompt_injection', description: 'test', query: 'irrelevant query text here', symbols: ['NOT_A_REAL_SYMBOL'], expected: { status: 'SUCCESS', textIncludes: 'anything' },
+    },
+  ];
+  // LOCAL_EXACT_VECTOR_CANARY structurally refuses any non-TCS/INFY
+  // symbol -- both fake entries above will come back UNSUPPORTED.
+  const report = await runEvaluation({ dataset: fakeDataset, mode: 'LOCAL_EXACT_VECTOR_CANARY', datasetName: 'test' });
+  assert.equal(report.entries.every((e) => e.status === 'UNSUPPORTED'), true, 'sanity: both fake entries were indeed scope-refused');
+  assert.equal(report.metrics.absentAnswerAbstentionRate, null, 'with the only absent-answer entry excluded as scope-limited, the rate is not-applicable (null), never counted as a failing 0');
+  assert.equal(report.metrics.promptInjectionExecutionCount, 0, 'a structurally-refused injection probe must never count as an execution');
+  assert.equal(report.metrics.absentAnswerScopeLimited, 1);
+  assert.equal(report.metrics.injectionScopeLimited, 1);
 });

@@ -35,7 +35,14 @@ import { embedChunks } from './EmbeddingService.js';
  */
 
 export const RETRIEVAL_MODES = Object.freeze({
-  LEXICAL_FALLBACK: 'LEXICAL_FALLBACK', LOCAL_HYBRID_RERANK: 'LOCAL_HYBRID_RERANK', ATLAS_VECTOR: 'ATLAS_VECTOR',
+  LEXICAL_FALLBACK: 'LEXICAL_FALLBACK',
+  LOCAL_HYBRID_RERANK: 'LOCAL_HYBRID_RERANK',
+  ATLAS_VECTOR: 'ATLAS_VECTOR',
+  // Phase 4A.3 item 4/5: evaluation-only comparison arms, never selected
+  // by any env-driven default (see the mode-selection logic below) and
+  // structurally refused outside TCS/INFY or in a production runtime.
+  LOCAL_EXACT_VECTOR_CANARY: 'LOCAL_EXACT_VECTOR_CANARY',
+  LOCAL_EXACT_VECTOR_HYBRID_FUSION: 'LOCAL_EXACT_VECTOR_HYBRID_FUSION',
 });
 export const RETRIEVAL_STATUS = Object.freeze({ SUCCESS: 'SUCCESS', EMPTY: 'EMPTY', UNAVAILABLE: 'UNAVAILABLE', UNSUPPORTED: 'UNSUPPORTED' });
 
@@ -54,6 +61,19 @@ const DEFAULT_MIN_RELEVANCE_SCORE = 0.32;
 // reasonable starting point for a 1536-dim text-embedding-3-small cosine
 // score, not an empirically-tuned value.
 const DEFAULT_MIN_VECTOR_RELEVANCE_SCORE = 0.75;
+// LOCAL_EXACT_VECTOR_CANARY's own threshold — unlike the Atlas guess
+// above, this WAS empirically measured against real indexed TCS/INFY
+// chunks (Phase 4A.3): text-embedding-3-small cosine similarity for this
+// corpus clusters in a surprisingly narrow band — a genuinely
+// off-topic/absent-answer query still scored ~0.52-0.54 against
+// same-company financial-domain text (a same-domain "topical floor", not
+// true relevance), while genuinely relevant chunks reached ~0.55-0.62.
+// 0.55 was the lowest threshold that cleanly separated a real
+// absent-answer probe (EMPTY) from a real on-topic question (SUCCESS,
+// 7 results) in that measurement — reported honestly in the Phase 4A.3
+// report as a real, narrow, corpus-specific separation margin, not a
+// robust general guarantee.
+const DEFAULT_MIN_EXACT_VECTOR_RELEVANCE_SCORE = 0.55;
 const DEFAULT_CANDIDATE_LIMIT = 500; // bound on how many chunks a metadata-filtered query pulls before in-memory lexical scoring
 const NEAR_DUPLICATE_JACCARD_THRESHOLD = 0.9;
 
@@ -611,27 +631,56 @@ const localHybridRerank = async ({
     };
   }
 
+  // Phase 4A.3 general fix: within-fiscal-year RECENCY. Diagnosed on
+  // operating-margin-guidance-1 — INFY's real FY2023 operating-margin
+  // guidance was genuinely REVISED mid-year (21%-23% in the Q1 call,
+  // narrowed to 21%-22% from Q2 onward). Both figures are real, both
+  // pass every lexical/cosine signal about equally well (same company,
+  // same fiscal year, same topic vocabulary), so nothing before this
+  // could tell "superseded" from "current". This is a GENERAL scenario
+  // (any fiscal year can contain multiple, chronologically-revised
+  // statements of the same metric), not a fix for this one question: a
+  // small, BOUNDED, pool-RELATIVE recency score — linearly scaled by
+  // each candidate's `publishedAt` position within the bounded pool's
+  // own date range — nudges a more recently-published filing above an
+  // older one when their other signals are otherwise close, without
+  // ever letting recency alone dominate topical relevance.
+  const RECENCY_WEIGHT = 0.15;
+  const publishedTimes = pool.map((item) => (item.doc.publishedAt ? new Date(item.doc.publishedAt).getTime() : null)).filter((t) => Number.isFinite(t));
+  const minPublished = publishedTimes.length ? Math.min(...publishedTimes) : null;
+  const maxPublished = publishedTimes.length ? Math.max(...publishedTimes) : null;
+  const recencyScoreFor = (doc) => {
+    if (!doc.publishedAt || minPublished == null || maxPublished === minPublished) return 0;
+    const t = new Date(doc.publishedAt).getTime();
+    if (!Number.isFinite(t)) return 0;
+    return ((t - minPublished) / (maxPublished - minPublished)) * RECENCY_WEIGHT;
+  };
+
   const enriched = pool.map((item) => {
     const cosineScore = cosineSimilarity(queryEmbedding, item.doc.embedding);
     const sentenceSupport = computeSentenceSupportScore(meaningfulQuery, item.doc.text, aliasIndex);
-    return { ...item, cosineScore, sentenceSupport };
+    const recencyScore = recencyScoreFor(item.doc);
+    return {
+      ...item, cosineScore, sentenceSupport, recencyScore,
+    };
   });
 
   // Two rank orderings over the SAME bounded pool, combined via
   // Reciprocal Rank Fusion — this is the "combine lexical and semantic
   // ranks" step (item 4). The FIRST ranking is not the raw whole-chunk
   // lexical score alone: it is max(wholeChunkLexicalScore,
-  // sentenceSupportScore), which is exactly what "sentence-level support
-  // scoring... to prevent long Q&A chunks from winning merely through
-  // accumulated word overlap" (item 5) means in practice — a long chunk
-  // that only scores well by summing many weak partial matches across
-  // unrelated sentences is NOT rescued by that accumulation once a
-  // SHORTER, more concise, genuinely on-topic chunk's peak sentence score
-  // matches or exceeds it. The SECOND ranking is real cosine similarity —
+  // sentenceSupportScore) + recencyScore, which is exactly what
+  // "sentence-level support scoring... to prevent long Q&A chunks from
+  // winning merely through accumulated word overlap" (item 5) means in
+  // practice — a long chunk that only scores well by summing many weak
+  // partial matches across unrelated sentences is NOT rescued by that
+  // accumulation once a SHORTER, more concise, genuinely on-topic
+  // chunk's peak sentence score matches or exceeds it — plus the small
+  // recency nudge above. The SECOND ranking is real cosine similarity —
   // the genuinely semantic half of the combination.
   const byPrimaryIndex = [...enriched.keys()].sort(
-    (a, b) => Math.max(enriched[b].finalScore, enriched[b].sentenceSupport.score)
-      - Math.max(enriched[a].finalScore, enriched[a].sentenceSupport.score),
+    (a, b) => (Math.max(enriched[b].finalScore, enriched[b].sentenceSupport.score) + enriched[b].recencyScore)
+      - (Math.max(enriched[a].finalScore, enriched[a].sentenceSupport.score) + enriched[a].recencyScore),
   );
   const byCosineIndex = [...enriched.keys()].sort((a, b) => enriched[b].cosineScore - enriched[a].cosineScore);
 
@@ -659,8 +708,189 @@ const localHybridRerank = async ({
         cosineScore: item.cosineScore,
         sentenceScore: item.sentenceSupport.score,
         supportingSentence: item.sentenceSupport.sentence,
+        recencyScore: item.recencyScore,
         rrfScore: item.rrfScore,
         finalScore: item.rrfScore,
+      },
+      text: item.doc.text,
+    })),
+    NEAR_DUPLICATE_JACCARD_THRESHOLD,
+    aliasIndex,
+  );
+
+  return {
+    status: RETRIEVAL_STATUS.SUCCESS,
+    results: deduped.slice(0, topK).map((doc) => toEvidenceShape(doc, doc.__score, doc.__debug)),
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Phase 4A.3 item 4: LOCAL_EXACT_VECTOR_CANARY — EVALUATION-ONLY.
+// ---------------------------------------------------------------------------
+// A research/diagnostic mode, NOT a production retrieval mode: scores
+// EVERY metadata-eligible chunk for a symbol by real cosine similarity
+// (no lexical pre-filtering, no bounded-top-50 pool) so the evaluation
+// harness can measure what a full local semantic search would find,
+// compared against LEXICAL_FALLBACK and the bounded LOCAL_HYBRID_RERANK.
+// Deliberately restricted to TCS/INFY (the only symbols with a real,
+// fully-embedded canary corpus) and structurally unreachable through any
+// env-driven default (see retrieveResearchEvidence's mode-selection
+// logic below, which never chooses this mode automatically) or in a
+// production runtime (NODE_ENV==='production' refuses it outright,
+// belt-and-suspenders on top of "never selected by default").
+const EXACT_VECTOR_CANARY_SYMBOLS = new Set(['TCS', 'INFY']);
+// Hard memory/candidate ceiling — this project's entire TCS+INFY corpus
+// is ~2,300 chunks combined; 1,500 comfortably covers either symbol's
+// full corpus today while still being a real, enforced cap, not
+// "unbounded in practice".
+const EXACT_VECTOR_MAX_CANDIDATES = 1500;
+
+const localExactVectorCanary = async ({
+  query, symbols, fiscalYears, documentTypes, topK, minRelevanceScore, signal,
+}) => {
+  if (process.env.NODE_ENV === 'production') {
+    return { status: RETRIEVAL_STATUS.UNSUPPORTED, results: [], reason: 'LOCAL_EXACT_VECTOR_CANARY is evaluation-only and refuses to run in a production runtime' };
+  }
+  const disallowed = symbols.filter((s) => !EXACT_VECTOR_CANARY_SYMBOLS.has(s));
+  if (disallowed.length) {
+    return { status: RETRIEVAL_STATUS.UNSUPPORTED, results: [], reason: `LOCAL_EXACT_VECTOR_CANARY is scoped to ${[...EXACT_VECTOR_CANARY_SYMBOLS].join('/')} only (requested: ${disallowed.join(',')})` };
+  }
+
+  // Mandatory metadata filters FIRST — identical contract to hybrid mode:
+  // symbol/fiscalYear/documentType/embeddingModel/embeddingVersion are
+  // never something semantic similarity can override.
+  const filter = buildMetadataFilter({
+    symbols, fiscalYears, documentTypes, requireEmbeddingModel: LLM_CONFIG.embeddingModel, requireEmbeddingVersion: LLM_CONFIG.embeddingVersion,
+  });
+  const candidates = await ResearchDocumentChunk.find(filter).limit(EXACT_VECTOR_MAX_CANDIDATES).lean();
+  if (!candidates.length) {
+    return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
+  }
+
+  const { embedding: queryEmbedding, reason: embedFailureReason } = await embedQueryCached(query, { signal });
+  if (!queryEmbedding) {
+    return {
+      status: RETRIEVAL_STATUS.UNAVAILABLE, results: [], reason: embedFailureReason,
+    };
+  }
+
+  const scored = candidates
+    .map((doc) => ({ doc, cosineScore: cosineSimilarity(queryEmbedding, doc.embedding) }))
+    .filter((item) => item.cosineScore >= minRelevanceScore)
+    .sort((a, b) => b.cosineScore - a.cosineScore);
+
+  if (!scored.length) {
+    return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
+  }
+
+  const aliasIndex = await getAliasIndex();
+  const deduped = dropNearDuplicates(
+    scored.map((item) => ({
+      ...item.doc, __score: item.cosineScore, __debug: { cosineScore: item.cosineScore, finalScore: item.cosineScore }, text: item.doc.text,
+    })),
+    NEAR_DUPLICATE_JACCARD_THRESHOLD,
+    aliasIndex,
+  );
+
+  return {
+    status: RETRIEVAL_STATUS.SUCCESS,
+    results: deduped.slice(0, topK).map((doc) => toEvidenceShape(doc, doc.__score, doc.__debug)),
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Phase 4A.3 item 5: LOCAL_EXACT_VECTOR_HYBRID_FUSION — EVALUATION-ONLY.
+// ---------------------------------------------------------------------------
+// Same structural guarantees as localExactVectorCanary (TCS/INFY only,
+// never a production default, mandatory metadata filters first, bounded
+// candidate ceiling) — but instead of ranking by cosine alone, combines
+// the FULL-CORPUS exact cosine ranking with the same lexical/sentence
+// "primary" signal localHybridRerank uses, via Reciprocal Rank Fusion.
+// This answers "does a wider (unbounded-by-lexical-prefilter) semantic
+// candidate pool improve on the bounded hybrid rerank?" as its own,
+// separately-measured comparison arm.
+const localExactVectorHybridFusion = async ({
+  query, symbols, fiscalYears, documentTypes, topK, minRelevanceScore, signal,
+}) => {
+  if (process.env.NODE_ENV === 'production') {
+    return { status: RETRIEVAL_STATUS.UNSUPPORTED, results: [], reason: 'LOCAL_EXACT_VECTOR_HYBRID_FUSION is evaluation-only and refuses to run in a production runtime' };
+  }
+  const disallowed = symbols.filter((s) => !EXACT_VECTOR_CANARY_SYMBOLS.has(s));
+  if (disallowed.length) {
+    return { status: RETRIEVAL_STATUS.UNSUPPORTED, results: [], reason: `LOCAL_EXACT_VECTOR_HYBRID_FUSION is scoped to ${[...EXACT_VECTOR_CANARY_SYMBOLS].join('/')} only (requested: ${disallowed.join(',')})` };
+  }
+
+  const aliasIndex = await getAliasIndex();
+  const queryTokensFull = tokenize(query, aliasIndex);
+  const meaningfulQuery = meaningfulTokens(queryTokensFull);
+  if (!meaningfulQuery.length) {
+    return { status: RETRIEVAL_STATUS.EMPTY, results: [], reason: 'Query has no meaningful (non-generic) search terms' };
+  }
+
+  const filter = buildMetadataFilter({
+    symbols, fiscalYears, documentTypes, requireEmbeddingModel: LLM_CONFIG.embeddingModel, requireEmbeddingVersion: LLM_CONFIG.embeddingVersion,
+  });
+  const candidates = await ResearchDocumentChunk.find(filter).limit(EXACT_VECTOR_MAX_CANDIDATES).lean();
+  if (!candidates.length) {
+    return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
+  }
+
+  const queryFiscalYears = extractFiscalYearMentions(query);
+  const lexicallyScored = scoreCandidatesLexically({
+    candidates, meaningfulQuery, queryTokensFull, queryFiscalYears, aliasIndex,
+  });
+  if (!lexicallyScored.length) {
+    return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
+  }
+  // Index lexical scores by chunk id for O(1) lookup against the FULL
+  // (not lexically-prefiltered) candidate set below — a candidate that
+  // never cleared the meaningful-overlap gate simply has no lexical
+  // entry and is therefore never eligible, exactly like hybrid mode.
+  const lexicalById = new Map(lexicallyScored.map((item) => [String(item.doc._id), item]));
+
+  const { embedding: queryEmbedding, reason: embedFailureReason } = await embedQueryCached(query, { signal });
+  if (!queryEmbedding) {
+    return {
+      status: RETRIEVAL_STATUS.UNAVAILABLE, results: [], reason: embedFailureReason,
+    };
+  }
+
+  const enriched = candidates
+    .map((doc) => {
+      const lexicalEntry = lexicalById.get(String(doc._id));
+      if (!lexicalEntry) return null; // never eligible — failed the meaningful-overlap gate
+      const cosineScore = cosineSimilarity(queryEmbedding, doc.embedding);
+      const sentenceSupport = computeSentenceSupportScore(meaningfulQuery, doc.text, aliasIndex);
+      return {
+        doc, finalScore: lexicalEntry.finalScore, debug: lexicalEntry.debug, cosineScore, sentenceSupport,
+      };
+    })
+    .filter(Boolean);
+  if (!enriched.length) {
+    return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
+  }
+
+  const byPrimaryIndex = [...enriched.keys()].sort(
+    (a, b) => Math.max(enriched[b].finalScore, enriched[b].sentenceSupport.score)
+      - Math.max(enriched[a].finalScore, enriched[a].sentenceSupport.score),
+  );
+  const byCosineIndex = [...enriched.keys()].sort((a, b) => enriched[b].cosineScore - enriched[a].cosineScore);
+  const rrfScores = reciprocalRankFusion([byPrimaryIndex, byCosineIndex]);
+
+  const eligible = enriched
+    .map((item, index) => ({ ...item, index, rrfScore: rrfScores.get(index) || 0 }))
+    .filter((item) => item.finalScore >= minRelevanceScore * HYBRID_LEXICAL_ELIGIBILITY_FRACTION)
+    .sort((a, b) => b.rrfScore - a.rrfScore);
+  if (!eligible.length) {
+    return { status: RETRIEVAL_STATUS.EMPTY, results: [] };
+  }
+
+  const deduped = dropNearDuplicates(
+    eligible.map((item) => ({
+      ...item.doc,
+      __score: item.rrfScore,
+      __debug: {
+        ...item.debug, cosineScore: item.cosineScore, sentenceScore: item.sentenceSupport.score, supportingSentence: item.sentenceSupport.sentence, rrfScore: item.rrfScore, finalScore: item.rrfScore,
       },
       text: item.doc.text,
     })),
@@ -810,9 +1040,13 @@ export const retrieveResearchEvidence = async ({
   // score, or a cosine-similarity-like vectorSearchScore) — an explicit
   // caller override applies to whichever mode actually runs; otherwise
   // each mode gets its OWN calibrated default.
-  const effectiveMinRelevanceScore = minRelevanceScore != null
-    ? minRelevanceScore
-    : (mode === RETRIEVAL_MODES.ATLAS_VECTOR ? DEFAULT_MIN_VECTOR_RELEVANCE_SCORE : DEFAULT_MIN_RELEVANCE_SCORE);
+  const defaultForMode = () => {
+    if (minRelevanceScore != null) return minRelevanceScore;
+    if (mode === RETRIEVAL_MODES.ATLAS_VECTOR) return DEFAULT_MIN_VECTOR_RELEVANCE_SCORE;
+    if (mode === RETRIEVAL_MODES.LOCAL_EXACT_VECTOR_CANARY) return DEFAULT_MIN_EXACT_VECTOR_RELEVANCE_SCORE;
+    return DEFAULT_MIN_RELEVANCE_SCORE; // LEXICAL_FALLBACK, LOCAL_HYBRID_RERANK, LOCAL_EXACT_VECTOR_HYBRID_FUSION all gate on the lexical composite scale
+  };
+  const effectiveMinRelevanceScore = defaultForMode();
 
   try {
     let outcome;
@@ -822,6 +1056,14 @@ export const retrieveResearchEvidence = async ({
       });
     } else if (mode === RETRIEVAL_MODES.LOCAL_HYBRID_RERANK) {
       outcome = await localHybridRerank({
+        query, symbols: normalizedSymbols, fiscalYears, documentTypes, topK: boundedTopK, minRelevanceScore: effectiveMinRelevanceScore, signal,
+      });
+    } else if (mode === RETRIEVAL_MODES.LOCAL_EXACT_VECTOR_CANARY) {
+      outcome = await localExactVectorCanary({
+        query, symbols: normalizedSymbols, fiscalYears, documentTypes, topK: boundedTopK, minRelevanceScore: effectiveMinRelevanceScore, signal,
+      });
+    } else if (mode === RETRIEVAL_MODES.LOCAL_EXACT_VECTOR_HYBRID_FUSION) {
+      outcome = await localExactVectorHybridFusion({
         query, symbols: normalizedSymbols, fiscalYears, documentTypes, topK: boundedTopK, minRelevanceScore: effectiveMinRelevanceScore, signal,
       });
     } else {

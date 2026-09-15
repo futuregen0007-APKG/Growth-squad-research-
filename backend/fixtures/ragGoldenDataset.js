@@ -38,6 +38,22 @@ export const GOLDEN_DATASET = [
       sourceUrlContains: '28eec8d6-de9e-4e4d-92d8-beff066c9b25',
       pageIn: [34, 34],
       textIncludes: '19.5% to 20%',
+      // Phase 4A.3 citation adjudication: this real FY2022 Q3 earnings
+      // call transcript restates the SAME complete guidance statement
+      // ("we are increasing our annual revenue growth guidance ... to
+      // 19.5% to 20% in constant currency terms") near-verbatim on FOUR
+      // separate pages -- CEO prepared remarks (p5), a repeated pass of
+      // the same remarks (p32), the original single-page pin (p34), and
+      // a Q&A restatement ("It is 19.5% to 20%.", p52). Each page was
+      // read in full and independently, completely supports the claim
+      // with no missing context -- verified directly against the
+      // indexed chunk text, not inferred.
+      acceptableCitations: [
+        { sourceUrlContains: '28eec8d6-de9e-4e4d-92d8-beff066c9b25', pageIn: [5, 5], justification: 'CEO prepared remarks: complete guidance statement including the prior range (16.5%-17.5%) and the revised range (19.5%-20%).' },
+        { sourceUrlContains: '28eec8d6-de9e-4e4d-92d8-beff066c9b25', pageIn: [32, 32], justification: 'Near-identical restatement of the same complete guidance statement earlier in the same call.' },
+        { sourceUrlContains: '28eec8d6-de9e-4e4d-92d8-beff066c9b25', pageIn: [34, 34], justification: 'Original pin: complete guidance statement in context.' },
+        { sourceUrlContains: '28eec8d6-de9e-4e4d-92d8-beff066c9b25', pageIn: [52, 52], justification: 'Q&A restatement: "In terms of the guidance, it was very strong. It is 19.5% to 20%." -- complete and unambiguous on its own.' },
+      ],
     },
   },
   {
@@ -49,10 +65,34 @@ export const GOLDEN_DATASET = [
     fiscalYears: ['FY2023'],
     expected: {
       status: 'SUCCESS',
-      sourceUrlContains: 'e52706c3-a6e7-4cd7-bb97-f82399fb119a',
+      // Phase 4A.3 citation adjudication: the ORIGINAL pin
+      // (e52706c3-a6e7-4cd7-bb97-f82399fb119a, page 32) was verified to
+      // be FACTUALLY ERRONEOUS -- that document is a 1-page auditor
+      // cover letter with no financial figures at all (confirmed by
+      // direct inspection: documentTruncated:false,
+      // extractionCoveragePct:100, and its only chunk is a 300-character
+      // BSE/NSE filing-submission cover note). This was a fixture error
+      // from Phase 4A, not a retrieval failure -- corrected here to the
+      // real document that actually contains the quoted guidance
+      // statement, verified by direct inspection of the indexed text.
+      sourceUrlContains: '01712d63-9662-4355-8b54-0534f66678d8',
       pageIn: [32, 32],
       textIncludes: '21% to 22%',
       mustNotInclude: '19.5% to 20%',
+      // INFY's FY2023 operating-margin guidance was genuinely REVISED
+      // mid-year (from an initial 21%-23% band down to 21%-22%) -- both
+      // figures are real and both appear in real FY2023 filings, so a
+      // chunk citing "21%-23%" is topically on-target but reflects
+      // SUPERSEDED guidance, not a wrong answer to a different question.
+      // acceptableCitations below are limited to pages that state the
+      // CURRENT "21% to 22%" figure -- each read in full and verified to
+      // completely support the claim on its own.
+      acceptableCitations: [
+        { sourceUrlContains: '01712d63-9662-4355-8b54-0534f66678d8', pageIn: [32, 32], justification: 'Original (corrected) pin: "We are retaining our operating margin guidance for FY \'23 at 21% to 22%." -- complete and unambiguous.' },
+        { sourceUrlContains: '01712d63-9662-4355-8b54-0534f66678d8', pageIn: [14, 14], justification: 'Q&A restatement: analyst confirms "You guided for margins of 21%-22% band, with margins towards the lower end" -- complete restatement of the same current guidance.' },
+        { sourceUrlContains: '48580c91-e22d-4d3c-aa9f-56c255914c14', pageIn: [7, 7], justification: 'A DIFFERENT real FY2023 quarterly earnings call transcript: "We have for this year at least tightened it to 21% - 22%" -- an independent, complete restatement of the current guidance from a separate real filing.' },
+        { sourceUrlContains: '48580c91-e22d-4d3c-aa9f-56c255914c14', pageIn: [8, 8], justification: 'Same document, Q&A follow-up: "guided, at the bottom end of 21% to 22%" -- complete restatement.' },
+      ],
     },
   },
   {
@@ -182,8 +222,24 @@ export const GOLDEN_DATASET = [
     fiscalYears: ['FY2022'],
     expected: {
       status: 'SUCCESS',
+      sourceUrlContains: 'f424c104-aab6-47ba-9659-65a2ce5689e1',
+      pageIn: [4, 4],
       textIncludes: '25.3%',
       mustNotInclude: '24.5%',
+      // Phase 4A.3 citation adjudication: the unqualified query "What
+      // was the operating margin?" is genuinely ambiguous between the
+      // FULL-YEAR figure (25.3%, the original pin, page 4) and the Q4
+      // QUARTERLY figure (25%, a DIFFERENT but equally real, equally
+      // "within FY2022" statement, page 3, same document -- "Our
+      // operating margin in Q4 stayed flat sequentially at 25%."). Both
+      // were read in full and independently, completely answer the
+      // literal query without violating the fiscal-year scope -- this is
+      // a genuine annual-vs-quarterly granularity ambiguity in the
+      // query, not a retrieval defect.
+      acceptableCitations: [
+        { sourceUrlContains: 'f424c104-aab6-47ba-9659-65a2ce5689e1', pageIn: [4, 4], justification: 'Original pin: "our operating margins continue to be industry-leading at 25.3%" -- the full FY2022 figure.' },
+        { sourceUrlContains: 'f424c104-aab6-47ba-9659-65a2ce5689e1', pageIn: [3, 3], justification: 'Same document: "Our operating margin in Q4 stayed flat sequentially at 25%." -- a real, complete Q4 FY2022 figure; a literally correct answer to the unqualified query.' },
+      ],
     },
   },
   {
