@@ -142,13 +142,54 @@ const enforceAuth = (plan, userId, warnings) => {
 
 const enforceApprovedTools = (plan) => plan.filter((step) => APPROVED_TOOLS.includes(step.tool));
 
+/**
+ * groundedResearchPlan - Phase 4C Part 4/5: builds the tool plan for a
+ * turn resolveResearchScope has already decided needs the grounded
+ * corpus, REGARDLESS of what intent classifyIntent.js assigned (see
+ * researchScope.js's module note on why intent alone is unsafe to gate
+ * on). Never guesses an ambiguous company (returns []); when
+ * scope.mergeEarningsIntelligence is true (guidance/revised-guidance/
+ * promise-vs-outcome questions), also plans getEarningsTimeline
+ * alongside retrieveGroundedEvidence — executeTools.js normalizes its
+ * structured promise/outcome data into the SAME trusted evidence
+ * envelope (Part 5), so there is still only ONE grounded generation call
+ * over the combined evidence, never two competing answers (Part 6).
+ * getEarningsTimeline's own timeline/cards data is completely unaffected
+ * elsewhere (Part 3) — this only adds one more parallel call in the
+ * chat's tool plan, exactly like EARNINGS_INTELLIGENCE's existing case
+ * below already runs it.
+ */
+const groundedResearchPlan = (scope, text) => {
+  if (scope.ambiguousCompany || !scope.symbol) return [];
+  const plan = [{
+    tool: 'retrieveGroundedEvidence',
+    args: {
+      symbol: scope.symbol, fiscalYear: scope.fiscalYear, fiscalQuarter: scope.fiscalQuarter, query: text,
+    },
+  }];
+  if (scope.mergeEarningsIntelligence) {
+    plan.push({ tool: 'getEarningsTimeline', args: { symbol: scope.symbol } });
+  }
+  return plan;
+};
+
 export const planTools = async (state) => {
   if (state.errors.length) return {};
   const lastMessage = state.messages[state.messages.length - 1];
   const text = String(lastMessage?.content || '');
   const warnings = [];
 
-  let plan = deterministicPlan(state.intent, state.entities, text, state.requestedDimensions);
+  // Phase 4C: checked BEFORE the intent-keyed switch below — a "guidance"/
+  // "promise"/"document" question is routed into the grounded RAG flow
+  // independent of whatever intent label classifyIntent.js assigned (the
+  // root cause this phase fixes; see researchScope.js). Every other
+  // question (normal stock data, live price, watchlist, a genuine
+  // multi-company comparison, ...) falls through to the EXISTING,
+  // UNCHANGED deterministicPlan switch exactly as before.
+  const scope = resolveResearchScope({ text, entities: state.entities, intent: state.intent });
+  let plan = scope.needsResearchCorpus
+    ? groundedResearchPlan(scope, text)
+    : deterministicPlan(state.intent, state.entities, text, state.requestedDimensions);
   const llmCalls = [];
 
   if (plan === null) {

@@ -1,6 +1,8 @@
 import { TOOL_REGISTRY } from '../tools/toolRegistry.js';
 import { fingerprintToolCall } from '../toolFingerprint.js';
 import { hasBudgetFor } from '../requestBudget.js';
+import { mergeEarningsIntelligenceEvidence } from '../../services/EvidenceEnvelope.js';
+import { SUPPORTED_STOCKS } from '../../utils/constants.js';
 import { logger } from '../../utils/logger.js';
 
 const STATUS_LABEL = Object.freeze({
@@ -173,8 +175,29 @@ export const executeTools = async (state) => {
   // per turn (planTools.js's deterministicPlan never plans more than one
   // retrieveGroundedEvidence call), so a plain find is correct here.
   const groundedStep = toolResults.find((t) => t.tool === 'retrieveGroundedEvidence');
-  const researchEvidence = groundedStep?.researchEvidence || [];
+  let researchEvidence = groundedStep?.researchEvidence || [];
   const retrievalMode = groundedStep?.retrievalMode || null;
+
+  // Phase 4C Part 5/6: when planTools.js planned BOTH tools for the same
+  // grounded turn (guidance/revised-guidance/promise-vs-outcome questions —
+  // see researchScope.js's mergeEarningsIntelligence), Earnings
+  // Intelligence's own structured promise/outcome data is normalized and
+  // appended to the SAME trusted envelope, continuing its "E1"/"E2"
+  // numbering, rather than composed into a second, separate answer (Part 6:
+  // never two competing final answers to reconcile — there is still only
+  // one grounded generation call, over the combined evidence). Only
+  // merges on a genuinely grounded turn (groundedStep present) — a plain
+  // EARNINGS_INTELLIGENCE question with no research-corpus need never
+  // gets this treatment, so its existing timeline/cards behavior (Part 3)
+  // is completely unaffected.
+  const earningsStep = toolResults.find((t) => t.tool === 'getEarningsTimeline');
+  if (groundedStep && earningsStep?.status === 'SUCCESS' && earningsStep.data) {
+    const symbol = groundedStep.symbol || earningsStep.symbol || null;
+    const merged = mergeEarningsIntelligenceEvidence({ items: researchEvidence }, earningsStep.data, {
+      symbol, companyName: symbol ? (SUPPORTED_STOCKS[symbol]?.name || null) : null,
+    });
+    researchEvidence = merged.items;
+  }
 
   return {
     toolResults, evidence, warnings, deduplicatedToolCalls, toolCallFingerprints, providerOperationCount, researchEvidence, retrievalMode,

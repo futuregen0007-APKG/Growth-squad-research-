@@ -61,12 +61,28 @@ test('an EARNINGS_INTELLIGENCE question naming a specific period also plans getC
   ]);
 });
 
-test('an EARNINGS_INTELLIGENCE question with no financial/period signal plans only getEarningsTimeline', async () => {
+test('Phase 4C: a promise-vs-outcome question ("has TCS fulfilled its promises?") now also plans grounded RAG retrieval alongside getEarningsTimeline, deterministically', async () => {
+  // Pre-Phase-4C, this planned ONLY getEarningsTimeline. Phase 4C's
+  // deterministic research-routing policy (graph/researchScope.js)
+  // recognizes this exact phrasing as a PROMISE_VS_OUTCOME research
+  // question (independent of the EARNINGS_INTELLIGENCE intent label) and
+  // ALSO retrieves grounded document evidence, merged into the same
+  // trusted envelope as Earnings Intelligence's own structured promise/
+  // outcome data -- getEarningsTimeline itself is still planned unchanged
+  // (its existing timeline/cards data is never removed), so this is a
+  // strict addition, not a replacement.
   const result = await planTools(makeState('Has TCS fulfilled its management promises?', {
     intent: 'EARNINGS_INTELLIGENCE',
     entities: { symbols: ['TCS'], companyNames: [], periods: [], comparisonMode: false },
   }));
-  assert.deepEqual(result.toolPlan, [{ tool: 'getEarningsTimeline', args: { symbol: 'TCS' } }]);
+  assert.deepEqual(result.toolPlan, [
+    {
+      tool: 'retrieveGroundedEvidence', args: {
+        symbol: 'TCS', fiscalYear: null, fiscalQuarter: null, query: 'Has TCS fulfilled its management promises?',
+      },
+    },
+    { tool: 'getEarningsTimeline', args: { symbol: 'TCS' } },
+  ]);
 });
 
 test('a follow-up mentioning debt on an active symbol plans getCompanyFinancials', async () => {

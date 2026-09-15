@@ -6,7 +6,7 @@ import { SAFE_REASONS } from '../safeReasons.js';
 import { boundedTimeout, hasBudgetFor } from '../requestBudget.js';
 import { extractCitations } from '../citations.js';
 import { EVIDENCE_DEPENDENT_INTENTS } from '../claimValidation.js';
-import { RESEARCH_GROUNDED_INTENTS, resolveResearchScope } from '../researchScope.js';
+import { resolveResearchScope } from '../researchScope.js';
 import { generateGroundedAnswer } from '../groundedAnswer.js';
 import { logger } from '../../utils/logger.js';
 
@@ -68,16 +68,20 @@ export const composeAnswer = async (state) => {
   const lastMessage = state.messages[state.messages.length - 1];
   const text = String(lastMessage?.content || '');
 
-  // Phase 4B: grounded RAG branch. DOCUMENT_RESEARCH is the ONLY intent
-  // routed here (graph/researchScope.js's RESEARCH_GROUNDED_INTENTS) —
-  // every other intent falls through to the unchanged Phase 1-3 logic
-  // below. Company/period resolution is recomputed here via
-  // resolveResearchScope (pure, deterministic, same result planTools.js
-  // already used to decide what to retrieve) rather than threaded through
-  // state, so this node never trusts anything but state.entities/intent.
-  if (RESEARCH_GROUNDED_INTENTS.has(state.intent)) {
-    const scope = resolveResearchScope({ text, entities: state.entities, intent: state.intent });
-
+  // Phase 4C: the grounded RAG branch is gated on a deterministic TEXT
+  // classification (graph/researchScope.js's classifyResearchQuestionType),
+  // never on state.intent's exact label — classifyIntent.js's own
+  // EARNINGS_PHRASES rule absorbs most natural "guidance"/"promise"
+  // questions into EARNINGS_INTELLIGENCE before the LLM ever runs (see
+  // researchScope.js's module note), so gating on intent alone (the
+  // original Phase 4B behavior) missed the large majority of real
+  // questions. Company/period/question-type resolution is recomputed here
+  // via resolveResearchScope (pure, deterministic, the SAME function
+  // planTools.js already used to decide what to retrieve) rather than
+  // threaded through state, so this node never trusts anything but
+  // state.entities/intent/the message text.
+  const scope = resolveResearchScope({ text, entities: state.entities, intent: state.intent });
+  if (scope.needsResearchCorpus) {
     if (scope.ambiguousCompany) {
       return {
         draftAnswer: 'Which company would you like me to check the research documents for? Please name it directly (e.g. its ticker or full name) so I don\'t guess.',

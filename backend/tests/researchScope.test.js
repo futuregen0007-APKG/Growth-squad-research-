@@ -71,10 +71,19 @@ test('resolveResearchScope: more than one resolved symbol is ambiguous -- never 
 
 test('resolveResearchScope: a quarter-specific question resolves both fiscalYear and fiscalQuarter', () => {
   const scope = resolveResearchScope({
-    text: 'Q4 FY2023 revenue for TCS', entities: { symbols: ['TCS'], periods: ['Q4 FY2023'] }, intent: 'DOCUMENT_RESEARCH',
+    text: 'Q4 FY2023 guidance for TCS', entities: { symbols: ['TCS'], periods: ['Q4 FY2023'] }, intent: 'DOCUMENT_RESEARCH',
   });
+  assert.equal(scope.needsResearchCorpus, true);
   assert.equal(scope.fiscalYear, 'FY2023');
   assert.equal(scope.fiscalQuarter, 'Q4');
+});
+
+test('resolveResearchScope: a numeric Q4-results question routes to the legacy financials pipeline, not grounded RAG', () => {
+  const scope = resolveResearchScope({
+    text: 'Q4 FY2023 revenue for TCS', entities: { symbols: ['TCS'], periods: ['Q4 FY2023'] }, intent: 'EARNINGS_INTELLIGENCE',
+  });
+  assert.equal(scope.researchQuestionType, 'FINANCIAL_RESULTS');
+  assert.equal(scope.needsResearchCorpus, false);
 });
 
 test('RESEARCH_GROUNDED_INTENTS contains exactly DOCUMENT_RESEARCH', () => {

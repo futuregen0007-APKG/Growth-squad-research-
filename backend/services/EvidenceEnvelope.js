@@ -196,6 +196,150 @@ export const buildResearchEvidenceEnvelope = (retrieverResults = [], { retrieval
   };
 };
 
+// ---------------------------------------------------------------------------
+// Phase 4C Part 5: normalizing Earnings Intelligence's own structured
+// promise/outcome evidence into the SAME trusted envelope shape retrieved
+// document chunks use, so a single grounded generation+verification call
+// can cite either kind of evidence uniformly (Part 6: never two competing
+// final answers).
+// ---------------------------------------------------------------------------
+const MAX_MERGED_EARNINGS_ITEMS = 3;
+
+// Local copy of graph/researchScope.js's splitFiscalPeriod parsing rule
+// (deliberately NOT imported — services/ never depends on graph/ in this
+// codebase's existing layering, only the reverse) for the same "Q2 FY2026"
+// / "FY2026" period strings ManagementPromiseService's `promise.period` /
+// `promise.outcome.actualPeriod` fields use. Returns nulls (never a guess)
+// for a free-text period like "GOING_FORWARD" that doesn't match either
+// shape — the verifier's period checks already treat a null fiscalYear/
+// fiscalQuarter as "nothing to compare," never a false mismatch.
+const EI_FISCAL_QUARTER_PATTERN = /^Q([1-4])\s+FY(\d{4})$/;
+const EI_FISCAL_YEAR_ONLY_PATTERN = /^FY(\d{4})$/;
+const splitFiscalPeriod = (period) => {
+  if (!period) return { fiscalYear: null, fiscalQuarter: null };
+  const withQuarter = EI_FISCAL_QUARTER_PATTERN.exec(period);
+  if (withQuarter) return { fiscalYear: `FY${withQuarter[2]}`, fiscalQuarter: `Q${withQuarter[1]}` };
+  const yearOnly = EI_FISCAL_YEAR_ONLY_PATTERN.exec(period);
+  if (yearOnly) return { fiscalYear: `FY${yearOnly[1]}`, fiscalQuarter: null };
+  return { fiscalYear: null, fiscalQuarter: null };
+};
+
+// Statuses that mean "not yet evaluated" — mirrors toolRegistry.js's
+// buildPromiseEvidence: a still-pending promise has no real outcome to
+// cite yet, only the original guidance/forecast itself.
+const UNEVALUATED_PROMISE_STATUSES = new Set(['PENDING', 'INSUFFICIENT_EVIDENCE']);
+
+/**
+ * buildEarningsIntelligenceEnvelopeItems - converts
+ * getEarningsTimeline's toolResult.data.promises (see
+ * services/ManagementPromiseService.js's getCompanyTimeline — the
+ * normalized `{statement, period, status, evidence:{...}, outcome:{...}}`
+ * shape, not the raw Mongo document) into envelope-shaped records, honestly
+ * labeled with their own distinct retrievalMode (never claims to be a
+ * vector/hybrid-retrieved document chunk). Builds up to two records per
+ * promise, exactly like toolRegistry.js's buildPromiseEvidence: the
+ * original guidance/forecast statement (documentType MANAGEMENT_PROMISE),
+ * and — ONLY when the promise has genuinely been evaluated and has a real
+ * outcome source — what actually happened (documentType PROMISE_OUTCOME).
+ * A promise missing real provenance (sourceUrl/excerpt) is simply never
+ * built, exactly like a document chunk with no real source never is.
+ */
+export const buildEarningsIntelligenceEnvelopeItems = (timeline, { symbol, companyName = null } = {}) => {
+  const items = [];
+  for (const promise of (timeline?.promises || [])) {
+    const guidancePeriod = promise.period || null;
+    if (promise.evidence?.sourceUrl && promise.evidence?.excerpt) {
+      const { fiscalYear, fiscalQuarter } = splitFiscalPeriod(guidancePeriod);
+      items.push({
+        symbol, companyName, fiscalYear, fiscalQuarter,
+        registryDocumentId: promise.id || null,
+        chunkId: `earnings-intelligence:${promise.id || promise.statement}:guidance`,
+        title: promise.evidence.documentTitle || promise.statement || 'Management guidance statement',
+        documentType: 'MANAGEMENT_PROMISE',
+        sourceAuthority: promise.evidence.sourceName || 'EARNINGS_INTELLIGENCE',
+        publishedAt: promise.evidence.publicationDate || null,
+        sourceUrl: promise.evidence.sourceUrl,
+        pageStart: Number.isInteger(promise.evidence.page) ? promise.evidence.page : null,
+        pageEnd: Number.isInteger(promise.evidence.page) ? promise.evidence.page : null,
+        text: promise.evidence.excerpt,
+        score: null,
+      });
+    }
+
+    const isEvaluated = promise.status && !UNEVALUATED_PROMISE_STATUSES.has(promise.status);
+    const outcomeExcerpt = promise.outcome?.excerpt;
+    if (isEvaluated && promise.outcome?.sourceUrl && outcomeExcerpt) {
+      const outcomePeriod = promise.outcome?.actualPeriod || guidancePeriod;
+      const { fiscalYear, fiscalQuarter } = splitFiscalPeriod(outcomePeriod);
+      items.push({
+        symbol, companyName, fiscalYear, fiscalQuarter,
+        registryDocumentId: promise.id || null,
+        chunkId: `earnings-intelligence:${promise.id || promise.statement}:outcome`,
+        title: `${symbol || ''} promise outcome — ${promise.status}`.trim(),
+        documentType: 'PROMISE_OUTCOME',
+        sourceAuthority: promise.outcome.provider || 'EARNINGS_INTELLIGENCE',
+        publishedAt: promise.outcome.sourceDate || null,
+        sourceUrl: promise.outcome.sourceUrl,
+        pageStart: null,
+        pageEnd: null,
+        text: outcomeExcerpt,
+        score: null,
+      });
+    }
+  }
+  return items;
+};
+
+/**
+ * mergeEarningsIntelligenceEvidence - Part 5/6: appends normalized
+ * Earnings Intelligence items to an ALREADY-BUILT document envelope
+ * (buildResearchEvidenceEnvelope's return value), continuing the SAME
+ * "E1"/"E2" numbering and per-item retrievalRank so the verifier and the
+ * final citation builder treat both kinds of evidence identically —
+ * there is still exactly ONE combined envelope, ONE generation call, ONE
+ * final answer (Part 6: never two competing answers to reconcile). Its
+ * own item cap (MAX_MERGED_EARNINGS_ITEMS) is independent of the document
+ * envelope's own budget, so a company with a long promise history never
+ * crowds out real document evidence that was already selected.
+ */
+export const mergeEarningsIntelligenceEvidence = (envelope, timeline, { symbol, companyName = null } = {}) => {
+  const earningsItems = buildEarningsIntelligenceEnvelopeItems(timeline, { symbol, companyName }).slice(0, MAX_MERGED_EARNINGS_ITEMS);
+  if (!earningsItems.length) return envelope;
+
+  const startIndex = envelope.items.length;
+  const mergedItems = earningsItems.map((item, i) => ({
+    evidenceId: `E${startIndex + i + 1}`,
+    symbol: item.symbol,
+    companyName: item.companyName,
+    fiscalYear: item.fiscalYear,
+    fiscalQuarter: item.fiscalQuarter,
+    documentId: item.registryDocumentId,
+    chunkId: item.chunkId,
+    documentTitle: item.title,
+    documentType: item.documentType,
+    sourceAuthority: item.sourceAuthority,
+    publishedAt: item.publishedAt,
+    sourceUrl: item.sourceUrl,
+    pageStart: item.pageStart,
+    pageEnd: item.pageEnd,
+    text: item.text,
+    retrievalRank: startIndex + i + 1,
+    // Honestly its OWN source label — never claims to be a
+    // vector/hybrid-retrieved document chunk (Part 4: "clearly delimit
+    // each evidence block" applies equally to provenance labeling).
+    retrievalMode: 'EARNINGS_INTELLIGENCE_MERGE',
+    untrustedContent: true,
+    injectionSignal: detectInjectionSignals(item.text),
+  }));
+
+  return {
+    ...envelope,
+    items: [...envelope.items, ...mergedItems],
+    mergedEarningsIntelligenceCount: mergedItems.length,
+  };
+};
+
 export default {
   detectInjectionSignals, toUntrustedEvidenceEnvelope, toUntrustedEvidenceEnvelopes, buildResearchEvidenceEnvelope,
+  buildEarningsIntelligenceEnvelopeItems, mergeEarningsIntelligenceEvidence,
 };
