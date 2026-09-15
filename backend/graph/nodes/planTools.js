@@ -4,6 +4,7 @@ import { toolPlanPrompt } from '../prompts/index.js';
 import { AUTH_REQUIRED_TOOLS } from '../tools/toolRegistry.js';
 import { DEFAULT_COMPARISON_DIMENSIONS } from '../dimensions.js';
 import { invokeRoutingModel } from '../llmInvoke.js';
+import { resolveResearchScope } from '../researchScope.js';
 import { logger } from '../../utils/logger.js';
 
 export const MAX_TOOL_CALLS_PER_REQUEST = 4;
@@ -54,8 +55,25 @@ const deterministicPlan = (intent, entities, message, requestedDimensions) => {
     case 'NEWS_RESEARCH':
       return primary ? [{ tool: 'getCompanyNews', args: { symbol: primary } }] : null;
 
-    case 'DOCUMENT_RESEARCH':
-      return primary ? [{ tool: 'searchResearchDocuments', args: { symbol: primary } }] : null;
+    // Phase 4B: DOCUMENT_RESEARCH is grounded RAG's own intent — routed
+    // through resolveResearchScope (graph/researchScope.js, pure/
+    // deterministic, never an LLM call) rather than the LLM-planning
+    // fallback below, exactly so "never guess an ambiguous company" is
+    // enforced HERE rather than left to a model's discretion. An
+    // ambiguous/unresolved company returns an EMPTY plan (never a
+    // substitute company) — composeAnswer.js's grounded branch recomputes
+    // the same scope and responds with a clarification request instead of
+    // fabricating an answer with no evidence.
+    case 'DOCUMENT_RESEARCH': {
+      const scope = resolveResearchScope({ text: message, entities, intent });
+      if (scope.ambiguousCompany || !scope.symbol) return [];
+      return [{
+        tool: 'retrieveGroundedEvidence',
+        args: {
+          symbol: scope.symbol, fiscalYear: scope.fiscalYear, fiscalQuarter: scope.fiscalQuarter, query: message,
+        },
+      }];
+    }
 
     // EARNINGS_INTELLIGENCE queries a specific reporting period ("Q2 FY26
     // results") almost always also want the actual reported numbers, not

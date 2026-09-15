@@ -181,6 +181,16 @@ export const sendMessage = async (req, res, next) => {
       citations: finalState.citations || [],
       warnings: finalState.warnings || [],
       intent: finalState.intent,
+      // Phase 4B Part 9: additive-only fields — absent/null for every
+      // non-grounded turn (finalState.groundingStatus/coverage/
+      // retrievalMode stay at their state.js defaults of null unless the
+      // grounded branch actually ran), so an existing client reading only
+      // answer/citations/warnings/intent is completely unaffected.
+      claims: finalState.groundedClaims || [],
+      groundingStatus: finalState.groundingStatus || null,
+      coverage: finalState.coverage || null,
+      retrievalMode: finalState.retrievalMode || null,
+      repairAttempted: Boolean(finalState.repairAttempted),
     });
     res.end();
   } catch (error) {

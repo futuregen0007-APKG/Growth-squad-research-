@@ -3,6 +3,7 @@ import { mapOpenAIError } from '../../llm/errors.js';
 import { repairPrompt } from '../prompts/index.js';
 import { formatMissingEvidenceForPrompt } from '../evidenceCoverage.js';
 import { boundedTimeout, hasBudgetFor } from '../requestBudget.js';
+import { repairGroundedAnswerNode } from '../groundedAnswer.js';
 import { logger } from '../../utils/logger.js';
 
 const MIN_REPAIR_BUDGET_MS = 800;
@@ -23,6 +24,14 @@ const MIN_REPAIR_BUDGET_MS = 800;
  * publishing it or trying again.
  */
 export const repairAnswer = async (state) => {
+  // Phase 4B: grounded RAG branch — see graph/groundedAnswer.js's own
+  // module note. repairGroundedAnswerNode increments repairCount itself,
+  // exactly like the legacy path below, so routeAfterValidation's cap
+  // works unchanged either way.
+  if (state.groundedAnswer) {
+    return repairGroundedAnswerNode(state);
+  }
+
   const repairCount = (state.repairCount || 0) + 1;
 
   if (!OpenAIClientFactory.isConfigured() || state.aborted?.() || !hasBudgetFor(state.deadlineAt, MIN_REPAIR_BUDGET_MS)) {

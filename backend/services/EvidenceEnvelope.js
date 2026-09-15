@@ -82,4 +82,120 @@ export const toUntrustedEvidenceEnvelope = (result) => ({
 /** Batch form — the shape a future Phase 4B evidence-building step actually calls. */
 export const toUntrustedEvidenceEnvelopes = (results) => (results || []).map(toUntrustedEvidenceEnvelope);
 
-export default { detectInjectionSignals, toUntrustedEvidenceEnvelope, toUntrustedEvidenceEnvelopes };
+// Phase 4B Part 4: the real evidence envelope the grounded-answer flow
+// consumes. Distinct from toUntrustedEvidenceEnvelope above (which predates
+// this phase and is kept only for backward compatibility with its own
+// tests) — this builder produces stable "E1"/"E2" ids, the FULL field set
+// Part 4 specifies, and enforces the envelope's size/dedup/ranking rules
+// in one place rather than leaving each caller to reimplement them.
+const MAX_EVIDENCE_ITEMS = 6;
+// A generous per-turn character budget across ALL included excerpts —
+// keeps the grounded-generation prompt bounded regardless of how many
+// long chunks the retriever returns, without arbitrarily truncating any
+// single chunk's text mid-sentence (an item is either included whole or
+// excluded whole, so provenance/text integrity is never partially broken).
+const MAX_TOTAL_TEXT_CHARS = 12000;
+
+/**
+ * dedupeByChunkId - equivalent-chunk dedup (Part 4: "dedupe equivalent
+ * chunks"). Two results can legitimately share a chunkId when the same
+ * underlying chunk is returned via more than one retrieval pass (e.g. a
+ * hybrid mode's lexical + semantic candidate pools overlapping) — the
+ * FIRST occurrence wins, since retriever results already arrive ranked
+ * best-first.
+ */
+const dedupeByChunkId = (results) => {
+  const seen = new Set();
+  const out = [];
+  for (const r of results) {
+    const key = r?.chunkId;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out;
+};
+
+/**
+ * deterministicRank - stable ordering: descending retriever score, then a
+ * plain lexical tie-break on chunkId so two equally-scored items always
+ * land in the SAME order across runs (mirrors the Phase 4A.4 RRF
+ * tie-breaking fix's own reasoning: never leave a tie to accidental
+ * insertion order).
+ */
+const deterministicRank = (results) => [...results].sort((a, b) => {
+  const scoreA = Number.isFinite(a?.score) ? a.score : -Infinity;
+  const scoreB = Number.isFinite(b?.score) ? b.score : -Infinity;
+  if (scoreB !== scoreA) return scoreB - scoreA;
+  return String(a?.chunkId || '').localeCompare(String(b?.chunkId || ''));
+});
+
+/**
+ * buildResearchEvidenceEnvelope - the ONE place a batch of
+ * ResearchRetrieverService results is turned into the trusted, numbered
+ * ("E1", "E2", ...) evidence envelope the grounded generator, verifier,
+ * and API/citation layer all consume. Every structural field is copied
+ * straight from the retriever's own typed result — text is never parsed
+ * for metadata (same discipline as toUntrustedEvidenceEnvelope above), and
+ * `embedding` is never read or forwarded (the retriever's own
+ * toEvidenceShape never even includes it — see ResearchRetrieverService.js).
+ *
+ * companyName is resolved from SUPPORTED_STOCKS (the same single source of
+ * truth extractEntities.js uses) rather than re-derived from document
+ * text — a symbol with no directory entry gets `companyName: null` rather
+ * than a guess.
+ */
+export const buildResearchEvidenceEnvelope = (retrieverResults = [], { retrievalMode = null, companyNames = {} } = {}) => {
+  const deduped = dedupeByChunkId(retrieverResults || []);
+  const ranked = deterministicRank(deduped);
+
+  const included = [];
+  let excludedByBudget = 0;
+  let totalChars = 0;
+  ranked.forEach((r) => {
+    if (included.length >= MAX_EVIDENCE_ITEMS) { excludedByBudget += 1; return; }
+    const textLength = String(r.text || '').length;
+    // The FIRST item is always included even if it alone exceeds the
+    // budget (a real answer needs at least one piece of evidence to work
+    // with) — every subsequent item still respects the running total.
+    if (included.length > 0 && totalChars + textLength > MAX_TOTAL_TEXT_CHARS) { excludedByBudget += 1; return; }
+    totalChars += textLength;
+    included.push(r);
+  });
+
+  const items = included.map((r, index) => ({
+    evidenceId: `E${index + 1}`,
+    symbol: r.symbol || null,
+    companyName: companyNames[r.symbol] || null,
+    fiscalYear: r.fiscalYear || null,
+    fiscalQuarter: r.fiscalQuarter || null,
+    documentId: r.registryDocumentId || null,
+    chunkId: r.chunkId,
+    documentTitle: r.title || null,
+    documentType: r.documentType || null,
+    sourceAuthority: r.sourceAuthority || null,
+    publishedAt: r.publishedAt || null,
+    sourceUrl: r.sourceUrl || null,
+    pageStart: Number.isInteger(r.pageStart) ? r.pageStart : null,
+    pageEnd: Number.isInteger(r.pageEnd) ? r.pageEnd : null,
+    text: r.text,
+    retrievalRank: index + 1,
+    retrievalMode,
+    untrustedContent: true,
+    // Diagnostic only, exactly like toUntrustedEvidenceEnvelope's own
+    // injectionSignal above — never consulted to include/exclude/alter
+    // this evidence.
+    injectionSignal: detectInjectionSignals(r.text),
+  }));
+
+  return {
+    items,
+    retrievalMode,
+    totalRetrieved: (retrieverResults || []).length,
+    excludedByBudgetCount: excludedByBudget,
+  };
+};
+
+export default {
+  detectInjectionSignals, toUntrustedEvidenceEnvelope, toUntrustedEvidenceEnvelopes, buildResearchEvidenceEnvelope,
+};

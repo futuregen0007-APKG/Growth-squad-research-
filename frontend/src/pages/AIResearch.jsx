@@ -68,7 +68,16 @@ export default function AIResearch() {
         setMessages((prev) => [
           ...prev,
           { role: 'user', content: text, createdAt: new Date().toISOString() },
-          { role: 'assistant', content: result.content || '', citations: result.citations || [], toolActivity: result.toolActivity || [], createdAt: new Date().toISOString(), status: result.aborted ? 'ABORTED' : 'COMPLETE' },
+          {
+            role: 'assistant',
+            content: result.content || '',
+            citations: result.citations || [],
+            toolActivity: result.toolActivity || [],
+            createdAt: new Date().toISOString(),
+            status: result.aborted ? 'ABORTED' : 'COMPLETE',
+            groundingStatus: result.groundingStatus || null,
+            coverage: result.coverage || null,
+          },
         ]);
         loadThreads(); // title may have been set from the first message
       })

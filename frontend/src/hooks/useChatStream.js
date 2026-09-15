@@ -43,7 +43,20 @@ export const useChatStream = ({ threadId, onThreadCreated } = {}) => {
         }
         if (event.type === 'message.completed') {
           setDraft((prev) => ({ ...(prev || { toolActivity: [] }), content: event.answer ?? prev?.content ?? '' }));
-          settleResolve({ content: event.answer, citations: event.citations || [], warnings: event.warnings || [], intent: event.intent });
+          settleResolve({
+            content: event.answer,
+            citations: event.citations || [],
+            warnings: event.warnings || [],
+            intent: event.intent,
+            // Phase 4B: present only on a grounded research turn — every
+            // other message keeps these as undefined/null, same as the
+            // server's own additive-only contract (see ChatController.js).
+            claims: event.claims || [],
+            groundingStatus: event.groundingStatus || null,
+            coverage: event.coverage || null,
+            retrievalMode: event.retrievalMode || null,
+            repairAttempted: Boolean(event.repairAttempted),
+          });
           return;
         }
         if (event.type === 'message.error') {

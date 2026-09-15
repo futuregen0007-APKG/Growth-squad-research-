@@ -1,4 +1,5 @@
 import { evidenceForPrompt } from '../evidence.js';
+import { RESEARCH_GROUNDED_INTENTS } from '../researchScope.js';
 
 const EVIDENCE_DEPENDENT_INTENTS = new Set([
   'LIVE_MARKET_DATA', 'COMPANY_RESEARCH', 'EARNINGS_INTELLIGENCE',
@@ -23,7 +24,15 @@ export const validateEvidence = async (state) => {
   });
 
   const warnings = [];
-  if (EVIDENCE_DEPENDENT_INTENTS.has(state.intent) && state.toolPlan.length && !deduped.length) {
+  // Phase 4B: the grounded RAG flow's real evidence lives in
+  // state.researchEvidence, never the legacy state.evidence array (see
+  // toolRegistry.js's retrieveGroundedEvidence) — this check would
+  // otherwise misfire a false "no evidence found" warning on every
+  // successful grounded answer (confirmed live). Its own zero-evidence
+  // case is already handled honestly by composeAnswer.js's grounded
+  // branch (ABSTAINED), which needs no warning from here.
+  if (!RESEARCH_GROUNDED_INTENTS.has(state.intent)
+    && EVIDENCE_DEPENDENT_INTENTS.has(state.intent) && state.toolPlan.length && !deduped.length) {
     warnings.push('No verifiable evidence was found for this request — say so explicitly rather than guessing.');
   }
 

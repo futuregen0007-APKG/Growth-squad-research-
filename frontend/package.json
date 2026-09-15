@@ -70,7 +70,10 @@
   },
   "jest": {
     "moduleNameMapper": {
-      "^@/(.*)$": "<rootDir>/src/$1"
+      "^@/(.*)$": "<rootDir>/src/$1",
+      "^react-markdown$": "<rootDir>/src/__mocks__/react-markdown.js",
+      "^remark-gfm$": "<rootDir>/src/__mocks__/emptyModule.js",
+      "^remark-breaks$": "<rootDir>/src/__mocks__/emptyModule.js"
     }
   },
   "browserslist": {

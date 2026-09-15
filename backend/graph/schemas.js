@@ -50,6 +50,12 @@ export const APPROVED_TOOLS = Object.freeze([
   'getWatchlist',
   'getPortfolio',
   'compareStocks',
+  // Phase 4B: grounded RAG retrieval — wraps
+  // services/ResearchRetrieverService.js's retrieveResearchEvidence
+  // directly (provider-independent per RAG_RETRIEVAL_MODE), distinct from
+  // the legacy searchResearchDocuments/collectDocuments path above, which
+  // stays untouched. See graph/tools/toolRegistry.js.
+  'retrieveGroundedEvidence',
 ]);
 
 // OpenAI's strict Structured Outputs mode (zodResponseFormat defaults to
@@ -68,6 +74,14 @@ export const ToolArgsSchema = z.object({
   // extractEntities resolves deterministically, so the LLM planning
   // fallback path can never invent a dimension outside it.
   dimensions: z.array(z.enum(REQUESTED_DIMENSIONS)).nullable(),
+  // Phase 4B: retrieveGroundedEvidence's own args. In practice this tool
+  // is always planned deterministically (see planTools.js's DOCUMENT_
+  // RESEARCH case, which never delegates company/period resolution to the
+  // LLM) — these fields exist mainly so the LLM-planning fallback schema
+  // stays complete if that path is ever reached for this tool.
+  fiscalYear: z.string().nullable(),
+  fiscalQuarter: z.string().nullable(),
+  query: z.string().nullable(),
 });
 
 export const ToolPlanSchema = z.object({
@@ -132,6 +146,63 @@ export const VALIDATION_STATUSES = Object.freeze([
   'SKIPPED_GENERAL_EDUCATION',
 ]);
 
+// Phase 4B Part 5: the grounded-answer structured-output shape. The model
+// selects ONLY existing evidence ids from the numbered envelope it was
+// given — it never constructs citation metadata (sourceUrl/page/etc)
+// itself; the server builds the final citation objects from the trusted
+// envelope by looking up each claim's evidenceIds (see
+// nodes/publishFinalAnswer.js's grounded branch). `verificationStatus` is
+// deliberately NOT part of this schema — that field is computed entirely
+// server-side by graph/groundedVerification.js AFTER generation, never
+// self-reported by the model (Part 6: "not relying on the LLM to verify
+// itself").
+export const GROUNDED_CLAIM_TYPES = Object.freeze([
+  'historical_fact', 'management_guidance', 'revised_guidance', 'outcome', 'interpretation',
+]);
+
+export const GROUNDING_STATUSES = Object.freeze(['grounded', 'partially_grounded', 'insufficient_evidence']);
+
+export const GroundedAnswerSchema = z.object({
+  answer: z.string().max(4000),
+  claims: z.array(z.object({
+    claimId: z.string().max(20),
+    text: z.string().max(1000),
+    claimType: z.enum(GROUNDED_CLAIM_TYPES),
+    // Stable "E1"/"E2" ids from the numbered envelope the model was
+    // given — never a raw evidenceId string the model invents.
+    evidenceIds: z.array(z.string().max(10)).max(10),
+  })).max(20),
+  // The model's OWN self-assessment — informational only; the server
+  // recomputes the trusted groundingStatus from final verified claims
+  // (see nodes/validateFinalAnswer.js's grounded branch) and never
+  // publishes this field directly.
+  groundingStatus: z.enum(GROUNDING_STATUSES),
+  coverage: z.object({
+    requestedSymbol: z.string().nullable(),
+    requestedPeriod: z.string().nullable(),
+    evidenceCount: z.number().int().min(0),
+    limitations: z.array(z.string().max(200)).max(10),
+  }),
+});
+
+// Phase 4B Part 6: the deterministic grounded-claim verifier's verdict
+// enum — see graph/groundedVerification.js for what sets each one. Kept
+// separate from CLAIM_VERDICTS above (the Phase 3 legacy verifier's own
+// enum) since the two pipelines check fundamentally different things
+// (free-text [N] markers vs. structured evidenceIds + fiscal-period/
+// numeric normalization).
+export const GROUNDED_VERDICTS = Object.freeze([
+  'VERIFIED',
+  'UNSUPPORTED_CLAIM',
+  'UNKNOWN_EVIDENCE_ID',
+  'COMPANY_MISMATCH',
+  'PERIOD_MISMATCH',
+  'NUMERIC_MISMATCH',
+  'PROVENANCE_MISMATCH',
+  'SUPERSEDED_GUIDANCE',
+  'UNCITED_MATERIAL_CLAIM',
+]);
+
 export const ConversationSummarySchema = z.object({
   summary: z.string().max(1500),
   activeSymbols: z.array(z.string()).max(15),
@@ -166,4 +237,8 @@ export default {
   VALIDATION_STATUSES,
   ConversationSummarySchema,
   ExplicitPreferenceSchema,
+  GROUNDED_CLAIM_TYPES,
+  GROUNDING_STATUSES,
+  GroundedAnswerSchema,
+  GROUNDED_VERDICTS,
 };

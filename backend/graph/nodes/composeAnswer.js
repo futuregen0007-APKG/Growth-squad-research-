@@ -6,6 +6,8 @@ import { SAFE_REASONS } from '../safeReasons.js';
 import { boundedTimeout, hasBudgetFor } from '../requestBudget.js';
 import { extractCitations } from '../citations.js';
 import { EVIDENCE_DEPENDENT_INTENTS } from '../claimValidation.js';
+import { RESEARCH_GROUNDED_INTENTS, resolveResearchScope } from '../researchScope.js';
+import { generateGroundedAnswer } from '../groundedAnswer.js';
 import { logger } from '../../utils/logger.js';
 
 // Re-exported unchanged for backward compatibility — extractCitations now
@@ -65,6 +67,34 @@ export const composeAnswer = async (state) => {
 
   const lastMessage = state.messages[state.messages.length - 1];
   const text = String(lastMessage?.content || '');
+
+  // Phase 4B: grounded RAG branch. DOCUMENT_RESEARCH is the ONLY intent
+  // routed here (graph/researchScope.js's RESEARCH_GROUNDED_INTENTS) —
+  // every other intent falls through to the unchanged Phase 1-3 logic
+  // below. Company/period resolution is recomputed here via
+  // resolveResearchScope (pure, deterministic, same result planTools.js
+  // already used to decide what to retrieve) rather than threaded through
+  // state, so this node never trusts anything but state.entities/intent.
+  if (RESEARCH_GROUNDED_INTENTS.has(state.intent)) {
+    const scope = resolveResearchScope({ text, entities: state.entities, intent: state.intent });
+
+    if (scope.ambiguousCompany) {
+      return {
+        draftAnswer: 'Which company would you like me to check the research documents for? Please name it directly (e.g. its ticker or full name) so I don\'t guess.',
+        validationStatus: 'SKIPPED_GENERAL_EDUCATION',
+      };
+    }
+
+    // Mirrors the Phase 4A zero-evidence fast path below: retrieval
+    // genuinely ran (planTools.js planned it) but came back with nothing
+    // usable — never spend a generation call on a draft that would only
+    // ever be rejected for having nothing to cite.
+    if (!state.researchEvidence?.length) {
+      return { validationStatus: 'ABSTAINED' };
+    }
+
+    return generateGroundedAnswer(state, scope);
+  }
 
   // Phase 2 bug found via live evaluation: this used to check
   // `!state.toolPlan.length` to mean "planTools decided no tool was

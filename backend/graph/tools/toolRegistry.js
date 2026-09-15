@@ -40,6 +40,9 @@ import ManagementPromise from '../../models/ManagementPromise.js';
 import Watchlist from '../../models/Watchlist.js';
 import PortfolioHolding from '../../models/PortfolioHolding.js';
 import { buildEvidenceRecord } from '../evidence.js';
+import { buildResearchEvidenceEnvelope } from '../../services/EvidenceEnvelope.js';
+import { retrieveResearchEvidence, RETRIEVAL_MODES, RETRIEVAL_STATUS } from '../../services/ResearchRetrieverService.js';
+import { SUPPORTED_STOCKS } from '../../utils/constants.js';
 import { DEFAULT_COMPARISON_DIMENSIONS } from '../dimensions.js';
 import { fingerprintToolCall } from '../toolFingerprint.js';
 import { SAFE_REASONS, classifyErrorCode } from '../safeReasons.js';
@@ -604,6 +607,76 @@ export const searchResearchDocuments = async ({ symbol }, context = {}) => {
 };
 
 // ---------------------------------------------------------------------------
+// retrieveGroundedEvidence — Phase 4B Part 2: the ONLY grounded-RAG entry
+// point, and the only tool this project has that calls
+// services/ResearchRetrieverService.js's retrieveResearchEvidence directly
+// (searchResearchDocuments above stays on the legacy collectDocuments
+// path, untouched, so Phase 1-3 behavior and its tests are never
+// disturbed). Deliberately its OWN tool rather than a second mode of
+// searchResearchDocuments — the two return fundamentally different
+// shapes (a trusted, numbered evidence ENVELOPE here vs. loose
+// DOCUMENT_EXCERPT evidence records there).
+//
+// RAG_RETRIEVAL_MODE (env, default LOCAL_HYBRID_RERANK per the Phase 4B
+// kickoff instruction) is read fresh on every call — never cached at
+// module load — so a test/deployment can override it without a process
+// restart; this is also what keeps retrieval provider-independent: this
+// tool has zero knowledge of which underlying mode actually ran beyond
+// what retrieveResearchEvidence reports back in retrievalMode.
+// ---------------------------------------------------------------------------
+const resolveRagRetrievalMode = () => process.env.RAG_RETRIEVAL_MODE || RETRIEVAL_MODES.LOCAL_HYBRID_RERANK;
+
+const RAG_TOP_K = 6;
+
+const toolStatusForRetrieval = (retrievalStatus, hasItems) => {
+  if (retrievalStatus === RETRIEVAL_STATUS.UNSUPPORTED) return TOOL_STATUS.UNSUPPORTED;
+  if (retrievalStatus === RETRIEVAL_STATUS.UNAVAILABLE) return TOOL_STATUS.UNAVAILABLE;
+  if (retrievalStatus === RETRIEVAL_STATUS.SUCCESS && hasItems) return TOOL_STATUS.SUCCESS;
+  return TOOL_STATUS.EMPTY;
+};
+
+export const retrieveGroundedEvidence = async ({
+  symbol, fiscalYear, fiscalQuarter, query,
+} = {}, context = {}) => {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return result('retrieveGroundedEvidence', TOOL_STATUS.ERROR, null, [], 'A symbol is required');
+
+  const mode = resolveRagRetrievalMode();
+  const effectiveQuery = String(query || `${symbol} ${fiscalQuarter || ''} ${fiscalYear || ''} guidance results`).trim();
+
+  try {
+    const outcome = await retrieveResearchEvidence({
+      query: effectiveQuery,
+      symbols: [normalized],
+      fiscalYears: fiscalYear ? [fiscalYear] : [],
+      topK: RAG_TOP_K,
+      mode,
+      deadlineAt: context.deadlineAt,
+      signal: context.signal,
+    });
+
+    const envelope = buildResearchEvidenceEnvelope(outcome.results, {
+      retrievalMode: outcome.retrievalMode || mode,
+      companyNames: { [normalized]: SUPPORTED_STOCKS[normalized]?.name || null },
+    });
+
+    const status = toolStatusForRetrieval(outcome.status, envelope.items.length > 0);
+    const warning = status === TOOL_STATUS.SUCCESS ? null
+      : status === TOOL_STATUS.UNSUPPORTED ? SAFE_REASONS.CAPABILITY_NOT_SUPPORTED
+        : SAFE_REASONS.EVIDENCE_SOURCE_UNAVAILABLE;
+
+    return result(
+      'retrieveGroundedEvidence', status, envelope.items, [], warning, null,
+      { researchEvidence: envelope.items, retrievalMode: envelope.retrievalMode },
+    );
+  } catch (error) {
+    if (error.code === 'CANCELLED') return result('retrieveGroundedEvidence', TOOL_STATUS.ERROR, null, [], 'Request was cancelled.', 'CANCELLED', { retrievalMode: mode });
+    logger.warn(`[Tool] retrieveGroundedEvidence(${normalized}) failed: ${error.message}`);
+    return result('retrieveGroundedEvidence', TOOL_STATUS.UNAVAILABLE, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, null, { retrievalMode: mode });
+  }
+};
+
+// ---------------------------------------------------------------------------
 // getWatchlist / getPortfolio — require userId (enforced by the caller;
 // see graph/nodes/planTools.js, which strips these tools from the plan for
 // unauthenticated requests before this code ever runs).
@@ -791,6 +864,7 @@ export const TOOL_REGISTRY = {
   getWatchlist,
   getPortfolio,
   compareStocks,
+  retrieveGroundedEvidence,
 };
 
 export const AUTH_REQUIRED_TOOLS = Object.freeze(['getWatchlist', 'getPortfolio']);

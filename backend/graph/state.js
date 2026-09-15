@@ -231,6 +231,44 @@ export const GraphState = Annotation.Root({
   citations: Annotation({ reducer: replace, default: () => [] }),
   tokenUsage: Annotation({ reducer: replace, default: () => null }),
 
+  // Phase 4B: grounded RAG answer generation. `researchEvidence` is the
+  // trusted evidence envelope built by retrieveGroundedEvidence/
+  // buildResearchEvidenceEnvelope (see services/EvidenceEnvelope.js) —
+  // "E1"/"E2"-style stable ids, kept in a SEPARATE field from the legacy
+  // `evidence` array above (different shape, different provenance
+  // discipline) so the Phase 1-3 pipeline is never touched. Populated once
+  // per turn by executeTools (no cross-round accumulation like
+  // mergeEvidence — Phase 4B's bounded repair never re-retrieves), so
+  // `replace` is correct.
+  researchEvidence: Annotation({ reducer: replace, default: () => [] }),
+  // The actual ResearchRetrieverService mode used this turn (e.g.
+  // 'LOCAL_HYBRID_RERANK') — always the REAL mode the retriever reports,
+  // never the requested one if it silently fell back (see
+  // ResearchRetrieverService.js's retrievalMode field). Exposed in the API
+  // response (Part 9) so a client can tell dev-mode retrieval apart from a
+  // future Atlas mode without guessing from env config.
+  retrievalMode: Annotation({ reducer: replace, default: () => null }),
+  // The model's structured grounded-answer output (schemas.js's
+  // GroundedAnswerSchema) — `claims` here are PRE-verification; only
+  // groundedClaims (below) carries the trusted, server-computed
+  // verificationStatus. Never sent to the client directly.
+  groundedAnswer: Annotation({ reducer: replace, default: () => null }),
+  // Final per-claim verdicts AFTER deterministic verification (and the one
+  // possible repair pass) — {claimId, text, claimType, evidenceIds,
+  // verificationStatus}[]. Recomputed fresh on every validation pass
+  // (including the repaired one), never accumulated.
+  groundedClaims: Annotation({ reducer: replace, default: () => [] }),
+  // 'grounded' | 'partially_grounded' | 'insufficient_evidence' — computed
+  // by the server from the FINAL verified claims, never trusted from the
+  // model's own self-reported value (Part 5/6: the model may not grade its
+  // own work).
+  groundingStatus: Annotation({ reducer: replace, default: () => null }),
+  coverage: Annotation({ reducer: replace, default: () => null }),
+  // Whether the bounded grounded-answer repair actually ran this turn —
+  // distinct from the shared `repairCount` (which also covers the legacy
+  // Phase 3 pipeline) so the API response can report it directly.
+  repairAttempted: Annotation({ reducer: replace, default: () => false }),
+
   warnings: Annotation({ reducer: (x, y) => x.concat(y), default: () => [] }),
   errors: Annotation({ reducer: (x, y) => x.concat(y), default: () => [] }),
 

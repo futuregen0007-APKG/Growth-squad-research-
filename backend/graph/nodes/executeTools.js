@@ -14,6 +14,7 @@ const STATUS_LABEL = Object.freeze({
   getWatchlist: 'Checking your watchlist…',
   getPortfolio: 'Checking your portfolio…',
   compareStocks: 'Comparing companies…',
+  retrieveGroundedEvidence: 'Retrieving evidence from research documents…',
 });
 
 // A tool call needs at least this much remaining budget to be worth
@@ -165,8 +166,18 @@ export const executeTools = async (state) => {
     }
   });
 
+  // Phase 4B: retrieveGroundedEvidence carries its trusted evidence
+  // envelope in its OWN `researchEvidence` field (see toolRegistry.js),
+  // never mixed into the generic `evidence` array above — composeAnswer's
+  // grounded branch reads this directly. There is at most one such step
+  // per turn (planTools.js's deterministicPlan never plans more than one
+  // retrieveGroundedEvidence call), so a plain find is correct here.
+  const groundedStep = toolResults.find((t) => t.tool === 'retrieveGroundedEvidence');
+  const researchEvidence = groundedStep?.researchEvidence || [];
+  const retrievalMode = groundedStep?.retrievalMode || null;
+
   return {
-    toolResults, evidence, warnings, deduplicatedToolCalls, toolCallFingerprints, providerOperationCount,
+    toolResults, evidence, warnings, deduplicatedToolCalls, toolCallFingerprints, providerOperationCount, researchEvidence, retrievalMode,
   };
 };
 

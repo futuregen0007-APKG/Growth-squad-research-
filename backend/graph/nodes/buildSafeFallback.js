@@ -3,6 +3,8 @@ import { emitInChunks } from '../publishing.js';
 import {
   formatMissingEvidenceForPrompt, DIMENSION_CLAIM_TYPES, DIMENSION_LABEL,
 } from '../evidenceCoverage.js';
+import { RESEARCH_GROUNDED_INTENTS } from '../researchScope.js';
+import { buildGroundedSafeFallback } from '../groundedAnswer.js';
 
 /**
  * factLineFor - a single deterministic, evidence-backed sentence for one
@@ -38,6 +40,19 @@ const factLineFor = (row, evidence) => {
  * Citations are recomputed from THIS text, never inherited.
  */
 export const buildSafeFallback = async (state) => {
+  // Phase 4B: grounded RAG branch — see graph/groundedAnswer.js's own
+  // module note. Covers every way a grounded turn can land here: zero
+  // retrieved evidence (ABSTAINED), the generation call itself failing
+  // (FAILED_SAFE), or the one repair still leaving unverified claims
+  // (REPAIR_REQUIRED, repair budget spent). Keyed on intent rather than
+  // state.groundedAnswer because the zero-evidence/generation-failure
+  // cases never set groundedAnswer at all.
+  if (RESEARCH_GROUNDED_INTENTS.has(state.intent)) {
+    const update = buildGroundedSafeFallback(state);
+    emitInChunks(state.onEvent, update.answer);
+    return { ...update, validationStatus: state.validationStatus === 'FAILED_SAFE' ? 'FAILED_SAFE' : 'ABSTAINED' };
+  }
+
   const coveredLines = (state.evidenceCoverage || [])
     .filter((row) => row.status === 'COVERED')
     .map((row) => factLineFor(row, state.evidence))

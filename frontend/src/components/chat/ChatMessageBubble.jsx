@@ -98,6 +98,12 @@ const ToolActivityPanel = ({ activity }) => {
   );
 };
 
+// Phase 4B Part 10: safe link check reused for the richer grounded-citation
+// card below — same rule ChatMessageBubble's markdown `a` renderer already
+// applies to model-generated links (only http(s), never a raw scheme like
+// javascript:).
+const isSafeHref = (href) => /^https?:\/\//.test(href || '');
+
 const SourcesSection = ({ citations }) => {
   const [open, setOpen] = useState(false);
   if (!citations?.length) return null;
@@ -109,20 +115,63 @@ const SourcesSection = ({ citations }) => {
       </button>
       {open && (
         <div className="mt-1.5 space-y-1.5">
-          {citations.map((c, i) => (
-            <div key={c.evidenceId || i} className="text-[11px] text-gs-textMuted flex items-start gap-1.5">
-              <span className="text-gs-textDim shrink-0">[{i + 1}]</span>
-              {c.sourceUrl ? (
-                <a href={c.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-gs-gold hover:underline">
-                  {c.title || c.sourceUrl}
-                </a>
-              ) : (
-                <span>{c.title || 'Source unavailable'}{c.provider ? ` · ${c.provider}` : ''}</span>
-              )}
-              {c.publishedAt && <span className="text-gs-textDim shrink-0">· {new Date(c.publishedAt).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}</span>}
-            </div>
-          ))}
+          {citations.map((c, i) => {
+            // documentTitle/reportingPeriod/pageStart/sourceAuthority are
+            // only present on a Phase 4B grounded citation (see
+            // graph/groundedAnswer.js's citationFromEvidence) — a legacy
+            // citation just renders as before via the title/provider
+            // aliases that builder also sets for exactly this reason.
+            const label = c.documentTitle || c.title || c.sourceUrl || 'Source unavailable';
+            const metaParts = [
+              c.symbol, c.reportingPeriod, c.sourceAuthority || c.provider,
+              c.pageStart ? `p.${c.pageStart}${c.pageEnd && c.pageEnd !== c.pageStart ? `-${c.pageEnd}` : ''}` : null,
+            ].filter(Boolean);
+            return (
+              <div key={c.evidenceId || i} className="text-[11px] text-gs-textMuted flex items-start gap-1.5">
+                <span className="text-gs-textDim shrink-0">[{i + 1}]</span>
+                <div className="min-w-0">
+                  {c.sourceUrl && isSafeHref(c.sourceUrl) ? (
+                    <a href={c.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-gs-gold hover:underline break-words">
+                      {label}
+                    </a>
+                  ) : (
+                    <span className="break-words">{label}</span>
+                  )}
+                  {(metaParts.length > 0 || c.publishedAt) && (
+                    <div className="text-gs-textDim">
+                      {metaParts.join(' · ')}
+                      {c.publishedAt && ` ${metaParts.length ? '· ' : ''}${new Date(c.publishedAt).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}`}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
+      )}
+    </div>
+  );
+};
+
+// Phase 4B Part 10: grounding-status badge + honest insufficient-evidence
+// copy. Absent entirely for a non-research message (groundingStatus is
+// null) — never shown on ordinary chat.
+const GROUNDING_STATUS_STYLE = {
+  grounded: { label: 'Verified from documents', className: 'text-gs-pos border-gs-pos/30 bg-gs-posBg' },
+  partially_grounded: { label: 'Partially verified', className: 'text-gs-gold border-gs-gold/30 bg-gs-goldMuted' },
+  insufficient_evidence: { label: 'Insufficient evidence', className: 'text-gs-textDim border-gs-border bg-gs-panel' },
+};
+
+const GroundingStatusBadge = ({ groundingStatus, coverage }) => {
+  const style = GROUNDING_STATUS_STYLE[groundingStatus];
+  if (!style) return null;
+  return (
+    <div className="mb-1.5 flex flex-wrap items-center gap-1.5" data-testid="grounding-status">
+      <span className={`inline-flex items-center font-mono text-[9.5px] uppercase tracking-wider px-1.5 py-0.5 rounded-sm border ${style.className}`}>
+        {style.label}
+      </span>
+      {coverage?.limitations?.length > 0 && (
+        <span className="text-[10.5px] text-gs-textDim">{coverage.limitations.join('; ')}</span>
       )}
     </div>
   );
@@ -161,6 +210,7 @@ export default function ChatMessageBubble({ message, onRegenerate, isLast }) {
         </div>
 
         <ToolActivityRow activity={message.toolActivity} />
+        <GroundingStatusBadge groundingStatus={message.groundingStatus} coverage={message.coverage} />
 
         {message.status === 'ERROR' ? (
           <p className="text-[13px] text-gs-neg">{message.content}</p>

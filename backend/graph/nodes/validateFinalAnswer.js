@@ -4,6 +4,7 @@ import { ClaimVerificationSchema } from '../schemas.js';
 import { invokeRoutingModel } from '../llmInvoke.js';
 import { runDeterministicChecks, needsClaimVerifier } from '../claimValidation.js';
 import { hasBudgetFor } from '../requestBudget.js';
+import { verifyGroundedAnswerNode } from '../groundedAnswer.js';
 
 // Below this remaining budget, the structured verifier call is skipped
 // entirely (fail-closed: see the REPAIR_REQUIRED-with-no-budget path
@@ -32,6 +33,16 @@ const REPAIRABLE_CLAIM_VERDICTS = new Set([
  * verifier call fails closed (FAILED_SAFE), never silently passes.
  */
 export const validateFinalAnswer = async (state) => {
+  // Phase 4B: grounded RAG branch — state.groundedAnswer is only ever set
+  // by composeAnswer.js's/repairAnswer.js's grounded branches (see
+  // graph/groundedAnswer.js), never by the legacy pipeline, so this check
+  // is unambiguous and safe to run before any of the legacy logic below.
+  // Purely deterministic (no LLM call — Part 6: "not relying on the LLM
+  // to verify itself").
+  if (state.groundedAnswer) {
+    return verifyGroundedAnswerNode(state);
+  }
+
   // composeAnswer already decided this draft is a fixed, non-LLM-generated
   // safe string (input error, not-configured, no-budget, provider-error
   // fallback text) — nothing to re-check, pass straight through. Also

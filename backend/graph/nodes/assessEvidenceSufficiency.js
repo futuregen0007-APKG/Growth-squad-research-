@@ -1,5 +1,6 @@
 import { computeEvidenceCoverage } from '../evidenceCoverage.js';
 import { hasBudgetFor } from '../requestBudget.js';
+import { RESEARCH_GROUNDED_INTENTS } from '../researchScope.js';
 
 // The minimum remaining budget worth spending on a replan round at all —
 // well below any single tool's natural timeout, so this only skips a
@@ -30,6 +31,21 @@ const NEVER_REPLAN_STATUSES = new Set(['AUTH_REQUIRED', 'UNSUPPORTED']);
  */
 export const assessEvidenceSufficiency = async (state) => {
   if (state.errors.length) return {};
+
+  // Phase 4B: the grounded RAG flow (see graph/researchScope.js) has its
+  // own, fully self-contained evidence-sufficiency decision — zero
+  // researchEvidence already correctly abstains inside composeAnswer.js's
+  // grounded branch, and a bounded repair (never a replan/re-retrieval)
+  // is the ONLY recovery path Part 7 allows for it. Its evidence
+  // deliberately never populates the legacy `evidence` array (see
+  // toolRegistry.js's retrieveGroundedEvidence), so computeEvidenceCoverage
+  // below would otherwise see nothing and trigger an expensive, pointless
+  // legacy replan (confirmed live: it fell back to the slow legacy
+  // searchResearchDocuments tool, burning the whole request budget on
+  // real network calls) for a turn that already has everything it needs.
+  if (RESEARCH_GROUNDED_INTENTS.has(state.intent)) {
+    return { evidenceCoverage: [], missingEvidence: [], needsReplan: false };
+  }
 
   const { evidenceCoverage, missingEvidence } = computeEvidenceCoverage({
     symbols: state.entities?.symbols || [],
