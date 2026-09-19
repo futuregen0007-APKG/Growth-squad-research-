@@ -34,6 +34,100 @@ export const EVIDENCE_SOURCE_TYPES = [
 export const DATA_MODES = ['CURATED_VERIFIED', 'DEMO_SYNTHETIC', 'RESEARCH_PENDING'];
 export const COVERAGE_STATUSES = ['COMPLETE', 'PARTIAL', 'RESEARCH_PENDING', 'STALE'];
 
+/**
+ * Phase 4F: Earnings Evidence Integrity Audit
+ * ==============================================
+ * A record's `evidenceIntegrity` (optional additive field, both on curated
+ * JSON records and on ManagementPromise Mongo documents) is the outcome of
+ * auditing its promise/outcome evidence against the REAL, locally
+ * re-verifiable primary source -- never a re-statement of `verification`
+ * (which only records who/when a human curated the record, not whether
+ * the underlying PDF text was actually re-checked against it this audit).
+ *
+ *   VERIFIED_PRIMARY      - the source is the company's own official IR
+ *                            domain, and the exact claim was re-confirmed
+ *                            against real, locally re-fetched/stored text.
+ *   VERIFIED_EXCHANGE_COPY - the source is an official BSE/NSE exchange
+ *                            corporate-filing archive hosting the exact
+ *                            same regulatorily-disclosed document, and the
+ *                            exact claim was re-confirmed against real,
+ *                            locally re-fetched/stored text.
+ *   SOURCE_UNAVAILABLE    - the cited URL could not be fetched through any
+ *                            currently-supported legitimate channel (a
+ *                            company IR domain blocking automated fetching,
+ *                            or a BSE/NSE path that no longer resolves) --
+ *                            this alone is NEVER treated as verification.
+ *   PROVENANCE_INCOMPLETE - the document is reachable/registered but page
+ *                            or chunk-level provenance could not be
+ *                            resolved (e.g. no page number was ever
+ *                            recorded, or the document was registered but
+ *                            never durably chunked).
+ *   CLAIM_NOT_FOUND       - the source was fetched, but the claimed
+ *                            excerpt/claim does not appear on the cited
+ *                            page (or anywhere in the document).
+ *   VALUE_MISMATCH        - the claimed metric/value/unit does not match
+ *                            what the real source text actually states.
+ *   PERIOD_MISMATCH       - the claimed target/actual period does not
+ *                            match what the real source text actually
+ *                            states.
+ *   UNSUPPORTED           - the source itself fails the domain/authority
+ *                            bar (not an official IR or exchange-filing
+ *                            domain -- e.g. a news aggregator or blog),
+ *                            regardless of whether the claim is accurate.
+ *   QUARANTINED           - the terminal, public-facing state: this
+ *                            record must never appear in any public
+ *                            timeline/score/evidence-envelope output. A
+ *                            record becomes QUARANTINED for any of the
+ *                            failure reasons above; the specific
+ *                            underlying reason is preserved in
+ *                            `evidenceIntegrity.notes`, never discarded.
+ *
+ * Only VERIFIED_PRIMARY and VERIFIED_EXCHANGE_COPY are "public safe" --
+ * every other status (including simply never having been audited at all,
+ * for the curated JSON dataset specifically -- see
+ * CuratedEarningsIntelligenceService.js's isPubliclyVisibleRecord) means a
+ * record does not appear publicly.
+ */
+export const EVIDENCE_INTEGRITY_STATUSES = [
+  'VERIFIED_PRIMARY', 'VERIFIED_EXCHANGE_COPY', 'SOURCE_UNAVAILABLE', 'PROVENANCE_INCOMPLETE',
+  'CLAIM_NOT_FOUND', 'VALUE_MISMATCH', 'PERIOD_MISMATCH', 'UNSUPPORTED', 'QUARANTINED',
+];
+
+export const PUBLIC_SAFE_EVIDENCE_STATUSES = ['VERIFIED_PRIMARY', 'VERIFIED_EXCHANGE_COPY'];
+
+/**
+ * isPubliclyVisibleRecord - the ONE gate every public-facing consumer of a
+ * CURATED JSON record must apply (Task 4: "No grandfathering -- existing
+ * JSON does not prove correctness"). Fails CLOSED: a record with no
+ * evidenceIntegrity field at all (never audited) is NOT publicly visible,
+ * exactly the same as one explicitly marked QUARANTINED/UNSUPPORTED/etc.
+ * This is deliberately stricter than isPubliclyVisiblePromise below (which
+ * governs the much broader, cross-symbol live-research ManagementPromise
+ * collection and fails OPEN for an absent field) -- the curated JSON
+ * dataset is small, hand-authored, and every record in it has now been
+ * explicitly audited, so there is no legitimate reason for a real one to
+ * be missing this field going forward.
+ */
+export const isPubliclyVisibleRecord = (record) => Boolean(
+  record?.evidenceIntegrity?.status && PUBLIC_SAFE_EVIDENCE_STATUSES.includes(record.evidenceIntegrity.status),
+);
+
+/**
+ * isPubliclyVisiblePromise - the gate for a ManagementPromise Mongo
+ * document (the live-research, cross-symbol collection the real grounded-
+ * RAG `getEarningsTimeline` tool reads). Fails OPEN: a document with no
+ * evidenceIntegrity field is treated as publicly visible (preserving
+ * existing behavior for the many symbols never touched by this Phase 4F
+ * audit, which is scoped to TCS -- see the task's own "do not proceed to
+ * broader company expansion" instruction); only a document EXPLICITLY
+ * marked with a non-public-safe status is excluded.
+ */
+export const isPubliclyVisiblePromise = (doc) => {
+  const status = doc?.evidenceIntegrity?.status;
+  if (!status) return true;
+  return PUBLIC_SAFE_EVIDENCE_STATUSES.includes(status);
+};
+
 // Evidence source priority, per Step 4 of the curated-research plan (higher = preferred).
 export const SOURCE_TYPE_PRIORITY = {
   ANNUAL_REPORT: 5,
@@ -276,4 +370,8 @@ export default {
   validateCandidatePromiseRecord,
   CANDIDATE_REVIEW_STATUSES,
   findDuplicatePromiseIds,
+  EVIDENCE_INTEGRITY_STATUSES,
+  PUBLIC_SAFE_EVIDENCE_STATUSES,
+  isPubliclyVisibleRecord,
+  isPubliclyVisiblePromise,
 };

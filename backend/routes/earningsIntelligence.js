@@ -14,6 +14,7 @@ import {
 import * as CuratedEarningsIntelligenceService from '../services/CuratedEarningsIntelligenceService.js';
 import ManagementPromise from '../models/ManagementPromise.js';
 import CompanyHistoricalFact from '../models/CompanyHistoricalFact.js';
+import { isPubliclyVisiblePromise } from '../utils/earningsIntelligenceValidation.js';
 
 const router = express.Router();
 
@@ -54,7 +55,11 @@ router.get('/search', async (req, res, next) => {
 router.get('/promise/:id', async (req, res, next) => {
   try {
     const promise = await ManagementPromise.findOne({ _id: req.params.id, dataOrigin: 'REAL_RESEARCH' }).lean();
-    if (!promise) return res.status(404).json({ success: false, message: 'Promise not found.' });
+    // Phase 4F: a direct by-id lookup must be gated exactly like the list
+    // endpoints -- a quarantined/unsupported record's Mongo _id is never a
+    // secret, so this route must not become a bypass for evidence-integrity
+    // filtering.
+    if (!promise || !isPubliclyVisiblePromise(promise)) return res.status(404).json({ success: false, message: 'Promise not found.' });
     return res.json({ success: true, data: promise });
   } catch (error) {
     console.error('[Earnings Intelligence] /promise/:id error:', error);

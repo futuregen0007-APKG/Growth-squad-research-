@@ -33,6 +33,7 @@ import {
   validateCuratedCompanyRecord,
   findDuplicatePromiseIds,
   RESOLVED_STATUSES,
+  isPubliclyVisibleRecord,
 } from '../utils/earningsIntelligenceValidation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -252,8 +253,18 @@ const fetchAcceptedCandidates = async (symbol) => {
  * `reviewedBy`/`reviewedAt` are carried over from the Mongo record, because
  * `toPromotedRecord` deliberately strips those fields before writing to JSON and Mongo
  * is their only home.
+ *
+ * Phase 4F: this is the ONE choke point every public consumer of the curated
+ * dataset passes through (getCompanyCoverage, getCompanyPromises,
+ * getCompanyTimeline all call this, directly or via applyPromiseFilters) --
+ * so quarantine filtering happens HERE, before any of those three ever see
+ * the records, rather than being re-implemented (and potentially
+ * forgotten) at each call site. `includeQuarantined: true` is used ONLY by
+ * the internal/admin debug path (getCompanyPromisesDebug below), which
+ * exists specifically so an operator can see WHY a record was excluded --
+ * never by anything reachable from a public API route.
  */
-const fetchMergedRecords = async (normalized, { mode } = {}) => {
+const fetchMergedRecords = async (normalized, { mode, includeQuarantined = false } = {}) => {
   const { promisesBySymbol, demoBySymbol } = ensureCache();
 
   if (mode === 'DEMO') {
@@ -272,7 +283,8 @@ const fetchMergedRecords = async (normalized, { mode } = {}) => {
       ? { ...record, reviewedBy: record.reviewedBy ?? existing.reviewedBy ?? null, reviewedAt: record.reviewedAt ?? existing.reviewedAt ?? null }
       : record);
   }
-  return Array.from(byId.values());
+  const all = Array.from(byId.values());
+  return includeQuarantined ? all : all.filter((record) => isPubliclyVisibleRecord(record));
 };
 
 const applyPromiseFilters = (records, filters = {}) => {
@@ -339,6 +351,26 @@ export const getCompanyPromises = async (symbol, filters = {}) => {
   if (!normalized) return [];
   const merged = await fetchMergedRecords(normalized, { mode: filters.mode });
   return applyPromiseFilters(merged, filters);
+};
+
+/**
+ * getCompanyPromisesDebug - Phase 4F Task 7: "debug/admin output clearly
+ * exposes the internal reason." Returns EVERY record (public-safe AND
+ * quarantined/unaudited), each explicitly tagged with `publiclyVisible`
+ * and, when not visible, the exact `evidenceIntegrity` object explaining
+ * why. This is an internal/operator tool -- it must never be wired into a
+ * public route without an auth gate, and it never affects what
+ * getCompanyPromises/getCompanyTimeline/getCompanyCoverage return.
+ */
+export const getCompanyPromisesDebug = async (symbol, filters = {}) => {
+  const normalized = normalizeCuratedSymbol(symbol);
+  if (!normalized) return [];
+  const merged = await fetchMergedRecords(normalized, { mode: filters.mode, includeQuarantined: true });
+  return applyPromiseFilters(merged, filters).map((record) => ({
+    ...record,
+    publiclyVisible: isPubliclyVisibleRecord(record),
+    evidenceIntegrityStatus: record.evidenceIntegrity?.status || 'NEVER_AUDITED',
+  }));
 };
 
 const STATUS_VALUE = { ACHIEVED: 1, PARTIAL: 0.5, MISSED: 0 };
@@ -641,6 +673,7 @@ export default {
   listSupportedCompanies,
   getCompanyCoverage,
   getCompanyPromises,
+  getCompanyPromisesDebug,
   calculateFaithScore,
   calculateEvidenceConfidence,
   calculateCoverageScore,

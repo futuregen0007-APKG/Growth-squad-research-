@@ -18,6 +18,28 @@ const managementPromiseSchema = new mongoose.Schema({
   // documents (e.g. ones produced by the live DocumentResearchService
   // pipeline, which never set this field).
   curatedRecordId: { type: String, default: null, index: true, sparse: true },
+
+  // Phase 4F: Earnings Evidence Integrity Audit. Optional/additive --
+  // mirrors the same shape (and the same status enum) as a curated JSON
+  // record's own evidenceIntegrity field (see
+  // utils/earningsIntelligenceValidation.js). Absence is treated as
+  // publicly visible (isPubliclyVisiblePromise fails OPEN for this much
+  // broader, cross-symbol, live-research collection -- only a document
+  // EXPLICITLY marked with a non-public-safe status here is excluded from
+  // getCompanyPromises/getCompanyTimeline in services/ManagementPromiseService.js).
+  evidenceIntegrity: {
+    status: {
+      type: String,
+      enum: [
+        'VERIFIED_PRIMARY', 'VERIFIED_EXCHANGE_COPY', 'SOURCE_UNAVAILABLE', 'PROVENANCE_INCOMPLETE',
+        'CLAIM_NOT_FOUND', 'VALUE_MISMATCH', 'PERIOD_MISMATCH', 'UNSUPPORTED', 'QUARANTINED', null,
+      ],
+      default: null,
+    },
+    auditedAt: { type: Date, default: null },
+    auditedBy: { type: String, default: null },
+    notes: { type: String, default: null },
+  },
   
   // Promise details
   promise: {

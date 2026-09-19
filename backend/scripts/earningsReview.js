@@ -2,8 +2,15 @@
  * earningsReview.js
  * ===================
  * `npm run earnings:review -- --secret=X --symbol=TCS --list`
- * `npm run earnings:review -- --secret=X --symbol=TCS --accept=<id> --reviewer=<name>`
- * `npm run earnings:review -- --secret=X --symbol=TCS --reject=<id> --reviewer=<name>`
+ * `npm run earnings:review -- --secret=X --symbol=TCS --accept=<id> --reviewer=<name> --evidence-status=VERIFIED_EXCHANGE_COPY`
+ * `npm run earnings:review -- --secret=X --symbol=TCS --reject=<id> --reviewer=<name> --reason="..."`
+ *
+ * Phase 4F: --accept now REQUIRES --evidence-status (VERIFIED_PRIMARY or
+ * VERIFIED_EXCHANGE_COPY) -- an explicit assertion that the reviewer
+ * re-checked the promise/outcome evidence against real primary-source
+ * text, not just that it "looks plausible." A candidate that cannot be
+ * asserted this way should be rejected (--reject, optionally with
+ * --reason) or left pending, never force-accepted without it.
  *
  * The ONLY path by which an automated candidate (models/PromiseCandidate.js,
  * MongoDB) may ever reach the real, public curated dataset
@@ -43,7 +50,7 @@ import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import { pathToFileURL } from 'node:url';
 import { SUPPORTED_STOCKS } from '../utils/constants.js';
-import { validateManagementPromiseRecord, validateCuratedCompanyRecord, RESOLVED_STATUSES } from '../utils/earningsIntelligenceValidation.js';
+import { validateManagementPromiseRecord, validateCuratedCompanyRecord, RESOLVED_STATUSES, PUBLIC_SAFE_EVIDENCE_STATUSES } from '../utils/earningsIntelligenceValidation.js';
 import { listCandidatesForSymbol } from '../services/PromiseCandidateService.js';
 import PromiseCandidate from '../models/PromiseCandidate.js';
 import { reloadCuratedDataset } from '../services/CuratedEarningsIntelligenceService.js';
@@ -127,13 +134,25 @@ const toPromotedRecord = (candidateDoc) => {
  * acceptCandidate - the sole promotion path. Requires a valid `secret`
  * (see isAuthorized) or it refuses immediately without reading/writing
  * anything.
+ *
+ * Phase 4F Task 5: promotion additionally REQUIRES an explicit
+ * `evidenceIntegrity` assertion from the reviewer (`{status, notes}`,
+ * status one of PUBLIC_SAFE_EVIDENCE_STATUSES) -- a candidate is never
+ * promoted "unaudited and hope it's fine." This is what
+ * isPubliclyVisibleRecord (utils/earningsIntelligenceValidation.js) later
+ * checks before the record can ever appear in a public timeline, so a
+ * promotion that skipped this step would otherwise silently produce an
+ * invisible record rather than an obviously-refused one.
  */
-export const acceptCandidate = async (symbol, candidateId, { reviewer, secret } = {}) => {
+export const acceptCandidate = async (symbol, candidateId, { reviewer, secret, evidenceIntegrity } = {}) => {
   if (!isAuthorized(secret)) {
     return { ok: false, error: 'Unauthorized: EARNINGS_REVIEW_SECRET is not set, or the provided secret does not match.' };
   }
   if (!reviewer) {
     return { ok: false, error: 'A --reviewer name is required for the audit trail.' };
+  }
+  if (!evidenceIntegrity?.status || !PUBLIC_SAFE_EVIDENCE_STATUSES.includes(evidenceIntegrity.status)) {
+    return { ok: false, error: `Refusing to promote "${candidateId}": an explicit evidenceIntegrity.status of ${PUBLIC_SAFE_EVIDENCE_STATUSES.join(' or ')} is required to assert the promise/outcome evidence was re-verified against real primary-source text (Phase 4F Task 5). Use rejectCandidate with a reason instead if it fails verification.` };
   }
 
   const candidate = await PromiseCandidate.findOne({ symbol, id: candidateId }).lean();
@@ -152,7 +171,15 @@ export const acceptCandidate = async (symbol, candidateId, { reviewer, secret } 
     return { ok: true, idempotent: true, message: `Candidate "${candidateId}" was already accepted for ${symbol}. No changes made.` };
   }
 
-  const promoted = toPromotedRecord(candidate);
+  const promoted = {
+    ...toPromotedRecord(candidate),
+    evidenceIntegrity: {
+      status: evidenceIntegrity.status,
+      auditedAt: new Date().toISOString().slice(0, 10),
+      auditedBy: reviewer,
+      notes: evidenceIntegrity.notes || null,
+    },
+  };
   const { valid, errors } = validateManagementPromiseRecord(promoted, { symbol, allowDemo: false });
   if (!valid) {
     return { ok: false, error: `Refusing to promote "${candidateId}": fails validateManagementPromiseRecord: ${errors.join('; ')}` };
@@ -194,7 +221,17 @@ export const acceptCandidate = async (symbol, candidateId, { reviewer, secret } 
   };
 };
 
-export const rejectCandidate = async (symbol, candidateId, { reviewer, secret } = {}) => {
+/**
+ * rejectCandidate - `reason` (Phase 4F) is an optional, machine-readable
+ * explanation for WHY the candidate failed review -- required by this
+ * project's evidence-integrity policy ("candidates failing any requirement
+ * must remain pending or be rejected with a reason"), stored in the
+ * candidate's own `verification.notes` field (never a new field the
+ * validator doesn't already know about) so it survives alongside the
+ * existing audit trail (reviewedBy/reviewedAt) rather than being a second,
+ * disconnected place to look.
+ */
+export const rejectCandidate = async (symbol, candidateId, { reviewer, secret, reason = null } = {}) => {
   if (!isAuthorized(secret)) {
     return { ok: false, error: 'Unauthorized: EARNINGS_REVIEW_SECRET is not set, or the provided secret does not match.' };
   }
@@ -207,8 +244,10 @@ export const rejectCandidate = async (symbol, candidateId, { reviewer, secret } 
     return { ok: false, error: `No candidate with id "${candidateId}" found for ${symbol}.` };
   }
 
-  await PromiseCandidate.updateOne({ symbol, id: candidateId }, { reviewStatus: 'REJECTED', reviewedBy: reviewer, reviewedAt: new Date() });
-  return { ok: true, message: `Rejected "${candidateId}" for ${symbol}. It will never be promoted; re-run generation for a fresh candidate.` };
+  const update = { reviewStatus: 'REJECTED', reviewedBy: reviewer, reviewedAt: new Date() };
+  if (reason) update['verification.notes'] = reason;
+  await PromiseCandidate.updateOne({ symbol, id: candidateId }, update);
+  return { ok: true, message: `Rejected "${candidateId}" for ${symbol}${reason ? ` (${reason})` : ''}. It will never be promoted; re-run generation for a fresh candidate.` };
 };
 
 /** Read-only -- listing candidates does not require the secret, only mutating actions do. */
@@ -218,13 +257,18 @@ export const listCandidates = async (symbol) => {
 };
 
 const parseArgs = (argv) => {
-  const args = { symbol: null, secret: null, reviewer: null, accept: null, reject: null, list: false };
+  const args = {
+    symbol: null, secret: null, reviewer: null, accept: null, reject: null, list: false,
+    evidenceStatus: null, reason: null,
+  };
   for (const arg of argv) {
     if (arg.startsWith('--symbol=')) args.symbol = arg.replace('--symbol=', '').trim().toUpperCase();
     else if (arg.startsWith('--secret=')) args.secret = arg.replace('--secret=', '');
     else if (arg.startsWith('--reviewer=')) args.reviewer = arg.replace('--reviewer=', '').trim();
     else if (arg.startsWith('--accept=')) args.accept = arg.replace('--accept=', '').trim();
     else if (arg.startsWith('--reject=')) args.reject = arg.replace('--reject=', '').trim();
+    else if (arg.startsWith('--evidence-status=')) args.evidenceStatus = arg.replace('--evidence-status=', '').trim();
+    else if (arg.startsWith('--reason=')) args.reason = arg.replace('--reason=', '').trim();
     else if (arg === '--list') args.list = true;
   }
   return args;
@@ -234,7 +278,7 @@ const run = async () => {
   const args = parseArgs(process.argv.slice(2));
   args.secret = resolveSecret(args.secret);
   if (!args.symbol) {
-    console.error('Usage: npm run earnings:review -- --secret=<secret> --symbol=TCS [--list | --accept=<id> --reviewer=<name> | --reject=<id> --reviewer=<name>]');
+    console.error('Usage: npm run earnings:review -- --secret=<secret> --symbol=TCS [--list | --accept=<id> --reviewer=<name> --evidence-status=<VERIFIED_PRIMARY|VERIFIED_EXCHANGE_COPY> [--reason=<notes>] | --reject=<id> --reviewer=<name> [--reason=<notes>]]');
     process.exit(1);
   }
 
@@ -252,11 +296,14 @@ const run = async () => {
       }
     }
   } else if (args.accept) {
-    const result = await acceptCandidate(args.symbol, args.accept, { reviewer: args.reviewer, secret: args.secret });
+    const result = await acceptCandidate(args.symbol, args.accept, {
+      reviewer: args.reviewer, secret: args.secret,
+      evidenceIntegrity: args.evidenceStatus ? { status: args.evidenceStatus, notes: args.reason } : undefined,
+    });
     console.log(result.ok ? (result.message || 'Accepted.') : `ERROR: ${result.error}`);
     if (!result.ok) process.exitCode = 1;
   } else if (args.reject) {
-    const result = await rejectCandidate(args.symbol, args.reject, { reviewer: args.reviewer, secret: args.secret });
+    const result = await rejectCandidate(args.symbol, args.reject, { reviewer: args.reviewer, secret: args.secret, reason: args.reason });
     console.log(result.ok ? result.message : `ERROR: ${result.error}`);
     if (!result.ok) process.exitCode = 1;
   } else {

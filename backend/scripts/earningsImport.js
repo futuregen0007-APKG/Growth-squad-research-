@@ -123,6 +123,19 @@ export const toManagementPromiseDoc = (record, coverage) => {
       promiseSource: toEvidenceSource(record.promiseEvidence),
       outcomeSource: toEvidenceSource(record.outcomeEvidence),
     },
+    // Phase 4F: carried through verbatim from the curated record so the
+    // Mongo mirror stays consistent with the JSON source of truth. Note
+    // that getCompanyPromises() (CuratedEarningsIntelligenceService.js)
+    // already filters `records` down to publicly-visible ones BEFORE this
+    // script ever sees them (see fetchMergedRecords), so a QUARANTINED
+    // curated record is never imported as a NEW document in the first
+    // place -- this field only matters for a record that WAS already
+    // imported while visible and is later quarantined; re-running this
+    // script after that would update it to match (documentsAreEquivalent
+    // does not currently compare evidenceIntegrity, so a status-only
+    // change requires the same manual audit-update path used for
+    // already-imported records, not a silent re-import).
+    evidenceIntegrity: record.evidenceIntegrity || null,
   };
 };
 

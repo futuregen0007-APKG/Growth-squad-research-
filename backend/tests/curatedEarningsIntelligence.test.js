@@ -318,16 +318,26 @@ test('the legacy Mongo-backed timeline shape is untouched (company/summary/promi
 // 15. Filters work correctly.
 // ---------------------------------------------------------------------------
 test('getCompanyPromises filters by year, category and status', async () => {
-  // TCS's real curated dataset currently holds 3 records: MARGIN/PARTIAL/FY2026,
-  // OTHER (attrition)/PARTIAL/FY2025, and REVENUE_GROWTH/ACHIEVED/Q2 FY2026.
+  // TCS's real curated dataset holds 3 records on disk, but the Phase 4F
+  // evidence-integrity audit (2026-09-19) QUARANTINED one of them
+  // (TCS-FY2026-001, MARGIN/PARTIAL/FY2026 -- both its promise and outcome
+  // source URLs return a live HTTP 403 and could not be re-verified
+  // against real stored text; see data/earnings-intelligence/promises/
+  // TCS.json's own evidenceIntegrity note). getCompanyPromises only ever
+  // returns publicly-visible records, so the counts below reflect the 2
+  // that remain: OTHER (attrition)/PARTIAL/FY2025 and
+  // REVENUE_GROWTH/ACHIEVED/Q2 FY2026. This is the CORRECT, intended
+  // effect of enforcing the integrity gate, not a regression -- see
+  // tests/evidenceIntegrityAudit.test.js for the quarantine behavior
+  // itself.
   const all = await getCompanyPromises('TCS');
-  assert.equal(all.length, 3);
+  assert.equal(all.length, 2);
 
-  assert.equal((await getCompanyPromises('TCS', { year: '2026' })).length, 2);
+  assert.equal((await getCompanyPromises('TCS', { year: '2026' })).length, 1);
   assert.equal((await getCompanyPromises('TCS', { year: '1999' })).length, 0);
-  assert.equal((await getCompanyPromises('TCS', { category: 'MARGIN' })).length, 1);
+  assert.equal((await getCompanyPromises('TCS', { category: 'MARGIN' })).length, 0);
   assert.equal((await getCompanyPromises('TCS', { category: 'ORDER_BOOK' })).length, 0);
-  assert.equal((await getCompanyPromises('TCS', { status: 'PARTIAL' })).length, 2);
+  assert.equal((await getCompanyPromises('TCS', { status: 'PARTIAL' })).length, 1);
   assert.equal((await getCompanyPromises('TCS', { status: 'ACHIEVED' })).length, 1);
 });
 

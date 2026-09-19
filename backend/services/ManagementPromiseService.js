@@ -16,6 +16,21 @@ import {
 import openai from './openaiClient.js';
 import { logger } from '../utils/logger.js';
 import { periodsMatch, normalizeFinancialValue, financialUnitFamily } from '../utils/financialNormalization.js';
+import { isPubliclyVisiblePromise, PUBLIC_SAFE_EVIDENCE_STATUSES } from '../utils/earningsIntelligenceValidation.js';
+
+// Phase 4F: excludes any ManagementPromise document explicitly marked
+// non-public-safe by the evidence-integrity audit -- fails OPEN (a
+// document with no evidenceIntegrity field at all still matches) so this
+// never changes behavior for the many symbols never touched by that
+// audit. Combined with REAL_RESEARCH_FILTER via $and wherever a caller
+// also adds its own year/status/metric conditions.
+const PUBLIC_SAFE_EVIDENCE_QUERY = {
+  $or: [
+    { evidenceIntegrity: { $exists: false } },
+    { 'evidenceIntegrity.status': null },
+    { 'evidenceIntegrity.status': { $in: PUBLIC_SAFE_EVIDENCE_STATUSES } },
+  ],
+};
 import { searchActualOutcomesFromIndianApi } from './OutcomeEvidenceService.js';
 import { getCompanyResearchBundle } from './CompanyResearchService.js';
 import { buildFinancialIntelligenceSnapshot } from './FinancialIntelligenceService.js';
@@ -1225,7 +1240,7 @@ export const refreshCompanyResearch = async (symbol, researchRunId = null, progr
     updateProgress('CALCULATING_EXECUTION_SCORE', 'Calculating deterministic Company Execution Score & financial snapshot...');
 
     const allDbFacts = isDbConnected() ? await CompanyHistoricalFact.find({ symbol: normalized, ...REAL_RESEARCH_FILTER }).lean() : verifiedFacts;
-    const allDbPromises = isDbConnected() ? await ManagementPromise.find({ symbol: normalized, ...REAL_RESEARCH_FILTER }).lean() : [];
+    const allDbPromises = isDbConnected() ? await ManagementPromise.find({ symbol: normalized, ...REAL_RESEARCH_FILTER, ...PUBLIC_SAFE_EVIDENCE_QUERY }).lean() : [];
 
     const executionScoreResult = calculateCompanyExecutionScore({
       facts: allDbFacts,
@@ -1334,7 +1349,7 @@ export const searchCompanies = async (query = '') => {
 
 export const getCompanyPromises = async (symbol, filters = {}) => {
   if (!isDbConnected()) return [];
-  const query = { symbol: String(symbol).toUpperCase(), ...REAL_RESEARCH_FILTER };
+  const query = { symbol: String(symbol).toUpperCase(), ...REAL_RESEARCH_FILTER, ...PUBLIC_SAFE_EVIDENCE_QUERY };
   if (filters.year) query.financialYear = String(filters.year);
   if (filters.status) query.status = String(filters.status).toUpperCase();
   if (filters.metric) query.metric = new RegExp(String(filters.metric), 'i');

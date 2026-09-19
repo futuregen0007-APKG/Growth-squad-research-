@@ -316,8 +316,22 @@ export const buildEarningsIntelligenceEnvelopeItems = (timeline, { symbol, compa
         // graph/guidanceNormalization.js can use them DIRECTLY instead of
         // re-parsing the excerpt text, which is strictly more reliable
         // for an Earnings-Intelligence-sourced record.
-        structuredGuidance: promise.metric ? {
-          metric: promise.metric, targetValue: promise.targetValue, targetUnit: promise.targetUnit, operator: promise.operator || null,
+        //
+        // Phase 4F fix: `promise.operator` is REQUIRED here, not just
+        // `promise.metric` — a genuinely qualitative promise (e.g. "we
+        // don't give specific guidance, but we're more optimistic") is
+        // stored with operator: null (see scripts/earningsImport.js's
+        // OPERATOR_MAP.QUALITATIVE) precisely because it has no real
+        // numeric target; but the underlying Mongoose schema requires
+        // promise.targetValue to be a Number, so a qualitative promise's
+        // absent target gets coerced to 0 on import. Without this operator
+        // check, that coerced 0 would pass `Number.isFinite` below and
+        // silently masquerade as a genuine "target: 0" quantified claim —
+        // a real hallucinated-field bug this audit surfaced live (TCS's
+        // qualitative Q2 FY2026 international-revenue promise was
+        // producing a fabricated canonicalGuidance of "revenue = 0").
+        structuredGuidance: promise.metric && promise.operator ? {
+          metric: promise.metric, targetValue: promise.targetValue, targetUnit: promise.targetUnit, operator: promise.operator,
         } : null,
       });
     }

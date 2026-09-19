@@ -105,7 +105,7 @@ test('acceptCandidate refuses without a valid secret, and touches nothing', asyn
   const original = process.env.EARNINGS_REVIEW_SECRET;
   process.env.EARNINGS_REVIEW_SECRET = 'the-real-secret';
   try {
-    const result = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: 'wrong-guess' });
+    const result = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: 'wrong-guess' , evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
     assert.equal(result.ok, false);
     assert.match(result.error, /Unauthorized/);
   } finally {
@@ -127,7 +127,7 @@ test('acceptCandidate refuses without a --reviewer name, even with a valid secre
   process.env.EARNINGS_REVIEW_SECRET = TEST_SECRET;
   let result;
   try {
-    result = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { secret: TEST_SECRET });
+    result = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { secret: TEST_SECRET , evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
   } finally {
     if (original === undefined) delete process.env.EARNINGS_REVIEW_SECRET;
     else process.env.EARNINGS_REVIEW_SECRET = original;
@@ -170,7 +170,7 @@ test('acceptCandidate via the env-resolved secret succeeds end-to-end exactly li
   await saveCandidate(mongoCandidate());
 
   process.env.EARNINGS_REVIEW_SECRET = TEST_SECRET; // simulates the operator's shell env, no --secret= passed
-  const result = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: resolveSecret(undefined) });
+  const result = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: resolveSecret(undefined) , evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
   assert.equal(result.ok, true);
 });
 
@@ -180,7 +180,7 @@ test('acceptCandidate via the env-resolved secret still fails closed when the CL
   await saveCandidate(mongoCandidate());
 
   process.env.EARNINGS_REVIEW_SECRET = TEST_SECRET;
-  const result = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: resolveSecret('deliberately-wrong') });
+  const result = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: resolveSecret('deliberately-wrong') , evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
   assert.equal(result.ok, false);
   assert.match(result.error, /Unauthorized/);
 });
@@ -213,7 +213,7 @@ test('acceptCandidate promotes a valid PENDING_REVIEW candidate into promises/<S
   await cleanupTestSymbol();
   await saveCandidate(mongoCandidate());
 
-  const result = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: TEST_SECRET });
+  const result = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: TEST_SECRET , evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
   assert.equal(result.ok, true);
 
   assert.ok(fs.existsSync(promisesPath));
@@ -236,8 +236,8 @@ test('acceptCandidate is idempotent: accepting the same id twice never duplicate
   await cleanupTestSymbol();
   await saveCandidate(mongoCandidate());
 
-  await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: TEST_SECRET });
-  const second = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: TEST_SECRET });
+  await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: TEST_SECRET , evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
+  const second = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: TEST_SECRET , evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
   assert.equal(second.ok, true);
   assert.equal(second.idempotent, true);
 
@@ -252,7 +252,7 @@ test('acceptCandidate refuses to promote a candidate that fails validateManageme
     promiseEvidence: { sourceTitle: 'Bad', sourceType: 'EARNINGS_TRANSCRIPT', sourceUrl: 'https://www.moneycontrol.com/bad-source', publishedAt: '2025-01-01', pageNumber: 1, excerpt: 'x' },
   }));
 
-  const result = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: TEST_SECRET });
+  const result = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: TEST_SECRET , evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
   assert.equal(result.ok, false);
   assert.match(result.error, /validateManagementPromiseRecord/);
   assert.equal(fs.existsSync(promisesPath), false);
@@ -266,7 +266,7 @@ test('acceptCandidate refuses an unknown candidate id', async (t) => {
   await cleanupTestSymbol();
   await saveCandidate(mongoCandidate());
 
-  const result = await acceptCandidate(TEST_SYMBOL, 'NOT-A-REAL-ID', { reviewer: 'tester', secret: TEST_SECRET });
+  const result = await acceptCandidate(TEST_SYMBOL, 'NOT-A-REAL-ID', { reviewer: 'tester', secret: TEST_SECRET , evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
   assert.equal(result.ok, false);
   assert.equal(fs.existsSync(promisesPath), false);
 });
@@ -283,7 +283,7 @@ test('rejectCandidate marks REJECTED, and acceptCandidate then permanently refus
   assert.equal(doc.reviewStatus, 'REJECTED');
   assert.equal(doc.reviewedBy, 'tester');
 
-  const acceptResult = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: TEST_SECRET });
+  const acceptResult = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: TEST_SECRET , evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
   assert.equal(acceptResult.ok, false);
   assert.equal(fs.existsSync(promisesPath), false);
 });
@@ -325,7 +325,7 @@ test('accepted records retain promise/outcome evidence, dates, page references, 
     verification: { verifiedAt: '2026-01-01', verifiedBy: 'AUTOMATED_CANDIDATE_GENERATOR', evidenceConfidence: 0.75, notes: 'auto-generated' },
   });
   await saveCandidate(resolvedCandidate);
-  await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'jane.reviewer', secret: TEST_SECRET });
+  await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'jane.reviewer', secret: TEST_SECRET , evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
 
   const timeline = await getCompanyTimeline(TEST_SYMBOL);
   const entry = timeline.timeline.find((e) => e.id === `${TEST_SYMBOL}-FY2026-CAND-001`);
@@ -381,16 +381,16 @@ test('Faith Score is null with 2 accepted resolved records and becomes a real nu
   });
 
   await saveCandidate(resolvedCandidate('FY2021'));
-  await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2021-001`, { reviewer: 'tester', secret: TEST_SECRET });
+  await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2021-001`, { reviewer: 'tester', secret: TEST_SECRET , evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
   await saveCandidate(resolvedCandidate('FY2022'));
-  await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2022-001`, { reviewer: 'tester', secret: TEST_SECRET });
+  await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2022-001`, { reviewer: 'tester', secret: TEST_SECRET , evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
 
   const twoResolved = await getCompanyTimeline(TEST_SYMBOL);
   assert.equal(twoResolved.summary.resolvedPromises, 2);
   assert.equal(twoResolved.summary.faithScore, null, 'must stay null (never fabricated) with only 2 resolved records');
 
   await saveCandidate(resolvedCandidate('FY2023'));
-  await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2023-001`, { reviewer: 'tester', secret: TEST_SECRET });
+  await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2023-001`, { reviewer: 'tester', secret: TEST_SECRET , evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
 
   const threeResolved = await getCompanyTimeline(TEST_SYMBOL);
   assert.equal(threeResolved.summary.resolvedPromises, 3);

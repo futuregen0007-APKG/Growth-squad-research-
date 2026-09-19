@@ -48,6 +48,12 @@
         "verifiedBy": "CURATED_RESEARCH",
         "evidenceConfidence": 0.85,
         "notes": "Both the promise and outcome figures were independently corroborated by multiple secondary reports of the same official TCS transcript/press-release language, but the exact page number within the transcript PDF was not confirmed, so pageNumber is left null rather than guessed and evidenceConfidence is set below the 0.9+ range reserved for page-verified citations."
+      },
+      "evidenceIntegrity": {
+        "status": "QUARANTINED",
+        "auditedAt": "2026-09-19",
+        "auditedBy": "PHASE_4F_EVIDENCE_AUDIT",
+        "notes": "SOURCE_UNAVAILABLE (both citations): promiseEvidence's tcs.com transcript URL was never registered in CompanyDocumentRegistry before this audit; registering and attempting a real fetch through the normal document pipeline returned a live HTTP 403 (tcs.com's Cloudflare managed challenge blocks automated fetching -- confirmed live, matching this file's own _meta note). outcomeEvidence's tcs.com press-release URL was already registered but likewise returned a live HTTP 403 on re-fetch attempt; no durable local copy exists for either. A live BSE announcement-search for a possible official exchange mirror of the same Q2 2025-26 transcript also failed (a real, persistent BSE API transport error, not a design choice) -- no fabricated URL was substituted. Neither the promise nor the outcome claim can currently be re-verified against real, locally stored primary-source text through any legitimate channel this project supports. Quarantined from all public timeline/score/evidence-envelope output until a fetchable primary source is found. Never deleted -- retained here for audit history per Phase 4F Task 3."
       }
     },
     {
@@ -93,6 +99,13 @@
         "verifiedBy": "CURATED_RESEARCH",
         "evidenceConfidence": 0.9,
         "notes": "Both figures were read directly, page-by-page, from the official BSE-filed earnings-call transcript PDFs (fetched directly from bseindia.com's corpfiling archive; tcs.com itself currently returns HTTP 403 behind a Cloudflare managed challenge for any non-browser client, including this project's own DocumentResearchService pipeline). 'AT_MOST 13%' is this record's schema encoding of management's stated two-sided 11%-13% comfort range, using its upper bound as the single quantitative ceiling since the schema has no two-sided range operator with distinct bounds."
+      },
+      "evidenceIntegrity": {
+        "status": "VERIFIED_EXCHANGE_COPY",
+        "auditedAt": "2026-09-19",
+        "auditedBy": "PHASE_4F_EVIDENCE_AUDIT",
+        "notes": "Phase 4F re-ingested both cited BSE Attachhis PDFs through the real document pipeline (fetched live, hashed, durably stored to GridFS, extracted, chunked, embedded -- 47 and 49 real chunks respectively, 100% page coverage, zero failures). promiseEvidence's exact excerpt (\"Our LTM attrition in IT services kept trending down throughout the year and was at 12.5% at the end of Q4, down 80 bps sequentially and in our comfort range of 11% to 13%.\") was confirmed VERBATIM on page 5 of the real stored chunk text, spoken by Milind Lakkad (Chief HR Officer) -- genuine management attribution, not analyst framing. outcomeEvidence's exact fragment (\"Over LTM attrition was stable at 13.3%.\") was confirmed VERBATIM on page 7 of the real stored chunk text. Both page numbers match the record's own pageNumber fields exactly.",
+        "resolvedChunkIds": ["promiseEvidence:registryDocumentId=6aa522112dc77380970fef65:page5", "outcomeEvidence:registryDocumentId=6aa522112dc77380970fef72:page7"]
       }
     },
     {
@@ -138,6 +151,13 @@
         "verifiedBy": "CURATED_RESEARCH",
         "evidenceConfidence": 0.85,
         "notes": "Promise sourced from the official BSE-filed transcript; outcome sourced from the official NSE-filed press-release letter (both fetched directly from the exchange archives, since tcs.com itself currently blocks direct fetching with a Cloudflare managed challenge). This is a qualitative/directional promise -- TCS explicitly does not give numeric guidance -- so ACHIEVED reflects that the direction management expressed (optimism about improving international revenue) matched the subsequently reported direction (positive QoQ growth), not a match against a specific numeric target."
+      },
+      "evidenceIntegrity": {
+        "status": "VERIFIED_EXCHANGE_COPY",
+        "auditedAt": "2026-09-19",
+        "auditedBy": "PHASE_4F_EVIDENCE_AUDIT",
+        "notes": "Both cited documents were already durably ingested through the real document pipeline (53 real chunks for the BSE transcript, 27 for the NSE press release, both 100% page coverage). promiseEvidence's exact excerpt (\"Nitin, as you know, we don't give any specific guidance, but on the international revenue part, we are more optimistic in the coming quarter.\") was confirmed VERBATIM on page 26 of the real stored chunk text, spoken by K Krithivasan (Chief Executive Officer and Managing Director) -- genuine management attribution, not analyst framing; page number matches exactly. outcomeEvidence's exact excerpt (\"International Revenue grows 0.6% QoQ in Constant Currency\") was confirmed VERBATIM on page 2 of the real stored chunk text; page number matches exactly. This promise is explicitly qualitative (no numeric targetValue), so it is correctly never treated as quantified guidance by any automated extraction pass.",
+        "resolvedChunkIds": ["promiseEvidence:registryDocumentId=6aa522112dc77380970fef78:page26", "outcomeEvidence:registryDocumentId=6aa522112dc77380970fef7e:page2"]
       }
     }
   ]

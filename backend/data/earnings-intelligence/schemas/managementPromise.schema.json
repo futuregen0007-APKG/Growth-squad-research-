@@ -76,6 +76,25 @@
         "evidenceConfidence": { "type": "number", "minimum": 0, "maximum": 1 },
         "notes": { "type": ["string", "null"] }
       }
+    },
+    "evidenceIntegrity": {
+      "type": "object",
+      "description": "Phase 4F evidence-integrity audit outcome -- distinct from `verification` (who/when a human curated the record) because it records whether the promise/outcome evidence was actually RE-CONFIRMED against real, locally re-fetched/stored primary-source text. Only status VERIFIED_PRIMARY/VERIFIED_EXCHANGE_COPY are ever publicly visible (see backend/utils/earningsIntelligenceValidation.js's isPubliclyVisibleRecord); a record missing this field entirely is treated the same as QUARANTINED for public-visibility purposes.",
+      "additionalProperties": false,
+      "required": ["status", "auditedAt", "auditedBy"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "VERIFIED_PRIMARY", "VERIFIED_EXCHANGE_COPY", "SOURCE_UNAVAILABLE", "PROVENANCE_INCOMPLETE",
+            "CLAIM_NOT_FOUND", "VALUE_MISMATCH", "PERIOD_MISMATCH", "UNSUPPORTED", "QUARANTINED"
+          ]
+        },
+        "auditedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "auditedBy": { "type": "string", "minLength": 1 },
+        "notes": { "type": ["string", "null"] },
+        "resolvedChunkIds": { "type": "array", "items": { "type": "string" } }
+      }
     }
   },
   "definitions": {
