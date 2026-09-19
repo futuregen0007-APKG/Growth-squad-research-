@@ -19,19 +19,26 @@ const managementPromiseSchema = new mongoose.Schema({
   // pipeline, which never set this field).
   curatedRecordId: { type: String, default: null, index: true, sparse: true },
 
-  // Phase 4F: Earnings Evidence Integrity Audit. Optional/additive --
+  // Phase 4F/4F.1: Earnings Evidence Integrity Audit. Optional/additive --
   // mirrors the same shape (and the same status enum) as a curated JSON
   // record's own evidenceIntegrity field (see
-  // utils/earningsIntelligenceValidation.js). Absence is treated as
-  // publicly visible (isPubliclyVisiblePromise fails OPEN for this much
-  // broader, cross-symbol, live-research collection -- only a document
-  // EXPLICITLY marked with a non-public-safe status here is excluded from
-  // getCompanyPromises/getCompanyTimeline in services/ManagementPromiseService.js).
+  // utils/earningsIntelligenceValidation.js). Phase 4F.1 correction: this
+  // now fails CLOSED everywhere, exactly like a curated JSON record --
+  // isPubliclyVisibleRecord (the ONE shared predicate; the earlier,
+  // separate isPubliclyVisiblePromise that failed OPEN for this
+  // collection has been removed) requires an EXPLICIT VERIFIED_PRIMARY/
+  // VERIFIED_EXCHANGE_COPY status before a document is visible in
+  // getCompanyPromises/getCompanyTimeline or the grounded evidence
+  // envelope. scripts/migrateEvidenceIntegrity.js backfills every
+  // pre-existing REAL_RESEARCH document missing this field to
+  // UNREVIEWED_LEGACY (itself NOT public-safe) rather than leaving it
+  // null, so "never audited" is an explicit, auditable state rather than
+  // silent absence.
   evidenceIntegrity: {
     status: {
       type: String,
       enum: [
-        'VERIFIED_PRIMARY', 'VERIFIED_EXCHANGE_COPY', 'SOURCE_UNAVAILABLE', 'PROVENANCE_INCOMPLETE',
+        'VERIFIED_PRIMARY', 'VERIFIED_EXCHANGE_COPY', 'UNREVIEWED_LEGACY', 'SOURCE_UNAVAILABLE', 'PROVENANCE_INCOMPLETE',
         'CLAIM_NOT_FOUND', 'VALUE_MISMATCH', 'PERIOD_MISMATCH', 'UNSUPPORTED', 'QUARANTINED', null,
       ],
       default: null,
@@ -39,6 +46,15 @@ const managementPromiseSchema = new mongoose.Schema({
     auditedAt: { type: Date, default: null },
     auditedBy: { type: String, default: null },
     notes: { type: String, default: null },
+    // Phase 4F.1 migration audit trail (Part 3: "records migration
+    // version and timestamp") -- set only by
+    // scripts/migrateEvidenceIntegrity.js, never by a manual audit action
+    // (those set auditedAt/auditedBy/notes above instead), so a reviewer
+    // can always tell a migrated-default apart from an actually-reviewed
+    // record even though both currently share status UNREVIEWED_LEGACY
+    // immediately after a first migration run.
+    migrationVersion: { type: String, default: null },
+    migratedAt: { type: Date, default: null },
   },
   
   // Promise details

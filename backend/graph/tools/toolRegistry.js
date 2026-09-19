@@ -37,6 +37,7 @@ import { getStockNews } from '../../services/NewsAPIService.js';
 import { getCompanyTimeline, getCompanyPromises } from '../../services/ManagementPromiseService.js';
 import { collectDocuments } from '../../research/DocumentResearchService.js';
 import ManagementPromise from '../../models/ManagementPromise.js';
+import { isPubliclyVisibleRecord } from '../../utils/earningsIntelligenceValidation.js';
 import Watchlist from '../../models/Watchlist.js';
 import PortfolioHolding from '../../models/PortfolioHolding.js';
 import { buildEvidenceRecord } from '../evidence.js';
@@ -437,12 +438,52 @@ export const getCompanyNews = async ({ symbol }, context = {}) => {
 // gives this a cache (a real, worthwhile speedup for repeated questions
 // about the same company) but deliberately no circuit breaker; see the
 // Phase 1 report's "remaining adapters" note.
+
+/**
+ * getEvidenceIntegrityVersionTag - a cheap, live-computed cache-busting tag
+ * for getEarningsTimeline (Phase 4F.1 Part 4). Combines the document count
+ * and the latest `updatedAt` across this symbol's REAL_RESEARCH
+ * ManagementPromise documents -- the count changes on insert/delete (a
+ * migration or import run), and updatedAt changes on any in-place edit
+ * (a quarantine/re-audit write), so either kind of evidence-integrity
+ * change busts the cache on the very next request. Never throws: a query
+ * failure falls back to a fixed tag, degrading to "cache behaves like it
+ * always did" rather than breaking the tool.
+ */
+const getEvidenceIntegrityVersionTag = async (symbol) => {
+  try {
+    const [row] = await ManagementPromise.aggregate([
+      { $match: { symbol, dataOrigin: 'REAL_RESEARCH' } },
+      { $group: { _id: null, maxUpdatedAt: { $max: '$updatedAt' }, count: { $sum: 1 } } },
+    ]);
+    return row ? `${row.count}-${new Date(row.maxUpdatedAt).getTime()}` : '0';
+  } catch {
+    return 'unknown';
+  }
+};
+
 export const getEarningsTimeline = async ({ symbol }, context = {}) => {
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return result('getEarningsTimeline', TOOL_STATUS.ERROR, null, [], 'A symbol is required');
   try {
+    // Phase 4F.1 Part 4: a 30-minute TTL is long enough that a quarantine/
+    // re-audit action (which normally happens in a SEPARATE process --
+    // scripts/earningsReview.js, scripts/migrateEvidenceIntegrity.js --
+    // that can never reach into this server process's in-memory cache to
+    // invalidate it directly) could otherwise keep serving a
+    // now-quarantined record for up to half an hour. Rather than shorten
+    // the TTL (and lose its real speedup for the common case), the cache
+    // KEY itself carries a cheap, live-computed version tag -- the latest
+    // `updatedAt` across this symbol's ManagementPromise documents, which
+    // Mongoose's own {timestamps:true} already bumps on every write,
+    // including an evidenceIntegrity change. A quarantine/re-audit write
+    // therefore changes the effective cache key on the very next request,
+    // producing a guaranteed MISS (buildCacheKey's own `dataVersion`
+    // parameter exists for exactly this purpose) instead of only
+    // eventually expiring.
+    const versionTag = await getEvidenceIntegrityVersionTag(normalized);
     const { value: timeline, cacheStatus, storedAt } = await getOrCompute(
-      buildCacheKey('getEarningsTimeline', normalized),
+      buildCacheKey('getEarningsTimeline', normalized, versionTag),
       CACHE_TTL_MS.EARNINGS_TIMELINE,
       () => withTimeout(getCompanyTimeline(normalized), boundedCallTimeout(10000, context), 'getEarningsTimeline', context.signal),
     );
@@ -543,7 +584,11 @@ export const getManagementPromiseDetails = async ({ promiseId, symbol, metric, p
   try {
     if (promiseId) {
       const promise = await ManagementPromise.findOne({ _id: promiseId, dataOrigin: 'REAL_RESEARCH' }).lean();
-      if (!promise) return result('getManagementPromiseDetails', TOOL_STATUS.EMPTY, null, [], SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD);
+      // Phase 4F.1: this direct by-id lookup bypassed getCompanyPromises'
+      // evidence-integrity filter entirely (a real leak this audit found
+      // in the grounded-chat tool surface itself) -- gated here the same
+      // way every other public path is.
+      if (!promise || !isPubliclyVisibleRecord(promise)) return result('getManagementPromiseDetails', TOOL_STATUS.EMPTY, null, [], SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD);
       const evidence = buildPromiseEvidence(promise);
       return result('getManagementPromiseDetails', evidence.length ? TOOL_STATUS.SUCCESS : TOOL_STATUS.EMPTY, promise, evidence, evidence.length ? null : SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD);
     }

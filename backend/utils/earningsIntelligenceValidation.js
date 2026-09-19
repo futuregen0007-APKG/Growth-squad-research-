@@ -83,50 +83,58 @@ export const COVERAGE_STATUSES = ['COMPLETE', 'PARTIAL', 'RESEARCH_PENDING', 'ST
  *                            `evidenceIntegrity.notes`, never discarded.
  *
  * Only VERIFIED_PRIMARY and VERIFIED_EXCHANGE_COPY are "public safe" --
- * every other status (including simply never having been audited at all,
- * for the curated JSON dataset specifically -- see
- * CuratedEarningsIntelligenceService.js's isPubliclyVisibleRecord) means a
- * record does not appear publicly.
+ * every other status, including UNREVIEWED_LEGACY and simply never having
+ * been audited at all (missing field), means a record does not appear
+ * publicly, ANYWHERE (curated JSON records and ManagementPromise Mongo
+ * documents alike -- Phase 4F.1 corrected Phase 4F's earlier fail-OPEN
+ * design for the live-research collection specifically because it left a
+ * real gap: any symbol never touched by a Phase 4F-style audit stayed
+ * silently, unconditionally public).
+ *
+ *   UNREVIEWED_LEGACY - Phase 4F.1's migration default for a pre-existing
+ *                        record that predates evidence-integrity auditing
+ *                        entirely. Deliberately NOT public-safe -- it is a
+ *                        honest "we have not checked this yet" marker, not
+ *                        an assertion of correctness. A record must be
+ *                        actively re-audited to VERIFIED_PRIMARY/
+ *                        VERIFIED_EXCHANGE_COPY (or explicitly rejected)
+ *                        to ever become public again.
  */
 export const EVIDENCE_INTEGRITY_STATUSES = [
-  'VERIFIED_PRIMARY', 'VERIFIED_EXCHANGE_COPY', 'SOURCE_UNAVAILABLE', 'PROVENANCE_INCOMPLETE',
+  'VERIFIED_PRIMARY', 'VERIFIED_EXCHANGE_COPY', 'UNREVIEWED_LEGACY', 'SOURCE_UNAVAILABLE', 'PROVENANCE_INCOMPLETE',
   'CLAIM_NOT_FOUND', 'VALUE_MISMATCH', 'PERIOD_MISMATCH', 'UNSUPPORTED', 'QUARANTINED',
 ];
 
 export const PUBLIC_SAFE_EVIDENCE_STATUSES = ['VERIFIED_PRIMARY', 'VERIFIED_EXCHANGE_COPY'];
 
 /**
- * isPubliclyVisibleRecord - the ONE gate every public-facing consumer of a
- * CURATED JSON record must apply (Task 4: "No grandfathering -- existing
- * JSON does not prove correctness"). Fails CLOSED: a record with no
- * evidenceIntegrity field at all (never audited) is NOT publicly visible,
- * exactly the same as one explicitly marked QUARANTINED/UNSUPPORTED/etc.
- * This is deliberately stricter than isPubliclyVisiblePromise below (which
- * governs the much broader, cross-symbol live-research ManagementPromise
- * collection and fails OPEN for an absent field) -- the curated JSON
- * dataset is small, hand-authored, and every record in it has now been
- * explicitly audited, so there is no legitimate reason for a real one to
- * be missing this field going forward.
+ * isPubliclyVisibleRecord - THE ONE eligibility predicate every public-
+ * facing consumer of ANY evidence-integrity-bearing record must apply --
+ * a curated JSON record (promises/<SYMBOL>.json), an accepted
+ * PromiseCandidate, or a ManagementPromise Mongo document all share the
+ * exact same `evidenceIntegrity: { status, ... }` shape, so this is
+ * deliberately the SAME function for all three (Phase 4F.1 Part 2: "Do
+ * not duplicate slightly different filters across services" -- Phase 4F's
+ * own `isPubliclyVisiblePromise`, which failed OPEN for ManagementPromise
+ * specifically, has been removed; every call site now imports this one).
+ * Fails CLOSED unconditionally: a record with no evidenceIntegrity field
+ * at all is NOT publicly visible, exactly like one explicitly marked
+ * QUARANTINED/UNSUPPORTED/UNREVIEWED_LEGACY/etc.
  */
 export const isPubliclyVisibleRecord = (record) => Boolean(
   record?.evidenceIntegrity?.status && PUBLIC_SAFE_EVIDENCE_STATUSES.includes(record.evidenceIntegrity.status),
 );
 
 /**
- * isPubliclyVisiblePromise - the gate for a ManagementPromise Mongo
- * document (the live-research, cross-symbol collection the real grounded-
- * RAG `getEarningsTimeline` tool reads). Fails OPEN: a document with no
- * evidenceIntegrity field is treated as publicly visible (preserving
- * existing behavior for the many symbols never touched by this Phase 4F
- * audit, which is scoped to TCS -- see the task's own "do not proceed to
- * broader company expansion" instruction); only a document EXPLICITLY
- * marked with a non-public-safe status is excluded.
+ * PUBLIC_SAFE_EVIDENCE_QUERY - the Mongo-query-condition form of
+ * isPubliclyVisibleRecord, for any collection that stores
+ * `evidenceIntegrity.status` (ManagementPromise today). Spread this into
+ * every query a public-facing path builds, exactly once per query, rather
+ * than re-deriving the condition ad hoc at each call site.
  */
-export const isPubliclyVisiblePromise = (doc) => {
-  const status = doc?.evidenceIntegrity?.status;
-  if (!status) return true;
-  return PUBLIC_SAFE_EVIDENCE_STATUSES.includes(status);
-};
+export const PUBLIC_SAFE_EVIDENCE_QUERY = Object.freeze({
+  'evidenceIntegrity.status': { $in: PUBLIC_SAFE_EVIDENCE_STATUSES },
+});
 
 // Evidence source priority, per Step 4 of the curated-research plan (higher = preferred).
 export const SOURCE_TYPE_PRIORITY = {
@@ -372,6 +380,6 @@ export default {
   findDuplicatePromiseIds,
   EVIDENCE_INTEGRITY_STATUSES,
   PUBLIC_SAFE_EVIDENCE_STATUSES,
+  PUBLIC_SAFE_EVIDENCE_QUERY,
   isPubliclyVisibleRecord,
-  isPubliclyVisiblePromise,
 };

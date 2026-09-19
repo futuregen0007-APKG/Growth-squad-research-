@@ -16,21 +16,7 @@ import {
 import openai from './openaiClient.js';
 import { logger } from '../utils/logger.js';
 import { periodsMatch, normalizeFinancialValue, financialUnitFamily } from '../utils/financialNormalization.js';
-import { isPubliclyVisiblePromise, PUBLIC_SAFE_EVIDENCE_STATUSES } from '../utils/earningsIntelligenceValidation.js';
-
-// Phase 4F: excludes any ManagementPromise document explicitly marked
-// non-public-safe by the evidence-integrity audit -- fails OPEN (a
-// document with no evidenceIntegrity field at all still matches) so this
-// never changes behavior for the many symbols never touched by that
-// audit. Combined with REAL_RESEARCH_FILTER via $and wherever a caller
-// also adds its own year/status/metric conditions.
-const PUBLIC_SAFE_EVIDENCE_QUERY = {
-  $or: [
-    { evidenceIntegrity: { $exists: false } },
-    { 'evidenceIntegrity.status': null },
-    { 'evidenceIntegrity.status': { $in: PUBLIC_SAFE_EVIDENCE_STATUSES } },
-  ],
-};
+import { PUBLIC_SAFE_EVIDENCE_QUERY } from '../utils/earningsIntelligenceValidation.js';
 import { searchActualOutcomesFromIndianApi } from './OutcomeEvidenceService.js';
 import { getCompanyResearchBundle } from './CompanyResearchService.js';
 import { buildFinancialIntelligenceSnapshot } from './FinancialIntelligenceService.js';

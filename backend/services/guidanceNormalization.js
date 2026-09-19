@@ -50,16 +50,45 @@
 // Canonical metric table — SAFE equivalence is an explicit allow-list, never
 // inferred. Each key's alias list is deliberately narrow; adding a new
 // alias is a conscious, reviewable decision, not automatic fuzzy matching.
+//
+// Phase 4F.1 Part 5: this table is THE ONE canonical metric-mapping layer
+// for the whole project — chunk annotations (via
+// services/guidanceExtraction.js), Earnings Intelligence records (via
+// EvidenceEnvelope.js's structuredGuidance path, which passes a
+// ManagementPromise document's own `promise.metric` ENUM value straight
+// into normalizeMetric below), and every downstream consumer of the
+// resulting metricKey (temporalRelationships.js groups by it,
+// groundedVerification.js reads it via canonicalGuidance) all share this
+// SAME table. The enum-token aliases below (underscored, e.g.
+// "ebitda_margin", "revenue_growth", "capex") are added ALONGSIDE the
+// pre-existing free-text aliases specifically to close a real gap this
+// phase found: ManagementPromise's `promise.metric` field is an
+// UPPERCASE_ENUM token ("EBITDA_MARGIN"), not free prose ("EBITDA
+// margin"), so it never matched any pre-existing space-separated alias.
+// Each addition is deliberately UNAMBIGUOUS on its own (never mapped to a
+// key it could also plausibly mean something else as) -- notably, the
+// bare enum token "MARGIN" is intentionally NOT aliased to any specific
+// margin key, for the exact same reason bare free-text "margin" already
+// wasn't: it is genuinely ambiguous between operating/EBITDA/net margin,
+// and guessing would violate this module's own "never fuzzy" rule.
+// Likewise "EMPLOYEE_PERCENTAGE" and "OTHER"/"OTHER_QUANTIFIABLE" are
+// deliberately left unmapped -- an employee percentage could be attrition,
+// onsite/offshore mix, or something else entirely, and "OTHER" is
+// definitionally non-specific.
 // ---------------------------------------------------------------------------
 const METRIC_ALIASES = Object.freeze({
   operating_margin: ['operating margin', 'ebit margin'],
-  ebitda_margin: ['ebitda margin'],
+  ebitda_margin: ['ebitda margin', 'ebitda_margin'],
   net_margin: ['net margin', 'net profit margin', 'pat margin'],
-  revenue_growth: ['revenue growth', 'revenue guidance'],
+  revenue_growth: ['revenue growth', 'revenue guidance', 'revenue_growth'],
   revenue_growth_constant_currency: ['constant currency revenue growth', 'cc revenue growth', 'constant currency growth'],
   revenue: ['revenue', 'topline'],
-  headcount: ['headcount', 'employee addition', 'net addition'],
+  headcount: ['headcount', 'employee addition', 'net addition', 'hiring', 'employee_count'],
   attrition: ['attrition', 'attrition rate'],
+  // New in Phase 4F.1: CAPEX had no canonical key at all -- ManagementPromise's
+  // own CAPEX enum value (and the plain word "capex" in free text) both
+  // resolve here, unambiguous.
+  capex: ['capex', 'capital expenditure'],
 });
 
 // Longest-alias-first so "constant currency revenue growth" is matched

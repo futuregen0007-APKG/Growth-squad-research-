@@ -90,6 +90,8 @@ test('getManagementPromiseDetails builds evidence with the real promise source U
       symbol: 'TCS',
       promise: { statement: 'Revenue to grow 15%', targetPeriod: 'FY2026' },
       evidence: { promiseSource: { sourceUrl: 'https://tcs.com/ir/x.pdf', publicationDate: '2025-05-01', excerpt: 'We expect 15% growth.', page: 4 } },
+      // Phase 4F.1: getManagementPromiseDetails now gates on isPubliclyVisibleRecord.
+      evidenceIntegrity: { status: 'VERIFIED_PRIMARY' },
     }),
   });
   try {

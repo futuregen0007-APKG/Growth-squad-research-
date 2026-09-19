@@ -91,3 +91,62 @@ test('normalizeGuidanceEvidence preserves the original evidence text unchanged',
   });
   assert.equal(record.originalText, originalText);
 });
+
+// ---------------------------------------------------------------------------
+// Phase 4F.1 Part 5: unified canonical metric taxonomy -- normalizeMetric is
+// the ONE mapping layer for both free-text (chunk annotation) input and
+// ManagementPromise's own UPPERCASE_ENUM `promise.metric` values (Earnings
+// Intelligence records). Required test coverage: margin, attrition, revenue
+// growth, capex, headcount/hiring, unknown metric, conflicting metric types.
+// ---------------------------------------------------------------------------
+test('canonical metric taxonomy: margin -- bare "margin" (free text or the MARGIN enum token) is deliberately ambiguous, never guessed', () => {
+  assert.equal(normalizeMetric('margin').metricKey, null);
+  assert.equal(normalizeMetric('margin').confidence, 'unresolved');
+  assert.equal(normalizeMetric('MARGIN').metricKey, null, 'the bare ManagementPromise enum token MARGIN must resolve exactly like free-text "margin" -- ambiguous, not guessed');
+});
+
+test('canonical metric taxonomy: margin -- an UNAMBIGUOUS margin phrase/enum resolves to the correct distinct key', () => {
+  assert.equal(normalizeMetric('operating margin').metricKey, 'operating_margin');
+  assert.equal(normalizeMetric('EBITDA_MARGIN').metricKey, 'ebitda_margin');
+  assert.equal(normalizeMetric('ebitda margin').metricKey, 'ebitda_margin');
+  assert.notEqual(normalizeMetric('operating margin').metricKey, normalizeMetric('EBITDA_MARGIN').metricKey);
+});
+
+test('canonical metric taxonomy: attrition resolves via free text (the only form it currently appears in -- no ManagementPromise enum token exists for it, so an "OTHER"-categorized attrition promise honestly stays unresolved rather than being guessed)', () => {
+  assert.equal(normalizeMetric('attrition').metricKey, 'attrition');
+  assert.equal(normalizeMetric('Our attrition rate improved').metricKey, 'attrition');
+  assert.equal(normalizeMetric('OTHER').metricKey, null, 'a generic OTHER category must never be guessed as attrition just because that is a common OTHER-categorized promise in practice');
+});
+
+test('canonical metric taxonomy: revenue growth resolves via both free text and the REVENUE_GROWTH enum token, and is never confused with bare "revenue"', () => {
+  assert.equal(normalizeMetric('revenue growth').metricKey, 'revenue_growth');
+  assert.equal(normalizeMetric('REVENUE_GROWTH').metricKey, 'revenue_growth');
+  assert.equal(normalizeMetric('REVENUE').metricKey, 'revenue');
+  assert.notEqual(normalizeMetric('REVENUE_GROWTH').metricKey, normalizeMetric('REVENUE').metricKey);
+});
+
+test('canonical metric taxonomy: capex resolves via both free text and the CAPEX enum token (previously had no canonical key at all)', () => {
+  assert.equal(normalizeMetric('capex').metricKey, 'capex');
+  assert.equal(normalizeMetric('CAPEX').metricKey, 'capex');
+  assert.equal(normalizeMetric('planned capital expenditure for FY26').metricKey, 'capex');
+});
+
+test('canonical metric taxonomy: headcount/hiring resolves via free text and the EMPLOYEE_COUNT enum token', () => {
+  assert.equal(normalizeMetric('headcount').metricKey, 'headcount');
+  assert.equal(normalizeMetric('EMPLOYEE_COUNT').metricKey, 'headcount');
+  assert.equal(normalizeMetric('planned hiring of 20,000 freshers').metricKey, 'headcount');
+});
+
+test('canonical metric taxonomy: an unknown/unsupported metric always resolves UNRESOLVED, never fuzzy-matched to the nearest known key', () => {
+  const result = normalizeMetric('SOMETHING_NOBODY_HAS_EVER_ALIASED');
+  assert.equal(result.metricKey, null);
+  assert.equal(result.confidence, 'unresolved');
+  assert.equal(result.reason, 'NO_KNOWN_METRIC_MATCHED');
+});
+
+test('canonical metric taxonomy: conflicting metric types in the same text -- two genuinely unrelated metrics both matching leaves the result ambiguous/unresolved rather than picking one', () => {
+  const result = normalizeMetric('Both our capex plans and our headcount guidance were discussed on the call.');
+  assert.equal(result.metricKey, null);
+  assert.equal(result.confidence, 'unresolved');
+  assert.match(result.reason, /^AMBIGUOUS_METRIC:/);
+});

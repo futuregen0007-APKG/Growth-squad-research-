@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import {
-  isPubliclyVisibleRecord, isPubliclyVisiblePromise, EVIDENCE_INTEGRITY_STATUSES, PUBLIC_SAFE_EVIDENCE_STATUSES,
+  isPubliclyVisibleRecord, EVIDENCE_INTEGRITY_STATUSES, PUBLIC_SAFE_EVIDENCE_STATUSES,
 } from '../utils/earningsIntelligenceValidation.js';
 import { getCompanyTimeline, getCompanyPromises, getCompanyPromisesDebug, calculateFaithScore, reloadCuratedDataset } from '../services/CuratedEarningsIntelligenceService.js';
 import ManagementPromise from '../models/ManagementPromise.js';
 import { getCompanyPromises as getLegacyCompanyPromises } from '../services/ManagementPromiseService.js';
 import { buildEarningsIntelligenceEnvelopeItems } from '../services/EvidenceEnvelope.js';
+import { getEarningsTimeline } from '../graph/tools/toolRegistry.js';
+import { __clearToolCacheForTests } from '../graph/tools/toolCache.js';
 
 dotenv.config();
 if (mongoose.connection.readyState === 0) {
@@ -25,7 +27,7 @@ after(async () => { await cleanup(); await mongoose.disconnect().catch(() => {})
 // Pure evidence-integrity-status vocabulary and gating functions.
 // ---------------------------------------------------------------------------
 test('EVIDENCE_INTEGRITY_STATUSES covers every required state', () => {
-  for (const status of ['VERIFIED_PRIMARY', 'VERIFIED_EXCHANGE_COPY', 'SOURCE_UNAVAILABLE', 'PROVENANCE_INCOMPLETE', 'CLAIM_NOT_FOUND', 'VALUE_MISMATCH', 'PERIOD_MISMATCH', 'UNSUPPORTED', 'QUARANTINED']) {
+  for (const status of ['VERIFIED_PRIMARY', 'VERIFIED_EXCHANGE_COPY', 'UNREVIEWED_LEGACY', 'SOURCE_UNAVAILABLE', 'PROVENANCE_INCOMPLETE', 'CLAIM_NOT_FOUND', 'VALUE_MISMATCH', 'PERIOD_MISMATCH', 'UNSUPPORTED', 'QUARANTINED']) {
     assert.ok(EVIDENCE_INTEGRITY_STATUSES.includes(status), `missing status: ${status}`);
   }
 });
@@ -42,19 +44,26 @@ test('isPubliclyVisibleRecord: verified NSE/BSE exchange copy is visible', () =>
   assert.equal(isPubliclyVisibleRecord({ evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } }), true);
 });
 
-test('isPubliclyVisibleRecord: every non-public-safe status is excluded (missing source, broken URL, placeholder URL modeled as SOURCE_UNAVAILABLE; missing page/claim modeled as PROVENANCE_INCOMPLETE/CLAIM_NOT_FOUND; numeric/period mismatch; unsupported source; quarantined)', () => {
-  for (const status of ['SOURCE_UNAVAILABLE', 'PROVENANCE_INCOMPLETE', 'CLAIM_NOT_FOUND', 'VALUE_MISMATCH', 'PERIOD_MISMATCH', 'UNSUPPORTED', 'QUARANTINED']) {
+test('isPubliclyVisibleRecord: every non-public-safe status is excluded (missing source, broken URL, placeholder URL modeled as SOURCE_UNAVAILABLE; missing page/claim modeled as PROVENANCE_INCOMPLETE/CLAIM_NOT_FOUND; numeric/period mismatch; unsupported source; unreviewed legacy; quarantined)', () => {
+  for (const status of ['UNREVIEWED_LEGACY', 'SOURCE_UNAVAILABLE', 'PROVENANCE_INCOMPLETE', 'CLAIM_NOT_FOUND', 'VALUE_MISMATCH', 'PERIOD_MISMATCH', 'UNSUPPORTED', 'QUARANTINED']) {
     assert.equal(isPubliclyVisibleRecord({ evidenceIntegrity: { status } }), false, `${status} must not be publicly visible`);
   }
 });
 
-test('isPubliclyVisiblePromise (ManagementPromise/live-research path): fails OPEN -- a document with no evidenceIntegrity at all remains visible (preserves existing cross-symbol behavior)', () => {
-  assert.equal(isPubliclyVisiblePromise({ _id: 'x' }), true);
+// Phase 4F.1 correction: isPubliclyVisibleRecord is now THE ONE predicate
+// for both the curated JSON path AND the ManagementPromise/live-research
+// path -- it fails CLOSED everywhere, including for a symbol never
+// touched by any audit. The separate, fail-OPEN isPubliclyVisiblePromise
+// Phase 4F introduced has been removed entirely (Part 2: "Do not
+// duplicate slightly different filters across services").
+test('isPubliclyVisibleRecord applied to a ManagementPromise-shaped document: fails CLOSED -- a document with no evidenceIntegrity at all is NOT visible (this is the corrected behavior; Phase 4F\'s earlier fail-OPEN design left every never-audited symbol silently, unconditionally public)', () => {
+  assert.equal(isPubliclyVisibleRecord({ _id: 'x' }), false);
 });
 
-test('isPubliclyVisiblePromise: an explicit non-public-safe status excludes the document', () => {
-  assert.equal(isPubliclyVisiblePromise({ evidenceIntegrity: { status: 'UNSUPPORTED' } }), false);
-  assert.equal(isPubliclyVisiblePromise({ evidenceIntegrity: { status: 'QUARANTINED' } }), false);
+test('isPubliclyVisibleRecord applied to a ManagementPromise-shaped document: an explicit non-public-safe status excludes the document', () => {
+  assert.equal(isPubliclyVisibleRecord({ evidenceIntegrity: { status: 'UNSUPPORTED' } }), false);
+  assert.equal(isPubliclyVisibleRecord({ evidenceIntegrity: { status: 'QUARANTINED' } }), false);
+  assert.equal(isPubliclyVisibleRecord({ evidenceIntegrity: { status: 'UNREVIEWED_LEGACY' } }), false);
 });
 
 // ---------------------------------------------------------------------------
@@ -156,10 +165,18 @@ test('a ManagementPromise document explicitly UNSUPPORTED (bad source domain) ne
   assert.equal(results.length, 0);
 });
 
-test('a ManagementPromise document with NO evidenceIntegrity (never audited) still appears -- existing live-research behavior for other symbols is unaffected', async () => {
+test('Phase 4F.1 correction: a ManagementPromise document with NO evidenceIntegrity (never audited) no longer appears -- fail-CLOSED now applies to every symbol, not just TCS', async () => {
   await ManagementPromise.create(baseDoc());
   const results = await getLegacyCompanyPromises(TEST_SYMBOL);
-  assert.equal(results.length, 1);
+  assert.equal(results.length, 0);
+});
+
+test('a ManagementPromise document explicitly UNREVIEWED_LEGACY (the migration default) never leaks through the real grounded-RAG getCompanyPromises path', async () => {
+  await ManagementPromise.create(baseDoc({
+    evidenceIntegrity: { status: 'UNREVIEWED_LEGACY', migrationVersion: '1', migratedAt: new Date() },
+  }));
+  const results = await getLegacyCompanyPromises(TEST_SYMBOL);
+  assert.equal(results.length, 0);
 });
 
 test('a ManagementPromise document explicitly VERIFIED_EXCHANGE_COPY remains visible', async () => {
@@ -205,6 +222,31 @@ test('a genuinely quantified promise (operator present) DOES produce structuredG
 // actually re-ingested through the normal document pipeline during this
 // audit have real, locally stored, chunked, embedded primary-source text.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Cache leakage after quarantine (Phase 4F.1 Part 4): a record becoming
+// QUARANTINED must disappear from the grounded-chat getEarningsTimeline
+// tool on the VERY NEXT call, even though its 30-minute in-process cache
+// entry would otherwise still be fresh.
+// ---------------------------------------------------------------------------
+test('stale-cache regression: a record quarantined AFTER a warm getEarningsTimeline cache entry is excluded on the next call, not served stale for up to 30 minutes', async () => {
+  __clearToolCacheForTests();
+  const doc = await ManagementPromise.create(baseDoc({
+    evidenceIntegrity: { status: 'VERIFIED_PRIMARY', auditedAt: new Date(), auditedBy: 'test' },
+  }));
+
+  const first = await getEarningsTimeline({ symbol: TEST_SYMBOL });
+  assert.equal(first.data.promises.length, 1, 'the verified record must be visible on the first (cache-MISS) call');
+
+  // Simulate a real quarantine action -- exactly what
+  // scripts/earningsReview.js or an admin action would do, from a
+  // completely separate process in production. Mongoose's own
+  // {timestamps:true} bumps updatedAt automatically.
+  await ManagementPromise.updateOne({ _id: doc._id }, { $set: { 'evidenceIntegrity.status': 'QUARANTINED', 'evidenceIntegrity.notes': 'test quarantine' } });
+
+  const second = await getEarningsTimeline({ symbol: TEST_SYMBOL });
+  assert.equal(second.data.promises.length, 0, 'the newly-quarantined record must never be served from a stale cache entry');
+});
+
 test('REAL AUDIT RESULT: TCS-FY2025-001 evidence documents are durably stored with real chunk coverage', async () => {
   const { CompanyDocumentRegistry } = await import('../models/CompanyDocumentRegistry.js');
   const { ResearchDocumentChunk } = await import('../models/ResearchDocumentChunk.js');

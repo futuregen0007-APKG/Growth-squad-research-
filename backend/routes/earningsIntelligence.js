@@ -14,7 +14,7 @@ import {
 import * as CuratedEarningsIntelligenceService from '../services/CuratedEarningsIntelligenceService.js';
 import ManagementPromise from '../models/ManagementPromise.js';
 import CompanyHistoricalFact from '../models/CompanyHistoricalFact.js';
-import { isPubliclyVisiblePromise } from '../utils/earningsIntelligenceValidation.js';
+import { isPubliclyVisibleRecord } from '../utils/earningsIntelligenceValidation.js';
 
 const router = express.Router();
 
@@ -59,7 +59,7 @@ router.get('/promise/:id', async (req, res, next) => {
     // endpoints -- a quarantined/unsupported record's Mongo _id is never a
     // secret, so this route must not become a bypass for evidence-integrity
     // filtering.
-    if (!promise || !isPubliclyVisiblePromise(promise)) return res.status(404).json({ success: false, message: 'Promise not found.' });
+    if (!promise || !isPubliclyVisibleRecord(promise)) return res.status(404).json({ success: false, message: 'Promise not found.' });
     return res.json({ success: true, data: promise });
   } catch (error) {
     console.error('[Earnings Intelligence] /promise/:id error:', error);

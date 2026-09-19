@@ -18,6 +18,21 @@
       "resolvedPromiseCount": 2,
       "pendingPromiseCount": 0,
       "notes": "Phase 4F evidence-integrity audit (2026-09-19): of the 3 curated promise/outcome pairs, 2 (attrition comfort-range vs FY25 actual; international-revenue directional outlook vs Q2 FY26 actual) were re-verified against REAL, newly re-ingested primary-source PDF text (exact excerpt and page number confirmed for both promise and outcome) and remain public. The third (operating-margin aspiration vs FY26 actual, TCS-FY2026-001) was QUARANTINED: neither its promise nor outcome source URL (both on tcs.com) is currently fetchable through any supported legitimate channel (live HTTP 403, Cloudflare-blocked), so the claim could not be re-confirmed against real stored text -- see evidenceIntegrity on that record for the full reason. resolvedPromiseCount/verifiedPromiseCount below reflect only publicly-visible records; the Faith Score is correctly null (< 3 resolved verified promises) until a fetchable primary source is found for the quarantined record or a new one is added. Coverage remains intentionally PARTIAL, not COMPLETE -- only a small sample of TCS's many quarterly commitments has been curated so far."
+    },
+    {
+      "symbol": "INFY",
+      "companyName": "Infosys",
+      "sector": "IT",
+      "dataMode": "CURATED_VERIFIED",
+      "coverageStatus": "PARTIAL",
+      "coverageStart": null,
+      "coverageEnd": null,
+      "lastVerifiedAt": "2026-09-19",
+      "nextReviewAfter": null,
+      "verifiedPromiseCount": 1,
+      "resolvedPromiseCount": 0,
+      "pendingPromiseCount": 1,
+      "notes": null
     }
   ]
 }
