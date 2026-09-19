@@ -330,9 +330,29 @@ export const buildEarningsIntelligenceEnvelopeItems = (timeline, { symbol, compa
         // a real hallucinated-field bug this audit surfaced live (TCS's
         // qualitative Q2 FY2026 international-revenue promise was
         // producing a fabricated canonicalGuidance of "revenue = 0").
+        // Phase 4F.2 Part 2: a genuinely qualitative promise (operator
+        // null -- the ONLY way earningsImport.js's OPERATOR_MAP ever
+        // produces a null operator, exclusively for its own QUALITATIVE
+        // case; see that module) now gets its OWN structured signal
+        // instead of being silently left null. This is what lets a real
+        // record like TCS-FY2026-002 ("we are more optimistic...") flow
+        // into guidanceNormalization.js's qualitative branch instead of
+        // falling all the way to the unstructured text fallback, while
+        // STILL never inventing a numeric targetValue (Phase 4F's own
+        // fix for the coerced-0 bug stays in force below).
+        // Phase 4F.2: `promise.operator === null` STRICTLY (never just
+        // falsy/undefined) is the qualitative signal -- earningsImport.js's
+        // OPERATOR_MAP is the ONLY place that ever produces a real,
+        // explicit null here (its QUALITATIVE case), so this can never be
+        // confused with a record that simply omits the field (e.g. an
+        // older/looser test fixture or a legacy shape that never set
+        // `operator` at all, which stays on the pre-existing `null`
+        // structuredGuidance -> text-fallback path exactly as before).
         structuredGuidance: promise.metric && promise.operator ? {
           metric: promise.metric, targetValue: promise.targetValue, targetUnit: promise.targetUnit, operator: promise.operator,
-        } : null,
+        } : (promise.metric && promise.operator === null && promise.evidence?.excerpt ? {
+          metric: promise.metric, valueType: 'QUALITATIVE', qualitativeText: promise.evidence.excerpt,
+        } : null),
       });
     }
 
@@ -354,9 +374,21 @@ export const buildEarningsIntelligenceEnvelopeItems = (timeline, { symbol, compa
         pageEnd: null,
         text: outcomeExcerpt,
         score: null,
+        // Phase 4F.2: an outcome is usually numeric (e.g. TCS-FY2026-002's
+        // real "0.6% QoQ" result) but a genuinely qualitative outcome
+        // (management describing what happened in words, no reported
+        // figure) gets the SAME qualitative structured signal the promise
+        // side does, rather than silently falling to the text fallback.
+        // Symmetric with the promise-side signal above: an outcome is only
+        // ever treated as qualitative when the ORIGINAL promise itself was
+        // (operator === null, strictly) AND no real numeric outcome value
+        // was captured -- never merely because a numeric value happens to
+        // be missing for some unrelated data-quality reason.
         structuredGuidance: promise.metric && Number.isFinite(promise.outcome?.actualValue) ? {
           metric: promise.metric, targetValue: promise.outcome.actualValue, targetUnit: promise.outcome.actualUnit || promise.targetUnit, operator: null,
-        } : null,
+        } : (promise.metric && promise.operator === null && !Number.isFinite(promise.outcome?.actualValue) ? {
+          metric: promise.metric, valueType: 'QUALITATIVE', qualitativeText: outcomeExcerpt,
+        } : null),
       });
     }
   }
@@ -489,15 +521,30 @@ export const reconcileEvidenceEnvelope = (envelope) => {
   const supersedesFor = (evidenceId) => relationships
     .filter((r) => r.type === 'SUPERSEDES' && r.fromEvidenceId === evidenceId)
     .map((r) => r.toEvidenceId);
+  // Phase 4F.2 Part 6: an OUTCOME item's own fulfillmentEvaluable flag
+  // (see services/temporalRelationships.js), surfaced onto the item itself
+  // so groundedVerification.js can check it without needing the whole
+  // relationships array threaded through separately — the SAME pattern
+  // supersededByEvidenceId/supersedesEvidenceIds already use.
+  const fulfillmentInfoFor = (evidenceId) => {
+    const rel = relationships.find((r) => r.type === 'OUTCOME_FOR' && r.fromEvidenceId === evidenceId);
+    if (!rel) return { fulfillmentEvaluable: null, fulfillmentReason: null };
+    return { fulfillmentEvaluable: rel.fulfillmentEvaluable, fulfillmentReason: rel.fulfillmentReason };
+  };
 
   const annotatedItems = items.map((item) => {
     const canonical = canonicalById.get(item.evidenceId);
+    const fulfillment = fulfillmentInfoFor(item.evidenceId);
     return {
       ...item,
       temporalStatus: temporalStatusFor(item.evidenceId, canonicalById, relationships),
       supersededByEvidenceId: supersededByFor(item.evidenceId),
       supersedesEvidenceIds: supersedesFor(item.evidenceId),
       relationshipIds: relationshipIdsFor(item.evidenceId),
+      // Additive; null/null for anything that isn't the OUTCOME side of an
+      // OUTCOME_FOR relationship (every existing item is unaffected).
+      fulfillmentEvaluable: fulfillment.fulfillmentEvaluable,
+      fulfillmentReason: fulfillment.fulfillmentReason,
       canonicalGuidance: canonical && canonical.confidence !== 'unresolved' ? {
         metric: canonical.metric,
         metricKey: canonical.metricKey,
@@ -510,6 +557,14 @@ export const reconcileEvidenceEnvelope = (envelope) => {
         exactValue: canonical.exactValue,
         unit: canonical.unit,
         currency: canonical.currency,
+        // Phase 4F.2: additive, present only for a genuine valueType
+        // 'qualitative' record -- absent (undefined, never even null-
+        // valued) on every existing numeric citation so nothing that
+        // reads this object today sees a new field it doesn't expect.
+        ...(canonical.valueType === 'qualitative' ? {
+          qualitativeDirection: canonical.qualitativeDirection,
+          qualitativeText: canonical.qualitativeText,
+        } : {}),
       } : null,
     };
   });

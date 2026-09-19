@@ -134,6 +134,56 @@ export const normalizeMetric = (text) => {
   };
 };
 
+// ---------------------------------------------------------------------------
+// Phase 4F.2 Part 2: qualitative guidance is a FIRST-CLASS canonical value
+// type, never a fake number. A qualitative statement ("we are more
+// optimistic about international revenue") carries no targetValue/
+// lowerBound/upperBound/exactValue/unit — those all stay null, exactly like
+// an unresolved numeric record, so nothing downstream (temporalRelationships'
+// valuesEqual, groundedVerification's numeric-fact check) can ever mistake a
+// qualitative record for a quantified one. `qualitativeDirection` is resolved
+// through the SAME "explicit allow-list, never fuzzy" discipline as
+// METRIC_ALIASES above -- a sentence matching more than one direction
+// pattern is genuinely ambiguous and stays unresolved, never guessed.
+// `qualitativeText` is always either the trusted Earnings-Intelligence
+// excerpt (human-verified) or a chunk annotation's own `supportingSpan`
+// (itself a verified substring of real chunk text, see guidanceExtraction.js)
+// -- never regenerated or paraphrased by this module.
+// ---------------------------------------------------------------------------
+export const QUALITATIVE_DIRECTIONS = Object.freeze(['INCREASE', 'DECREASE', 'MAINTAIN', 'IMPROVE', 'EXPAND', 'REDUCE', 'STABLE', 'OTHER']);
+
+// Order matters only for readability here (unlike METRIC_LOOKUP, these are
+// independent boolean tests, not substring subsumption) -- every pattern is
+// checked and ANY sentence matching more than one DISTINCT direction is
+// ambiguous by construction, never resolved by picking the first match.
+const QUALITATIVE_DIRECTION_PATTERNS = Object.freeze([
+  ['IMPROVE', /\bmore\s+optimistic\b|\bmore\s+confident\b|\bimprov(?:e|ed|ing|ement)\b|\bpositive\s+(?:outlook|momentum|trend|trajectory)\b/i],
+  ['INCREASE', /\bincreas(?:e|ed|ing)\b|\bhigher\b|\brising\b|\baccelerat(?:e|ed|ing|ion)\b|\bstrengthen(?:ed|ing)?\b/i],
+  ['EXPAND', /\bexpand(?:ed|ing)?\b|\bwiden(?:ed|ing)?\b|\bbroaden(?:ed|ing)?\b/i],
+  ['DECREASE', /\bdecreas(?:e|ed|ing)\b|\blower(?:ed|ing)?\b|\bdeclin(?:e|ed|ing)\b|\bsofter\b|\bweaken(?:ed|ing)?\b/i],
+  ['REDUCE', /\breduc(?:e|ed|ing|tion)\b|\bcut(?:ting)?\b|\bnarrow(?:ed|ing)?\b|\btrim(?:med|ming)?\b/i],
+  ['MAINTAIN', /\bmaintain(?:ed|s|ing)?\b|\breiterat(?:e|ed|es|ing)\b|\bunchanged\b/i],
+  ['STABLE', /\bstable\b|\bsteady\b|\bconsistent\b|\bflat\b/i],
+  ['OTHER', /\bmore\s+cautious\b|\bwatchful\b|\bmixed\s+signals?\b/i],
+]);
+
+/**
+ * classifyQualitativeDirection - resolves free text to exactly one of
+ * QUALITATIVE_DIRECTIONS, or `{qualitativeDirection: null, confidence:
+ * 'unresolved'}` when no pattern matches or more than one DISTINCT
+ * direction matches (Part 2: "ambiguous qualitative language must remain
+ * UNRESOLVED"). A generic aspiration with no directional verb at all
+ * ("we aim to be the best") matches nothing here and is correctly
+ * unresolved, never guessed as any direction.
+ */
+export const classifyQualitativeDirection = (text) => {
+  const value = String(text || '');
+  const hits = new Set(QUALITATIVE_DIRECTION_PATTERNS.filter(([, pattern]) => pattern.test(value)).map(([direction]) => direction));
+  if (hits.size === 0) return { qualitativeDirection: null, confidence: 'unresolved', reason: 'NO_QUALITATIVE_DIRECTION_FOUND' };
+  if (hits.size > 1) return { qualitativeDirection: null, confidence: 'unresolved', reason: `AMBIGUOUS_DIRECTION:${[...hits].join(',')}` };
+  return { qualitativeDirection: [...hits][0], confidence: 'high' };
+};
+
 // Explicit targetUnit values models/ManagementPromise.js already enforces —
 // reused verbatim so a structured Earnings Intelligence record's unit is
 // copied through unchanged, never re-derived.
@@ -268,7 +318,32 @@ export const normalizeGuidanceEvidence = (item, { structured = null, chunkAnnota
   let valueResult;
   let guidanceKind;
 
-  if (structured?.metric) {
+  // Phase 4F.2 Part 2: a qualitative structured record (structured.valueType
+  // === 'QUALITATIVE', set only by EvidenceEnvelope.js's
+  // buildEarningsIntelligenceEnvelopeItems for a promise whose OWN operator
+  // is null -- the deterministic, only-ever-set-by-earningsImport.js's
+  // OPERATOR_MAP.QUALITATIVE signal that this is genuinely qualitative, not
+  // a data-quality gap) is classified from its OWN trusted excerpt
+  // (structured.qualitativeText, never re-derived from item.text, which for
+  // an Earnings-Intelligence item is the SAME excerpt anyway but this keeps
+  // the dependency explicit) -- never given a fake numeric value.
+  if (structured?.valueType === 'QUALITATIVE') {
+    metricResult = normalizeMetric(structured.metric);
+    const direction = classifyQualitativeDirection(structured.qualitativeText || item.text);
+    valueResult = {
+      valueType: direction.qualitativeDirection ? 'qualitative' : null,
+      lowerBound: null,
+      upperBound: null,
+      exactValue: null,
+      unit: null,
+      currency: null,
+      qualitativeDirection: direction.qualitativeDirection,
+      qualitativeText: structured.qualitativeText || null,
+      confidence: direction.confidence,
+      reason: direction.reason,
+    };
+    guidanceKind = inferGuidanceKind(item);
+  } else if (structured?.metric) {
     metricResult = normalizeMetric(structured.metric);
     if (structured.targetUnit && STRUCTURED_UNIT_VALUES.has(structured.targetUnit) && Number.isFinite(structured.targetValue)) {
       valueResult = {
@@ -278,6 +353,24 @@ export const normalizeGuidanceEvidence = (item, { structured = null, chunkAnnota
       valueResult = { ...normalizeValue(item.text), confidence: 'low' };
     }
     guidanceKind = inferGuidanceKind(item);
+  } else if (chunkAnnotation && chunkAnnotation.status === 'VERIFIED' && chunkAnnotation.metricKey && chunkAnnotation.valueType === 'qualitative') {
+    // A VERIFIED qualitative chunk annotation (Part 3/Part 4) -- the
+    // annotation's own supportingSpan IS the verified text span (Part 2:
+    // "qualitativeText must be a verified substring... of trusted
+    // evidence"), never regenerated here.
+    metricResult = { metricKey: chunkAnnotation.metricKey, metric: chunkAnnotation.metric, confidence: 'high' };
+    valueResult = {
+      valueType: 'qualitative',
+      lowerBound: null,
+      upperBound: null,
+      exactValue: null,
+      unit: null,
+      currency: null,
+      qualitativeDirection: chunkAnnotation.qualitativeDirection,
+      qualitativeText: chunkAnnotation.supportingSpan,
+      confidence: 'high',
+    };
+    guidanceKind = mapAnnotationGuidanceKind(chunkAnnotation.guidanceKind);
   } else if (chunkAnnotation && chunkAnnotation.status === 'VERIFIED' && chunkAnnotation.metricKey) {
     metricResult = { metricKey: chunkAnnotation.metricKey, metric: chunkAnnotation.metric, confidence: 'high' };
     valueResult = {
@@ -322,6 +415,11 @@ export const normalizeGuidanceEvidence = (item, { structured = null, chunkAnnota
     exactValue: valueResult.exactValue,
     unit: valueResult.unit,
     currency: valueResult.currency,
+    // Phase 4F.2: present (non-null) ONLY for a genuine qualitative record;
+    // absent/null for every existing numeric/unresolved record, so this is
+    // purely additive for any consumer that doesn't yet know about it.
+    qualitativeDirection: valueResult.qualitativeDirection || null,
+    qualitativeText: valueResult.qualitativeText || null,
     issuedAt: item.publishedAt || null,
     documentType: item.documentType || null,
     sourceAuthority: item.sourceAuthority || null,
@@ -340,4 +438,5 @@ export const normalizeGuidanceEnvelope = (items = [], structuredById = {}, chunk
 
 export default {
   METRIC_ALIASES, normalizeMetric, normalizeValue, inferGuidanceKind, normalizeGuidanceEvidence, normalizeGuidanceEnvelope, STRUCTURED_UNIT_VALUES,
+  QUALITATIVE_DIRECTIONS, classifyQualitativeDirection,
 };

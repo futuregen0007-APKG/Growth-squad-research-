@@ -33,6 +33,12 @@ const valuesEqual = (a, b) => {
   if (a.valueType === 'exact') {
     return Math.abs(a.exactValue - b.exactValue) < VALUE_EPSILON;
   }
+  // Phase 4F.2: a qualitative record has no numeric value at all -- "equal"
+  // means the SAME classified direction (e.g. two independent sources both
+  // saying management is "more optimistic"), never a numeric comparison.
+  if (a.valueType === 'qualitative') {
+    return Boolean(a.qualitativeDirection) && a.qualitativeDirection === b.qualitativeDirection;
+  }
   return false;
 };
 
@@ -46,8 +52,14 @@ const groupKey = (record) => `${record.symbol}::${record.metricKey}::${record.ta
  * through to an explicit UNRESOLVED relationship instead of silently
  * being skipped, so the caller can see WHY no relationship was inferred.
  */
-const isComparable = (a, b) => a.confidence !== 'unresolved' && b.confidence !== 'unresolved'
-  && a.unit && b.unit && a.unit === b.unit && a.valueType && b.valueType;
+const isComparable = (a, b) => {
+  if (a.confidence === 'unresolved' || b.confidence === 'unresolved') return false;
+  // Phase 4F.2: a qualitative record never has a unit (Part 2's own schema
+  // rule) -- comparing two qualitative records is legitimate on direction
+  // alone, never gated behind a unit match that can never exist for them.
+  if (a.valueType === 'qualitative' && b.valueType === 'qualitative') return true;
+  return Boolean(a.unit && b.unit && a.unit === b.unit && a.valueType && b.valueType);
+};
 
 const validDate = (value) => {
   if (!value) return null;
@@ -82,19 +94,59 @@ const validDate = (value) => {
  *        honestly rather than picked.
  */
 const detectPairRelationship = (a, b) => {
-  if (!isComparable(a, b)) {
-    return {
-      type: 'UNRESOLVED', reason: a.unit !== b.unit ? 'UNIT_MISMATCH' : 'NORMALIZATION_UNRESOLVED',
-    };
-  }
-
+  // Phase 4F.2 audit finding: OUTCOME_FOR must NEVER require matching
+  // units/valueTypes -- Part 5's own rule is "OUTCOME_FOR requires
+  // compatible symbol, metricKey and target period" only (all three already
+  // guaranteed by this module's own groupKey grouping, before a pair is
+  // ever handed to this function). The unit-comparability gate below exists
+  // to protect SUPPORTS/REPEATS/SUPERSEDES/CONFLICTS, which genuinely need
+  // an equal-value comparison -- it must run AFTER the outcome check, not
+  // before, or a qualitative promise (no unit, by Part 2's own schema rule)
+  // can never be linked to its later NUMERIC actual result, which is exactly
+  // the real, live bug this audit found for TCS-FY2026-002 (a qualitative
+  // "more optimistic" promise with a genuine 0.6% QoQ numeric outcome).
   const aIsOutcome = a.guidanceKind === 'outcome';
   const bIsOutcome = b.guidanceKind === 'outcome';
   if (aIsOutcome !== bIsOutcome) {
+    if (a.confidence === 'unresolved' || b.confidence === 'unresolved') {
+      return { type: 'UNRESOLVED', reason: 'NORMALIZATION_UNRESOLVED' };
+    }
     const outcome = aIsOutcome ? a : b;
     const guidance = aIsOutcome ? b : a;
+    // Phase 4F.2 Part 5: "if fulfillment cannot be evaluated
+    // deterministically, preserve OUTCOME_FOR while leaving fulfillment
+    // unresolved" -- a qualitative guidance side has no numeric target to
+    // compare the outcome's value against, so fulfillment can never be a
+    // deterministic yes/no here, only the LINK itself is genuine. Numeric
+    // guidance + numeric outcome is the only case where a downstream
+    // consumer (e.g. the already-computed verification.status on the
+    // curated record) has a real deterministic comparison to point to.
+    const fulfillmentEvaluable = guidance.valueType !== 'qualitative' && guidance.valueType !== null;
     return {
-      type: 'OUTCOME_FOR', fromEvidenceId: outcome.evidenceId, toEvidenceId: guidance.evidenceId, reason: 'OUTCOME_REPORTS_AGAINST_GUIDANCE',
+      type: 'OUTCOME_FOR',
+      fromEvidenceId: outcome.evidenceId,
+      toEvidenceId: guidance.evidenceId,
+      reason: 'OUTCOME_REPORTS_AGAINST_GUIDANCE',
+      fulfillmentEvaluable,
+      fulfillmentReason: fulfillmentEvaluable ? null : 'QUALITATIVE_GUIDANCE_NO_DETERMINISTIC_FULFILLMENT_RULE',
+    };
+  }
+
+  if (!isComparable(a, b)) {
+    // Exactly one side genuinely qualitative (Part 2: a qualitative record
+    // NEVER has a unit at all) and the other not is ALWAYS a
+    // VALUE_TYPE_MISMATCH -- the root cause is "fundamentally different
+    // representations," not "wrong unit," so this takes priority even
+    // though the qualitative side's unit is trivially null. Otherwise,
+    // UNIT_MISMATCH takes priority whenever units genuinely differ
+    // (pre-existing behavior, unchanged) before falling to the generic
+    // VALUE_TYPE_MISMATCH/NORMALIZATION_UNRESOLVED cases.
+    const exactlyOneQualitative = (a.valueType === 'qualitative') !== (b.valueType === 'qualitative');
+    return {
+      type: 'UNRESOLVED',
+      reason: exactlyOneQualitative
+        ? 'VALUE_TYPE_MISMATCH'
+        : (a.unit !== b.unit ? 'UNIT_MISMATCH' : (a.valueType !== b.valueType ? 'VALUE_TYPE_MISMATCH' : 'NORMALIZATION_UNRESOLVED')),
     };
   }
 
@@ -168,10 +220,19 @@ export const detectRelationships = (canonicalRecords = []) => {
     const sorted = [...records].sort((a, b) => String(a.evidenceId).localeCompare(String(b.evidenceId)));
     for (let i = 0; i < sorted.length; i += 1) {
       for (let j = i + 1; j < sorted.length; j += 1) {
-        const { type, fromEvidenceId, toEvidenceId, reason } = detectPairRelationship(sorted[i], sorted[j]);
+        const pairResult = detectPairRelationship(sorted[i], sorted[j]);
+        const { type, fromEvidenceId, toEvidenceId, reason } = pairResult;
         if (type === 'UNRESOLVED') {
           relationships.push({
             type, fromEvidenceId: sorted[i].evidenceId, toEvidenceId: sorted[j].evidenceId, reason, deterministic: true,
+          });
+        } else if (type === 'OUTCOME_FOR') {
+          // Additive fields only present on OUTCOME_FOR -- Part 5's own
+          // report requirement ("whether fulfillment is deterministically
+          // evaluable"), never a numeric fulfillment verdict computed here.
+          relationships.push({
+            type, fromEvidenceId, toEvidenceId, reason, deterministic: true,
+            fulfillmentEvaluable: pairResult.fulfillmentEvaluable, fulfillmentReason: pairResult.fulfillmentReason,
           });
         } else {
           relationships.push({

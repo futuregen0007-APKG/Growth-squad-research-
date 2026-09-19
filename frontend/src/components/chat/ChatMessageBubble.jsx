@@ -131,6 +131,23 @@ const formatGuidanceRange = (canonicalGuidance) => {
   return null;
 };
 
+// Phase 4F.2 Part 7: plain-language labels for a qualitative direction —
+// never a number, never invented text, just a short human-readable word for
+// the same server-computed, deterministic qualitativeDirection enum value.
+// A direction this map doesn't recognize (should never happen — the server
+// only ever sends one of these) renders nothing rather than a raw enum
+// token or a guess.
+const QUALITATIVE_DIRECTION_LABEL = {
+  INCREASE: 'Expected to increase', DECREASE: 'Expected to decrease', MAINTAIN: 'Maintained', IMPROVE: 'Expected to improve',
+  EXPAND: 'Expected to expand', REDUCE: 'Expected to reduce', STABLE: 'Expected to stay stable', OTHER: 'Directional guidance',
+};
+
+/** formatQualitativeLabel - plain-language rendering for a qualitative canonicalGuidance, or null for a numeric/unresolved one. Never renders a fake number. */
+const formatQualitativeLabel = (canonicalGuidance) => {
+  if (!canonicalGuidance || canonicalGuidance.valueType !== 'qualitative') return null;
+  return QUALITATIVE_DIRECTION_LABEL[canonicalGuidance.qualitativeDirection] || null;
+};
+
 const SourcesSection = ({ citations }) => {
   const [open, setOpen] = useState(false);
   if (!citations?.length) return null;
@@ -166,6 +183,11 @@ const SourcesSection = ({ citations }) => {
                 return from && to ? `Revised from ${from} to ${to}` : null;
               })()
               : null;
+            // Phase 4F.2: a genuinely qualitative citation renders its
+            // direction in plain language ("Expected to improve") — never
+            // a number, since there isn't one. Independent of, and never
+            // overriding, the numeric revisionSummary above.
+            const qualitativeLabel = formatQualitativeLabel(c.canonicalGuidance);
             return (
               <div key={c.evidenceId || i} className="text-[11px] text-gs-textMuted flex items-start gap-1.5">
                 <span className="text-gs-textDim shrink-0">[{i + 1}]</span>
@@ -189,6 +211,7 @@ const SourcesSection = ({ citations }) => {
                     </div>
                   )}
                   {revisionSummary && <div className="mt-0.5 text-gs-gold">{revisionSummary}</div>}
+                  {!revisionSummary && qualitativeLabel && <div className="mt-0.5 text-gs-textDim">{qualitativeLabel}</div>}
                 </div>
               </div>
             );

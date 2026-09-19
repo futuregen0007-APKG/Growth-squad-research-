@@ -57,21 +57,48 @@ export const getVerifiedAnnotationsByChunkIds = async (chunkIds = []) => {
     hasVerifiedAnnotation: true,
   }).lean();
 
-  // extractionVersion is a free-form string ("1", "2", ...) — compared
-  // numerically here (never lexically, which would rank "10" before "2")
-  // to pick the current row per chunkId.
+  // extractionVersion is USUALLY a free-form numeric string ("1", "2", ...)
+  // from scripts/enrichGuidanceCorpus.js's blind, corpus-wide scan —
+  // compared numerically here (never lexically, which would rank "10"
+  // before "2") to pick the current row per chunkId, exactly as before.
+  //
+  // Phase 4F.2: services/evidenceLinkage.js's EI-to-chunk bridge writes to
+  // a DELIBERATELY separate, non-numeric extractionVersion lane
+  // (EI_LINKED_EXTRACTION_VERSION) so its own upserts can never collide
+  // with — and be silently overwritten by — the blind scan's own verdict
+  // for the exact same chunk (a real bug this phase found and fixed: the
+  // blind scan correctly, conservatively REJECTS a courtesy-phrase-
+  // containing-"you" sentence that the SAME sentence's EI-linked
+  // annotation had correctly verified via its own, differently-trusted
+  // path). A chunk with a VERIFIED EI-linked entry always wins over its
+  // numeric-lane sibling, since it is anchored to an already public-safe,
+  // human-reviewed Earnings-Intelligence record — strictly more trusted
+  // provenance than an unaudited blind scan.
   const currentRowByChunkId = new Map();
+  const eiLinkedEntryByChunkId = new Map();
   for (const row of rows) {
     const key = String(row.chunkId);
-    const existing = currentRowByChunkId.get(key);
-    if (!existing || Number(row.extractionVersion) > Number(existing.extractionVersion)) {
-      currentRowByChunkId.set(key, row);
+    const isNumericVersion = /^\d+$/.test(String(row.extractionVersion));
+    if (isNumericVersion) {
+      const existing = currentRowByChunkId.get(key);
+      if (!existing || Number(row.extractionVersion) > Number(existing.extractionVersion)) {
+        currentRowByChunkId.set(key, row);
+      }
+    } else {
+      const entry = bestVerifiedEntry(row.annotations);
+      if (entry) eiLinkedEntryByChunkId.set(key, { ...entry, status: 'VERIFIED', extractionVersion: row.extractionVersion });
     }
   }
 
   const byChunkId = new Map();
-  for (const [key, row] of currentRowByChunkId) {
-    const entry = bestVerifiedEntry(row.annotations);
+  for (const key of new Set([...currentRowByChunkId.keys(), ...eiLinkedEntryByChunkId.keys()])) {
+    const eiEntry = eiLinkedEntryByChunkId.get(key);
+    if (eiEntry) {
+      byChunkId.set(key, eiEntry);
+      continue;
+    }
+    const row = currentRowByChunkId.get(key);
+    const entry = row ? bestVerifiedEntry(row.annotations) : null;
     if (entry) byChunkId.set(key, { ...entry, status: 'VERIFIED', extractionVersion: row.extractionVersion });
   }
   return byChunkId;

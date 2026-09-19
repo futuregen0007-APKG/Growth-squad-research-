@@ -1,4 +1,5 @@
 import { GROUNDED_VERDICTS } from './schemas.js';
+import { classifyQualitativeDirection } from '../services/guidanceNormalization.js';
 
 /**
  * groundedVerification.js
@@ -170,6 +171,68 @@ export const checkTemporalConsistency = (claim, cited, allEnvelopeItems) => {
   return null;
 };
 
+// Phase 4F.2 Part 6: certainty-escalation language — a claim asserting a
+// FIRM, formally-committed number/outcome when the cited evidence is only
+// ever qualitative/directional. Deliberately a narrow, explicit phrase list
+// (never a semantic judgment) — the same "never fuzzy" discipline every
+// other pattern in this project's guidance layer uses.
+// Deliberately does NOT include "fully delivered/achieved/met" -- that
+// phrasing is specifically a FULFILLMENT conclusion (see
+// FULFILLMENT_CLAIM_PATTERN below), a distinct, separately-tested failure
+// mode even though both ultimately reject an overreaching claim.
+const FIRM_COMMITMENT_PATTERN = /\bguarantee(?:d|s)?\b|\bformal(?:ly)?\s+guidance\b|\bcommit(?:ted|s)?\s+to\b|\bpromis(?:ed|es)\b|\bconfirmed\s+formally\b/i;
+const FULFILLMENT_CLAIM_PATTERN = /\bfully\s+(?:delivered|achieved|met)\b|\bsuccessfully\s+(?:delivered|achieved|met)\b|\b(?:delivered|achieved|met)\s+(?:on|its)\s+(?:the\s+)?(?:promise|guidance|target|commitment)\b|\bmanagement\s+delivered\b/i;
+
+/**
+ * checkQualitativeConsistency - the qualitative-guidance-specific checks
+ * Part 6 requires, run only against citations that are genuinely
+ * qualitative (canonicalGuidance.valueType === 'qualitative') or genuinely
+ * an OUTCOME_FOR pairing with a qualitative guidance side. Every other
+ * citation (numeric, or no canonicalGuidance at all) is completely
+ * unaffected — this never runs a check against evidence it doesn't apply
+ * to, and never weakens any existing numeric check.
+ */
+export const checkQualitativeConsistency = (claim, cited) => {
+  const text = String(claim?.text || '');
+  const qualitativeCites = cited.filter((item) => item.canonicalGuidance?.valueType === 'qualitative');
+
+  if (qualitativeCites.length) {
+    // Direction mismatch: the claim asserts its OWN clear direction, and it
+    // does not match ANY cited qualitative item's verified direction.
+    const claimDirection = classifyQualitativeDirection(text);
+    if (claimDirection.qualitativeDirection) {
+      const anyDirectionMatches = qualitativeCites.some((item) => item.canonicalGuidance.qualitativeDirection === claimDirection.qualitativeDirection);
+      if (!anyDirectionMatches) {
+        return { verdict: 'QUALITATIVE_DIRECTION_MISMATCH', reasonCode: `CLAIM_DIRECTION_${claimDirection.qualitativeDirection}_NOT_IN_CITED_EVIDENCE` };
+      }
+    }
+
+    // Overreach: the claim uses firm/formal-commitment language a
+    // qualitative ("we are more optimistic", "aligned with our aspiration")
+    // statement never supports — an aspiration is never a firm promise,
+    // and a direction is never a specific number.
+    if (FIRM_COMMITMENT_PATTERN.test(text)) {
+      return { verdict: 'QUALITATIVE_OVERREACH', reasonCode: 'FIRM_COMMITMENT_LANGUAGE_FOR_QUALITATIVE_EVIDENCE' };
+    }
+  }
+
+  // Unsupported fulfillment: a claim asserting management "fully
+  // delivered"/"achieved"/"met" its guidance, citing an OUTCOME_FOR
+  // pairing whose fulfillment the server has already determined is NOT
+  // deterministically evaluable (Part 5 — the guidance side was
+  // qualitative, so there is no numeric target to compare the outcome
+  // against). The outcome itself (e.g. "0.6% QoQ growth") may still be
+  // reported plainly; only an explicit FULFILLMENT verdict is blocked.
+  if (FULFILLMENT_CLAIM_PATTERN.test(text)) {
+    const unevaluableFulfillment = cited.find((item) => item.fulfillmentEvaluable === false);
+    if (unevaluableFulfillment) {
+      return { verdict: 'UNSUPPORTED_FULFILLMENT_CLAIM', reasonCode: `FULFILLMENT_NOT_DETERMINISTICALLY_EVALUABLE:${unevaluableFulfillment.evidenceId}` };
+    }
+  }
+
+  return null;
+};
+
 /**
  * verifyGroundedClaim - one claim's full deterministic check, in the exact
  * priority order Part 6 implies (an id that doesn't exist makes every
@@ -222,6 +285,13 @@ export const verifyGroundedClaim = (claim, {
   // regardless of documentType.
   const temporalVerdict = checkTemporalConsistency(claim, cited, allEnvelopeItems);
   if (temporalVerdict) return temporalVerdict;
+
+  // Phase 4F.2 Part 6: qualitative-guidance-specific checks (direction
+  // mismatch, firm-commitment overreach on an aspirational statement,
+  // unsupported fulfillment conclusions) — a complete no-op for any claim
+  // that cites no qualitative evidence.
+  const qualitativeVerdict = checkQualitativeConsistency(claim, cited);
+  if (qualitativeVerdict) return qualitativeVerdict;
 
   // 6. Numbers/percentages/ranges/dates/currency in the claim must be
   // present in (or directly supported by) the cited text — no unit
@@ -286,4 +356,6 @@ export const verifyGroundedAnswer = ({ claims = [], evidenceEnvelope = [], scope
   return { claims: verified, groundingStatus, allVerified: verified.length > 0 && !anyFailed };
 };
 
-export default { extractNumberFacts, verifyGroundedClaim, verifyGroundedAnswer, checkTemporalConsistency, GROUNDED_VERDICTS };
+export default {
+  extractNumberFacts, verifyGroundedClaim, verifyGroundedAnswer, checkTemporalConsistency, checkQualitativeConsistency, GROUNDED_VERDICTS,
+};

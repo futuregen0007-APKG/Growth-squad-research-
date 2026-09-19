@@ -190,8 +190,20 @@ test('a ManagementPromise document explicitly VERIFIED_EXCHANGE_COPY remains vis
 // ---------------------------------------------------------------------------
 // Hallucinated-field regression: a qualitative promise's schema-coerced
 // targetValue:0 must never masquerade as a genuine numeric guidance claim.
+//
+// Phase 4F.2 update: this test's original assertion (structuredGuidance ===
+// null for every qualitative promise) predates first-class qualitative
+// guidance support. That behavior was SAFE but PASSIVE -- a real qualitative
+// promise like TCS-FY2026-002 was correctly never given a fabricated number,
+// but it was also invisible to Phase 4D's relationship engine. Phase 4F.2
+// gives it a real, non-numeric structuredGuidance instead ({metric,
+// valueType:'QUALITATIVE', qualitativeText}) -- the core invariant this test
+// protects (never a fabricated targetValue, never the coerced 0) is
+// STRENGTHENED here, not weakened: the assertion below explicitly checks
+// there is no targetValue field of any kind, not just that the whole object
+// isn't null.
 // ---------------------------------------------------------------------------
-test('a qualitative promise (operator: null, coerced targetValue: 0) never produces a fabricated numeric structuredGuidance', () => {
+test('a qualitative promise (operator: null, coerced targetValue: 0) gets a real qualitative structuredGuidance, never a fabricated numeric one', () => {
   const timeline = {
     promises: [{
       id: 'X-1', statement: 'We do not give guidance.', period: 'FY2026', status: 'PENDING',
@@ -201,7 +213,8 @@ test('a qualitative promise (operator: null, coerced targetValue: 0) never produ
     }],
   };
   const items = buildEarningsIntelligenceEnvelopeItems(timeline, { symbol: 'TEST' });
-  assert.equal(items[0].structuredGuidance, null, 'a qualitative promise (no real operator) must never produce a structuredGuidance claim');
+  assert.deepEqual(items[0].structuredGuidance, { metric: 'REVENUE_GROWTH', valueType: 'QUALITATIVE', qualitativeText: 'We do not give guidance.' });
+  assert.equal('targetValue' in items[0].structuredGuidance, false, 'the coerced placeholder 0 must never appear anywhere in the qualitative structuredGuidance object');
 });
 
 test('a genuinely quantified promise (operator present) DOES produce structuredGuidance, unaffected by the qualitative-promise fix', () => {

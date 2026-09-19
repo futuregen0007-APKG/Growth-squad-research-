@@ -167,6 +167,38 @@ test('an ordinary (non-guidance) citation with no temporalStatus shows no tempor
   expect(screen.queryByText('Superseded')).toBeNull();
 });
 
+// ---------------------------------------------------------------------------
+// Phase 4F.2 Part 7: qualitative citation rendering — plain language, never
+// a fake number.
+// ---------------------------------------------------------------------------
+
+test('a qualitative citation renders its direction in plain language, never a number', () => {
+  const message = baseAssistantMessage({
+    citations: [{
+      evidenceId: 'E1', symbol: 'TCS', documentTitle: 'TCS Earnings Call', sourceUrl: 'https://example.com/tcs.pdf',
+      temporalStatus: 'CURRENT', canonicalGuidance: { valueType: 'qualitative', qualitativeDirection: 'IMPROVE', qualitativeText: 'we are more optimistic in the coming quarter' },
+    }],
+  });
+  render(<ChatMessageBubble message={message} />);
+  openSources();
+  expect(screen.getByText('Expected to improve')).toBeInTheDocument();
+  // Never a numeric range label for a qualitative citation.
+  expect(screen.queryByText(/\d+%-\d+%/)).toBeNull();
+});
+
+test('a numeric citation never shows a qualitative-direction label', () => {
+  const message = baseAssistantMessage({
+    citations: [{
+      evidenceId: 'E1', symbol: 'TCS', documentTitle: 'TCS Filing', sourceUrl: 'https://example.com/tcs.pdf',
+      temporalStatus: 'CURRENT', canonicalGuidance: { valueType: 'range', lowerBound: 21, upperBound: 23, unit: 'PERCENTAGE' },
+    }],
+  });
+  render(<ChatMessageBubble message={message} />);
+  openSources();
+  expect(screen.queryByText('Expected to improve')).toBeNull();
+  expect(screen.queryByText(/Expected to/)).toBeNull();
+});
+
 test('internal verifier diagnostics (reasonCode, relationshipId, confidence) are never rendered in the citation card', () => {
   const message = baseAssistantMessage({
     citations: [{

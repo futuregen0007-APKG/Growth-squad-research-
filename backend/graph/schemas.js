@@ -216,6 +216,11 @@ export const GROUNDED_VERDICTS = Object.freeze([
   'REVISION_NOT_SUPPORTED',
   'TEMPORAL_RELATIONSHIP_MISMATCH',
   'UNDISCLOSED_CONFLICT',
+  // Phase 4F.2 Part 6: qualitative-guidance-specific verdicts — see
+  // graph/groundedVerification.js's checkQualitativeConsistency.
+  'QUALITATIVE_DIRECTION_MISMATCH',
+  'QUALITATIVE_OVERREACH',
+  'UNSUPPORTED_FULFILLMENT_CLAIM',
 ]);
 
 export const ConversationSummarySchema = z.object({

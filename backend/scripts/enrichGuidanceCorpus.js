@@ -118,6 +118,13 @@ const processChunk = async (chunk, { extractionVersion, dryRun }) => {
       exactValue: ann.exactValue,
       unit: ann.unit,
       currency: ann.currency,
+      // Phase 4F.2: qualitativeDirection was missing from this explicit
+      // field allow-list -- extractCandidatesFromChunk always computes it
+      // correctly for a qualitative VERIFIED entry, but every write through
+      // this script silently dropped it back to the schema default (null)
+      // before this fix, since this map only ever forwards fields it
+      // explicitly names.
+      qualitativeDirection: ann.qualitativeDirection || null,
       supportingSpan: ann.supportingSpan,
       extractionMethod: ann.extractionMethod,
       confidence: ann.confidence,

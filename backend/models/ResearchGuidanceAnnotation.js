@@ -75,7 +75,17 @@ import mongoose from 'mongoose';
 
 export const GUIDANCE_ANNOTATION_STATUSES = ['PENDING', 'EXTRACTED', 'VERIFIED', 'REJECTED', 'UNRESOLVED'];
 export const GUIDANCE_KINDS = ['ORIGINAL', 'MAINTAINED', 'RAISED', 'LOWERED', 'REVISED'];
-export const EXTRACTION_METHODS = ['DETERMINISTIC', 'LLM_STRUCTURED'];
+// Phase 4F.2 Part 4: EI_LINKED_DETERMINISTIC is still 100% deterministic,
+// zero-LLM (same as DETERMINISTIC) -- it exists only to record PROVENANCE:
+// this annotation was produced by the EI-to-chunk bridge
+// (services/evidenceLinkage.js), sourced from an already public-safe,
+// human-verified Earnings-Intelligence record's own excerpt, rather than
+// blind-scanned from a chunk with no such backing record. Never a
+// looser/weaker extraction method -- see that module's own header.
+export const EXTRACTION_METHODS = ['DETERMINISTIC', 'LLM_STRUCTURED', 'EI_LINKED_DETERMINISTIC'];
+// Phase 4F.2 Part 2: the same explicit, deterministic direction vocabulary
+// guidanceNormalization.js's classifyQualitativeDirection resolves to.
+export const QUALITATIVE_DIRECTIONS = ['INCREASE', 'DECREASE', 'MAINTAIN', 'IMPROVE', 'EXPAND', 'REDUCE', 'STABLE', 'OTHER'];
 
 const guidanceAnnotationEntrySchema = new mongoose.Schema({
   status: { type: String, enum: GUIDANCE_ANNOTATION_STATUSES, required: true },
@@ -84,12 +94,19 @@ const guidanceAnnotationEntrySchema = new mongoose.Schema({
   metric: { type: String, default: null },
   metricKey: { type: String, default: null },
   guidanceKind: { type: String, enum: [...GUIDANCE_KINDS, null], default: null },
-  valueType: { type: String, enum: ['range', 'exact', null], default: null },
+  // Phase 4F.2: 'qualitative' added, additive/backward-compatible -- every
+  // existing row's valueType stays 'range'/'exact'/null exactly as before.
+  valueType: { type: String, enum: ['range', 'exact', 'qualitative', null], default: null },
   lowerBound: { type: Number, default: null },
   upperBound: { type: Number, default: null },
   exactValue: { type: Number, default: null },
   unit: { type: String, default: null },
   currency: { type: String, default: null },
+  // Present only when valueType === 'qualitative'; null for every numeric
+  // or unresolved entry. `supportingSpan` below IS the verified
+  // qualitativeText -- never a second, separately-typed free-text field
+  // that could drift from the actual verified span.
+  qualitativeDirection: { type: String, enum: [...QUALITATIVE_DIRECTIONS, null], default: null },
 
   supportingSpan: { type: String, required: true },
   extractionMethod: { type: String, enum: EXTRACTION_METHODS, required: true, default: 'DETERMINISTIC' },
@@ -97,6 +114,11 @@ const guidanceAnnotationEntrySchema = new mongoose.Schema({
 
   rejectionReasons: { type: [String], default: [] },
   unresolvedReason: { type: String, default: null },
+  // Phase 4F.2 Part 4: set only by the EI-to-chunk bridge -- which
+  // public-safe Earnings-Intelligence record's own excerpt this annotation
+  // was verified against, for audit/dedup purposes. Null for every
+  // corpus-scanned (non-EI-linked) annotation.
+  linkedEIRecordId: { type: String, default: null },
 }, { _id: false });
 
 const researchGuidanceAnnotationSchema = new mongoose.Schema({
