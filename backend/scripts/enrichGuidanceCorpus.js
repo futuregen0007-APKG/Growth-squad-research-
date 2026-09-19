@@ -136,8 +136,30 @@ const processChunk = async (chunk, { extractionVersion, dryRun }) => {
   return counts;
 };
 
+/**
+ * Task 3 (Phase 4E.1): three DIFFERENT counting units live in this report,
+ * and they must never be summed or compared against each other as if they
+ * were the same thing:
+ *   - CHUNK-level: chunksScanned, candidateChunks, nonCandidateChunks,
+ *     chunkRowsWritten, chunksFailed — one count per ResearchDocumentChunk.
+ *   - SENTENCE-level: candidateSentences (and its three-way split,
+ *     verifiedSentences/rejectedSentences/unresolvedSentences) — one count
+ *     per candidate SENTENCE inside a candidate chunk (a single chunk can
+ *     contribute zero, one, or several sentence-level outcomes).
+ * `candidateChunks` (chunk-level) and `candidateSentences` (sentence-level)
+ * are DIFFERENT numbers measuring different things and must be reported
+ * side by side, never combined.
+ */
 const runBatch = async (chunks, { extractionVersion, dryRun, concurrency, onProgress }) => {
-  const totals = { chunksScanned: 0, candidateChunks: 0, verified: 0, rejected: 0, unresolved: 0, written: 0, failed: 0 };
+  const totals = {
+    chunksScanned: 0,
+    candidateChunks: 0,
+    chunkRowsWritten: 0,
+    chunksFailed: 0,
+    verifiedSentences: 0,
+    rejectedSentences: 0,
+    unresolvedSentences: 0,
+  };
   let index = 0;
 
   const worker = async () => {
@@ -153,12 +175,12 @@ const runBatch = async (chunks, { extractionVersion, dryRun, concurrency, onProg
         );
         totals.chunksScanned += 1;
         totals.candidateChunks += counts.candidate;
-        totals.verified += counts.verified;
-        totals.rejected += counts.rejected;
-        totals.unresolved += counts.unresolved;
-        totals.written += counts.written;
+        totals.verifiedSentences += counts.verified;
+        totals.rejectedSentences += counts.rejected;
+        totals.unresolvedSentences += counts.unresolved;
+        totals.chunkRowsWritten += counts.written;
       } catch (error) {
-        totals.failed += 1;
+        totals.chunksFailed += 1;
         logger.warn(`[enrichGuidanceCorpus] chunk ${chunk._id} failed: ${error.message}`);
       }
       if (onProgress && (myIndex + 1) % 200 === 0) onProgress(myIndex + 1, chunks.length);
@@ -166,7 +188,11 @@ const runBatch = async (chunks, { extractionVersion, dryRun, concurrency, onProg
   };
 
   await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(chunks.length, 1)) }, worker));
-  return totals;
+  return {
+    ...totals,
+    nonCandidateChunks: totals.chunksScanned - totals.candidateChunks,
+    candidateSentences: totals.verifiedSentences + totals.rejectedSentences + totals.unresolvedSentences,
+  };
 };
 
 /**
@@ -206,7 +232,13 @@ export const runGuidanceEnrichment = async ({
   };
 
   if (!chunks.length) {
-    return { estimate, totals: { chunksScanned: 0, candidateChunks: 0, verified: 0, rejected: 0, unresolved: 0, written: 0, failed: 0 } };
+    return {
+      estimate,
+      totals: {
+        chunksScanned: 0, candidateChunks: 0, nonCandidateChunks: 0, chunkRowsWritten: 0, chunksFailed: 0,
+        candidateSentences: 0, verifiedSentences: 0, rejectedSentences: 0, unresolvedSentences: 0,
+      },
+    };
   }
 
   const totals = await runBatch(chunks, { extractionVersion, dryRun, concurrency, onProgress });
@@ -247,10 +279,17 @@ if (isMainModule) {
     console.log(`Chunks selected to process: ${estimate.chunksToProcess}`);
     console.log(`Planned LLM calls: ${estimate.llmCallsPlanned} (estimated cost: $${estimate.estimatedCostUsd.toFixed(2)})`);
     console.log('-'.repeat(60));
-    console.log(`Chunks scanned: ${totals.chunksScanned} (failed: ${totals.failed})`);
-    console.log(`Candidate chunks: ${totals.candidateChunks}`);
-    console.log(`Chunk rows written: ${totals.written}`);
-    console.log(`Candidate sentences -- VERIFIED: ${totals.verified}, REJECTED: ${totals.rejected}, UNRESOLVED: ${totals.unresolved}`);
+    console.log('[CHUNK-level counts -- one count per ResearchDocumentChunk]');
+    console.log(`  Total chunks scanned:     ${totals.chunksScanned}`);
+    console.log(`  Candidate chunks:         ${totals.candidateChunks}`);
+    console.log(`  Non-candidate chunks:     ${totals.nonCandidateChunks}`);
+    console.log(`  Chunk rows written:       ${totals.chunkRowsWritten}`);
+    console.log(`  Chunks failed:            ${totals.chunksFailed}`);
+    console.log('[SENTENCE-level counts -- one count per candidate sentence, NEVER add to the chunk counts above]');
+    console.log(`  Candidate sentences:      ${totals.candidateSentences}`);
+    console.log(`    VERIFIED annotations:   ${totals.verifiedSentences}`);
+    console.log(`    REJECTED annotations:   ${totals.rejectedSentences}`);
+    console.log(`    UNRESOLVED annotations: ${totals.unresolvedSentences}`);
     if (opts.dryRun) console.log('DRY RUN — no annotations were written to the database.');
 
     await mongoose.disconnect();

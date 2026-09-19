@@ -243,3 +243,99 @@ test('REAL CORPUS FIXTURE (TCS FY2026 Q2 press release, page 3): generic aspirat
   const { annotations } = extractCandidatesFromChunk(chunk(text, { symbol: 'TCS', fiscalYear: 'FY2026', fiscalQuarter: 'Q2', documentType: 'PRESS_RELEASE', pageStart: 3, pageEnd: 3, publishedAt: '2025-10-09' }));
   assert.equal(annotations.some((a) => a.status === 'VERIFIED' && a.exactValue === 26), false);
 });
+
+// --- Phase 4E.1: discourse-aware speaker/context attribution ----------------
+test('REAL CORPUS FIXTURE (INFY FY2024, page 45, chunkId 6aa83674078e904772d31cca): a deal-win actual figure followed one sentence later by a second-person analyst clause in the SAME turn is rejected, never accepted as guidance', () => {
+  // Verbatim excerpt retrieved from the real, stored ResearchDocumentChunk
+  // that Phase 4E's own coverage evaluation flagged as its one remaining
+  // false positive: the chunk begins mid-analyst-turn (the page boundary
+  // truncated the leading "You are entering..."), so the candidate
+  // sentence itself ("...the guidance implies incremental revenues of $1
+  // bn at the midpoint.") carries no second-person marker of its own --
+  // only the VERY NEXT sentence, still the same analyst turn, does
+  // ("...in your book."). A single-sentence-only check could never catch
+  // this; the bounded same-turn neighbor window introduced in Phase 4E.1
+  // does.
+  const text = "ng fiscal '24 with a net new deal wins of $3.9 bn, which is pretty similar to last year, but the guidance implies incremental revenues of $1 bn at the midpoint. Just trying to understand that what has changed that is driving significant downtick in the incremental revenue with a very similar net new deal wins in your book. Nilanjan Roy";
+  const { annotations } = extractCandidatesFromChunk(chunk(text, { symbol: 'INFY', fiscalYear: 'FY2024', fiscalQuarter: null, documentType: 'EARNINGS_CALL_TRANSCRIPT', pageStart: 45, pageEnd: 45, publishedAt: '2023-01-01' }));
+  assert.equal(annotations.some((a) => a.status === 'VERIFIED'), false, 'the deal-win/guidance-implies sentence must never be accepted as guidance');
+  const rejected = annotations.find((a) => a.exactValue === 3.9 || /net new deal wins/.test(a.supportingSpan));
+  assert.ok(rejected);
+  assert.equal(rejected.status, 'REJECTED');
+  assert.ok(rejected.rejectionReasons.includes('NEIGHBOR_SECOND_PERSON_ADDRESS'));
+});
+
+test('analyst question split across sentences (own sentence ends with "?" is a DIFFERENT sentence in the same turn) is rejected', () => {
+  const text = 'Kumar Rakesh: I wanted to understand the trajectory better. Our sense is margins should settle near 24% to 26% this year. Is that a fair way to think about it?';
+  const { annotations } = extractCandidatesFromChunk(chunk(text));
+  const rejected = annotations.find((a) => a.lowerBound === 24 || /24% to 26%/.test(a.supportingSpan));
+  assert.ok(rejected, 'expected an annotation for the margin sentence');
+  assert.equal(rejected.status, 'REJECTED');
+  assert.ok(rejected.rejectionReasons.includes('NEIGHBOR_ANALYST_QUESTION_LANGUAGE'));
+});
+
+test('a genuine management answer immediately following an analyst question in the SAME chunk is retained (turn boundary prevents contamination)', () => {
+  const text = 'Kumar Rakesh: What is your outlook on operating margins for FY2026? Samir Seksaria: We expect operating margin to be 26% to 28% for FY2026.';
+  const { annotations } = extractCandidatesFromChunk(chunk(text));
+  const questionAnnotation = annotations.find((a) => /outlook on operating margins/.test(a.supportingSpan));
+  assert.ok(questionAnnotation);
+  assert.equal(questionAnnotation.status, 'REJECTED');
+  assert.ok(questionAnnotation.rejectionReasons.includes('ANALYST_QUESTION_LANGUAGE'));
+
+  const answerAnnotation = annotations.find((a) => a.status === 'VERIFIED');
+  assert.ok(answerAnnotation, 'the CFO\'s own answer, in its own speaker turn, must still be accepted');
+  assert.equal(answerAnnotation.lowerBound, 26);
+  assert.equal(answerAnnotation.upperBound, 28);
+});
+
+test('a long single-speaker monologue turn is NOT poisoned end-to-end by an unrelated "you" several sentences away from the guidance sentence', () => {
+  const text = 'Samir Seksaria: Thank you all for joining the call today. We had a strong quarter across all our business segments and geographies. Client additions remained healthy through the period. We are targeting operating margin of 26% to 28% for FY2026.';
+  const { annotations } = extractCandidatesFromChunk(chunk(text));
+  const verified = annotations.find((a) => a.status === 'VERIFIED' && a.lowerBound === 26);
+  assert.ok(verified, 'a genuine guidance sentence several sentences away from an unrelated "you" must still be accepted');
+});
+
+test('missing/ambiguous speaker attribution with no resolvable metric stays UNRESOLVED, never forced either way', () => {
+  const text = 'The trajectory for the coming year remains a key focus area for the leadership team.';
+  const { annotations } = extractCandidatesFromChunk(chunk(text));
+  assert.equal(annotations.some((a) => a.status === 'VERIFIED'), false);
+});
+
+// --- Phase 4E.1 correction: own-sentence vs neighbor second-person checks are asymmetric on purpose ---
+test('REAL CORPUS FIXTURE (INFY FY2024, sibling chunk with the leading "You" intact): a same-sentence second-person marker is rejected even when it sits FAR from the word "guidance"', () => {
+  // A sibling ingestion of the same page as the deal-win fixture above,
+  // this one NOT truncated at the page boundary -- "You" is the very
+  // first word, over 60 characters from "guidance" later in the same
+  // sentence. A naive proximity-gated check (tried and reverted during
+  // Phase 4E.1 -- see hasSecondPersonAddress's own docstring) would miss
+  // this; the OWN-sentence check stays a bare, unconditional "you"/"your"
+  // test specifically because of this real regression.
+  const text = "You are entering fiscal '24 with a net new deal wins of $3.9 bn, which is pretty similar to last year, but the guidance implies incremental revenues of $1 bn at the midpoint.";
+  const { annotations } = extractCandidatesFromChunk(chunk(text, { symbol: 'INFY', fiscalYear: 'FY2024', documentType: 'EARNINGS_CALL_TRANSCRIPT' }));
+  assert.equal(annotations.some((a) => a.status === 'VERIFIED'), false);
+  const rejected = annotations.find((a) => a.exactValue === 3.9);
+  assert.ok(rejected);
+  assert.equal(rejected.status, 'REJECTED');
+  assert.ok(rejected.rejectionReasons.includes('SECOND_PERSON_ADDRESS'));
+});
+
+test('a genuine guidance sentence immediately followed by an unrelated courtesy/handoff clause from the SAME speaker is NOT rejected (neighbor check is proximity-gated, not a bare match)', () => {
+  // Verbatim structure from a real corpus regression found while
+  // validating Phase 4E.1: "Thank you, and over to you, Rishi" contains
+  // "you" twice but has nothing to do with any financial figure -- a bare
+  // neighbor check wrongly rejected the genuine guidance sentence before
+  // it purely because of this adjacent, unrelated courtesy clause.
+  const text = 'Our operating margin guidance for the financial year is 20% to 22%. Thank you, and over to you, Rishi, for our questions.';
+  const { annotations } = extractCandidatesFromChunk(chunk(text));
+  const verified = annotations.find((a) => a.status === 'VERIFIED' && a.lowerBound === 20);
+  assert.ok(verified, 'an unrelated courtesy "thank you"/"over to you" neighbor clause must never poison a genuine guidance sentence');
+});
+
+test('a genuine guidance sentence followed by a neighbor that references "your guidance"/"your question" near a financial word IS still rejected via the neighbor gate', () => {
+  const text = 'Operating margin guidance band remains at 21% to 23% for the year. Your guidance on margins seems light compared to peers.';
+  const { annotations } = extractCandidatesFromChunk(chunk(text));
+  const rejected = annotations.find((a) => a.lowerBound === 21 && a.upperBound === 23);
+  assert.ok(rejected);
+  assert.equal(rejected.status, 'REJECTED');
+  assert.ok(rejected.rejectionReasons.includes('NEIGHBOR_SECOND_PERSON_ADDRESS'));
+});

@@ -40,8 +40,8 @@ const insertChunk = async (overrides = {}) => ResearchDocumentChunk.create({
 test('bounded real extraction: a genuine guidance chunk produces exactly one VERIFIED annotation with provenance copied verbatim from the chunk', async () => {
   const chunk = await insertChunk();
   const { totals } = await runGuidanceEnrichment({ symbol: TEST_SYMBOL, extractionVersion: '1' });
-  assert.equal(totals.written, 1);
-  assert.equal(totals.verified, 1);
+  assert.equal(totals.chunkRowsWritten, 1);
+  assert.equal(totals.verifiedSentences, 1);
 
   const row = await ResearchGuidanceAnnotation.findOne({ chunkId: chunk._id }).lean();
   assert.ok(row);
@@ -82,7 +82,7 @@ test('version reprocessing: bumping extractionVersion inserts a NEW row alongsid
 test('dry-run mode: no annotations are written to the database', async () => {
   await insertChunk();
   const { totals } = await runGuidanceEnrichment({ symbol: TEST_SYMBOL, extractionVersion: '1', dryRun: true });
-  assert.ok(totals.verified >= 1);
+  assert.ok(totals.verifiedSentences >= 1);
   const count = await ResearchGuidanceAnnotation.countDocuments({ symbol: TEST_SYMBOL });
   assert.equal(count, 0);
 });

@@ -1,0 +1,897 @@
+{
+  "_meta": {
+    "split": "holdout",
+    "createdBy": "Phase 4E.1 manual adjudication",
+    "createdAt": "2026-09-19T07:04:11.394Z",
+    "purpose": "Chunks and sentences NOT used to tune the discourse-aware attribution rule -- adjudicated once, for the first time, as the final measurement. No further algorithm changes were made based on this split's results."
+  },
+  "chunkLevelEntries": [
+    {
+      "chunkId": "6aa83667078e904772d31a2e",
+      "expectedIsCandidate": false
+    },
+    {
+      "chunkId": "6aa8366f078e904772d31bd4",
+      "expectedIsCandidate": false
+    },
+    {
+      "chunkId": "6aa83682078e904772d31de5",
+      "expectedIsCandidate": false
+    },
+    {
+      "chunkId": "6aa8368f078e904772d31fd7",
+      "expectedIsCandidate": false
+    },
+    {
+      "chunkId": "6aa83697078e904772d321c4",
+      "expectedIsCandidate": false
+    },
+    {
+      "chunkId": "6aa83dd0078e904772d331f9",
+      "expectedIsCandidate": false
+    },
+    {
+      "chunkId": "6aa83dd9078e904772d33375",
+      "expectedIsCandidate": false
+    },
+    {
+      "chunkId": "6aa83de3078e904772d3353e",
+      "expectedIsCandidate": false
+    },
+    {
+      "chunkId": "6aa83de9078e904772d33694",
+      "expectedIsCandidate": false
+    },
+    {
+      "chunkId": "6aa83df1078e904772d3383e",
+      "expectedIsCandidate": false
+    },
+    {
+      "chunkId": "6aa83df9078e904772d33968",
+      "expectedIsCandidate": false
+    },
+    {
+      "chunkId": "6aa83dfe078e904772d33aa0",
+      "expectedIsCandidate": false
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a5e",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a68",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8366f078e904772d31b56",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8366f078e904772d31bb6",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83674078e904772d31c9e",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83683078e904772d31e0f",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83683078e904772d31e39",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83683078e904772d31e45",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8368a078e904772d31ee3",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8368a078e904772d31ef0",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8368f078e904772d31f83",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8368f078e904772d31f85",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8368f078e904772d31fa1",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8368f078e904772d31fa3",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83690078e904772d3204e",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83697078e904772d32100",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83697078e904772d32166",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8369a078e904772d321ea",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8369a078e904772d32252",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83df1078e904772d33856",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a34",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a3a",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a3e",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a40",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a56",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a7a",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a80",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a84",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83667078e904772d31ab2",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8368a078e904772d31ec3",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83683078e904772d31e25",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83690078e904772d32076",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83dfb078e904772d33a08",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83690078e904772d32084",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83dd0078e904772d33217",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8369a078e904772d32264",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83683078e904772d31e7d",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83690078e904772d32028",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a62",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83667078e904772d31aba",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8368a078e904772d31e93",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8368a078e904772d31ee5",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8369a078e904772d3220a",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8369a078e904772d3224e",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa836a6078e904772d322ae",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83dea078e904772d336cc",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83df0078e904772d33806",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83e02078e904772d33b8c",
+      "expectedIsCandidate": true
+    }
+  ],
+  "sentenceLevelEntries": [
+    {
+      "chunkId": "6aa83667078e904772d31a5e",
+      "supportingSpan": "With this strong momentum in the business and robust pipeline we are increasing our annual revenue growth guidance from 16.5% to 17.5% moving up to 19.5% to 20% in constant currency.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/28eec8d6-de9e-4e4d-92d8-beff066c9b25.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 16.5,
+        "upperBound": 17.5,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a5e",
+      "supportingSpan": "Our operating margin guidance remains at 22% to 24%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/28eec8d6-de9e-4e4d-92d8-beff066c9b25.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 22,
+        "upperBound": 24,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a68",
+      "supportingSpan": "Driven by robust demand environment and our continued market share gains, we are further increasing our revenue guidance for FY22 to 19.5% to 20% in constant currency terms from 16.5% to 17.5% earlier and the margin guidance remains unchanged at 22% to 24%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/28eec8d6-de9e-4e4d-92d8-beff066c9b25.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 19.5,
+        "upperBound": 20,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa8366f078e904772d31b56",
+      "supportingSpan": "This is reflected in an upgrade in our revenue guidance to 19.5%-20.0% for FY22.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/70d6a777-9538-453b-9450-a07113349c9e.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 19.5,
+        "upperBound": 20,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa8366f078e904772d31bb6",
+      "supportingSpan": "This is reflected in an upgrade in our revenue guidance to 19.5%-20.0% for FY22.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/70d6a777-9538-453b-9450-a07113349c9e.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 19.5,
+        "upperBound": 20,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83674078e904772d31c9e",
+      "supportingSpan": "We expect our revenues to grow by 4% to 7% in constant currency terms in FY '24.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2024",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c94d45c5-a44a-49d9-89af-6ef6532c4a30.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 4,
+        "upperBound": 7,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83674078e904772d31c9e",
+      "supportingSpan": "Operating margin guidance stands at 20% to 22%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2024",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c94d45c5-a44a-49d9-89af-6ef6532c4a30.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 20,
+        "upperBound": 22,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83683078e904772d31e0f",
+      "supportingSpan": "We are retaining our operating margin guidance for FY '23 at 21% to 22%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/01712d63-9662-4355-8b54-0534f66678d8.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 21,
+        "upperBound": 22,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83683078e904772d31e39",
+      "supportingSpan": "We are retaining our operating margin guidance for FY23 at 21% to 22%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/01712d63-9662-4355-8b54-0534f66678d8.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 21,
+        "upperBound": 22,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83683078e904772d31e45",
+      "supportingSpan": "With strong revenue performance in the first nine months of the year, the revenue guidance for FY23 has changed to 16% - 16.5%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/01712d63-9662-4355-8b54-0534f66678d8.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 16,
+        "upperBound": 16.5,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83683078e904772d31e45",
+      "supportingSpan": "Operating margin guidance band remains at 21% - 22% for the year.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/01712d63-9662-4355-8b54-0534f66678d8.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 21,
+        "upperBound": 22,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa8368a078e904772d31ee3",
+      "supportingSpan": "We change our operating margin guidance for FY2023, only for this year to 21% to 22%, which was earlier 21% to 23%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/48580c91-e22d-4d3c-aa9f-56c255914c14.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 21,
+        "upperBound": 22,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa8368a078e904772d31ef0",
+      "supportingSpan": "The revenue guidance for the year is changed to 15% to 16%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/48580c91-e22d-4d3c-aa9f-56c255914c14.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 15,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa8368f078e904772d31f83",
+      "supportingSpan": "This is reflected in our revised revenue guidance of 15%-16% for FY 23”, he added.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/29600a7e-9d02-4ae7-a619-26267f2115fa.pdf",
+      "expectedGuidanceKind": "REVISED",
+      "expectedNumeric": {
+        "lowerBound": 15,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "category": "revised_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa8368f078e904772d31f85",
+      "supportingSpan": "revenue guidance of 15%-16% for FY 23”, he added.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/29600a7e-9d02-4ae7-a619-26267f2115fa.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 15,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa8368f078e904772d31fa1",
+      "supportingSpan": "This is reflected in our revised revenue guidance of 15%-16% for FY 23”, he added.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/29600a7e-9d02-4ae7-a619-26267f2115fa.pdf",
+      "expectedGuidanceKind": "REVISED",
+      "expectedNumeric": {
+        "lowerBound": 15,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "category": "revised_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa8368f078e904772d31fa3",
+      "supportingSpan": "revenue guidance of 15%-16% for FY 23”, he added.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/29600a7e-9d02-4ae7-a619-26267f2115fa.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 15,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83690078e904772d3204e",
+      "supportingSpan": "Whilst we retain our operating margin guidance of 21% to 23%, we expect to be at the bottom end of the range.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/55d91053-dd92-4ca3-bd1d-4e419043f37a.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 21,
+        "upperBound": 23,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83690078e904772d3204e",
+      "supportingSpan": "The revenue guidance for the year has been revised to 14% to 16% from 13% to 15% earlier.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/55d91053-dd92-4ca3-bd1d-4e419043f37a.pdf",
+      "expectedGuidanceKind": "REVISED",
+      "expectedNumeric": {
+        "lowerBound": 14,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "category": "revised_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83697078e904772d32100",
+      "supportingSpan": "This has resulted in a strong performance in Q1 and increase in FY 23 revenue guidance to 14%-16%”, he added.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/86e25aea-a857-4c0b-9ee6-fe60b21a168c.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 14,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83697078e904772d32166",
+      "supportingSpan": "This has resulted in a strong performance in Q1 and increase in FY 23 revenue guidance to 14%-16%”, he added.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/86e25aea-a857-4c0b-9ee6-fe60b21a168c.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 14,
+        "upperBound": 16,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa8369a078e904772d321ea",
+      "supportingSpan": "As we look ahead – as we build our new strategy, that is looking at cloud and the digital ecosystem, our focus on employees and the costs related to the post-COVID work environment, result in our operating margin guidance to be at 21% to 23% for FY2023.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c07b78e8-687e-47ef-a212-41f9057b81ea.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 21,
+        "upperBound": 23,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa8369a078e904772d32252",
+      "supportingSpan": "Our focus on staying ahead in the cloud and digital ecosystem, and the focus on employees, and some of the costs which are coming back after the COVID phase is behind us, result in operating margin guidance to be at 21% to 23% for FY23.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c07b78e8-687e-47ef-a212-41f9057b81ea.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 21,
+        "upperBound": 23,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83df1078e904772d33856",
+      "supportingSpan": "Rajesh Gopinathan: I think it’s a combination of everything; delayed decision making, but TCV will not be as linear as revenue, which is why we have given a band of 7 billion to 9 billion where we think the TCV will remain during the course of this year and it has stayed well within that band throughout for the last three quarters.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "TCS",
+      "expectedFiscalYear": "FY2023",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/76ba7959-5943-41bd-9410-a53f3de41e26.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": null,
+        "upperBound": null,
+        "exactValue": 7
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a34",
+      "supportingSpan": "If you can talk about the pricing environment because the pricing of some of the hot skills has gone up by 4% to 8%.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "category": "analyst_question",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a3a",
+      "supportingSpan": "Roy mentioned that 55000 is the fresher hiring target for this year.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "category": "aspiration",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a3e",
+      "supportingSpan": "udget for FY2022 from clients, and since BFSI is your biggest bucket do you see the BFSI clients especially rising in for federal reserve’s interest rate hikes.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "category": "analyst_question",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a40",
+      "supportingSpan": "We do not separate in any other parameter so this gives a good indication that the more digital we are doing, the more our revenue per employee will go up and with that now growing at 40% and sitting at a very high level is what is reflecting in some of the parameters.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "category": "historical_result",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a56",
+      "supportingSpan": "Attrition increased to 25.5%.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "category": "historical_result",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a7a",
+      "supportingSpan": "So, what is happening on the employee attrition being higher than 25.5%?",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "category": "analyst_question",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a80",
+      "supportingSpan": "Nilanjan, you indicated correctly right, the last 12-month attrition does not accurately capture the attrition numbers, so could you give us the sense of the quarterly annualized attrition, how do that number trend?",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "category": "analyst_question",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a84",
+      "supportingSpan": "You have guided for 20% growth for the full fiscal.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "category": "analyst_question",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83667078e904772d31ab2",
+      "supportingSpan": "My next question is around margin guidance which we have around 22% to 24%.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "category": "analyst_question",
+      "note": null
+    },
+    {
+      "chunkId": "6aa8368a078e904772d31ec3",
+      "supportingSpan": "16 On the hiring of the freshers so there is a large number of people that you have hired and?",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "category": "analyst_question",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83683078e904772d31e25",
+      "supportingSpan": "50,000 was the target for this year.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "category": "aspiration",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83690078e904772d32076",
+      "supportingSpan": "Deal wins have fallen by 25% on a quarter-on-quarter basis.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "category": "deal_win",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83dfb078e904772d33a08",
+      "supportingSpan": "In this quarter on a CC YoY basis also, we saw a pretty robust growth of 14% to 15%, which is a higher growth compared to how we reported last quarter.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "TCS",
+      "expectedFiscalYear": "FY2023",
+      "category": "historical_result",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83690078e904772d32084",
+      "supportingSpan": "And for Nilanjan, Nilanjan we have raised revenue guidance for FY2023 to 14% to 16% but margin guidance remains unchanged and it was lower 100 basis points last quarter so can we say margin is stabilized or we see some more cost escalation going forward?",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "category": "analyst_question",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83dd0078e904772d33217",
+      "supportingSpan": "So, before we entered with the BSNL deal, our margin was trending about 25%-26% at EBIT level.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "TCS",
+      "expectedFiscalYear": "FY2026",
+      "category": "historical_result",
+      "note": null
+    },
+    {
+      "chunkId": "6aa8369a078e904772d32264",
+      "supportingSpan": "Questions for Nilanjan, attrition has zoomed to 27.7%, TCS is still at 17% so do you see this getting worse in the coming quarters before it gets better what are you doing to reign in attrition and if you can give us numbers in terms of the number of freshers hired in the previous fiscal and your fresher hiring target for this fiscal, if you can break that down for us, Thank you.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "category": "analyst_question",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83683078e904772d31e7d",
+      "supportingSpan": "Your revenues from North America have declined sequentially and they have improved only marginally in Europe in Q3.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "category": "historical_result",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83690078e904772d32028",
+      "supportingSpan": "18 Vivek Kumar Hi good evening.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "category": "non_guidance",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83667078e904772d31a62",
+      "supportingSpan": "Utilization was 88.5% slightly lower than the previous quarter easing some of the supply side pressures.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "category": "historical_result",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83667078e904772d31aba",
+      "supportingSpan": "We would rather operate at 85% to 86%, but having said that even if we bring this down in the future it is largely at offshore locations because 75% of our effort is sitting there.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "category": "aspiration",
+      "note": null
+    },
+    {
+      "chunkId": "6aa8368a078e904772d31e93",
+      "supportingSpan": "We have had strong momentum at 18.8% growth in the quarter.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "category": "historical_result",
+      "note": null
+    },
+    {
+      "chunkId": "6aa8368a078e904772d31ee5",
+      "supportingSpan": "Onsite effort mix remained flattish at 24.4%.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "category": "historical_result",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83697078e904772d32166",
+      "supportingSpan": "IFRS – INR Press Release Infosys Limited – Press Release Page 1 of 6 Bengaluru, India – July 24, 2022: Infosys (NSE, BSE, NYSE: INFY), a global leader in next-generation digital services and consulting, delivered a robust performance in Q1 with year-on-year growth at 21.4% and sequential growth at 5.5% in constant currency.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "category": "non_guidance",
+      "note": null
+    },
+    {
+      "chunkId": "6aa8369a078e904772d3220a",
+      "supportingSpan": "13 The overall margin guidance reflects a number of events.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "category": "aspiration",
+      "note": null
+    },
+    {
+      "chunkId": "6aa8369a078e904772d3224e",
+      "supportingSpan": "Our large deal wins were at $9.5 bn for the full year and $2.3 bn for the quarter.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "category": "deal_win",
+      "note": null
+    },
+    {
+      "chunkId": "6aa836a6078e904772d322ae",
+      "supportingSpan": "Capital allocation For FY22, the Board has recommended a final dividend of ₹16 per share ($0.21 per ADS*).",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "category": "non_guidance",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83dea078e904772d336cc",
+      "supportingSpan": "So, that is an opportunity for us to improve the utilization in the coming quarter as well as probably in H1 also.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "TCS",
+      "expectedFiscalYear": "FY2022",
+      "category": "aspiration",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83df0078e904772d33806",
+      "supportingSpan": "Our biggest strength has been nearly 125,000 TCS at middle and senior levels, who have been with the company for over 10 years on average.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "TCS",
+      "expectedFiscalYear": "FY2023",
+      "category": "non_guidance",
+      "note": null
+    },
+    {
+      "chunkId": "6aa83e02078e904772d33b8c",
+      "supportingSpan": "The supply side challenges during the year cost us another 1.4% and travel expenses went up by 0.3%.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "TCS",
+      "expectedFiscalYear": "FY2023",
+      "category": "historical_result",
+      "note": null
+    }
+  ]
+}

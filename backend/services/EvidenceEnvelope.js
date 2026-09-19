@@ -28,7 +28,6 @@
 
 import { normalizeGuidanceEvidence } from './guidanceNormalization.js';
 import { detectRelationships } from './temporalRelationships.js';
-import { getVerifiedAnnotationsByChunkIds } from './guidanceAnnotationLookup.js';
 
 /**
  * A deterministic, pattern-based detector for obvious instruction-like
@@ -149,7 +148,9 @@ const deterministicRank = (results) => [...results].sort((a, b) => {
  * text — a symbol with no directory entry gets `companyName: null` rather
  * than a guess.
  */
-export const buildResearchEvidenceEnvelope = (retrieverResults = [], { retrievalMode = null, companyNames = {} } = {}) => {
+export const buildResearchEvidenceEnvelope = (retrieverResults = [], {
+  retrievalMode = null, companyNames = {}, chunkAnnotationsByChunkId = new Map(),
+} = {}) => {
   const deduped = dedupeByChunkId(retrieverResults || []);
   const ranked = deterministicRank(deduped);
 
@@ -164,8 +165,19 @@ export const buildResearchEvidenceEnvelope = (retrieverResults = [], { retrieval
   // SUPERSEDED by another chunk THAT IS ALSO in this pool is moved behind
   // every non-superseded item (but still kept, budget permitting) — its
   // superseding sibling is guaranteed to compete for a budget slot first.
+  //
+  // Phase 4E.1: `chunkAnnotationsByChunkId` (a VERIFIED-only lookup result,
+  // pre-fetched by the async orchestration layer — see
+  // graph/tools/toolRegistry.js's retrieveGroundedEvidence — over the
+  // COMPLETE bounded candidate pool, BEFORE this function ever runs) is
+  // threaded into the SAME pre-budget canonicalization pass a runtime-only
+  // text parse used to only get after budgeting. This module itself never
+  // performs any database I/O — it only ever consumes a plain Map its
+  // caller already built.
   const canonicalForBudgeting = ranked
-    .map((r) => normalizeGuidanceEvidence({ ...r, evidenceId: r.chunkId }))
+    .map((r) => normalizeGuidanceEvidence({ ...r, evidenceId: r.chunkId }, {
+      chunkAnnotation: chunkAnnotationsByChunkId.get(String(r.chunkId)) || null,
+    }))
     .filter((c) => c.confidence !== 'unresolved');
   const supersededChunkIds = new Set(
     detectRelationships(canonicalForBudgeting)
@@ -190,30 +202,38 @@ export const buildResearchEvidenceEnvelope = (retrieverResults = [], { retrieval
     included.push(r);
   });
 
-  const items = included.map((r, index) => ({
-    evidenceId: `E${index + 1}`,
-    symbol: r.symbol || null,
-    companyName: companyNames[r.symbol] || null,
-    fiscalYear: r.fiscalYear || null,
-    fiscalQuarter: r.fiscalQuarter || null,
-    documentId: r.registryDocumentId || null,
-    chunkId: r.chunkId,
-    documentTitle: r.title || null,
-    documentType: r.documentType || null,
-    sourceAuthority: r.sourceAuthority || null,
-    publishedAt: r.publishedAt || null,
-    sourceUrl: r.sourceUrl || null,
-    pageStart: Number.isInteger(r.pageStart) ? r.pageStart : null,
-    pageEnd: Number.isInteger(r.pageEnd) ? r.pageEnd : null,
-    text: r.text,
-    retrievalRank: index + 1,
-    retrievalMode,
-    untrustedContent: true,
-    // Diagnostic only, exactly like toUntrustedEvidenceEnvelope's own
-    // injectionSignal above — never consulted to include/exclude/alter
-    // this evidence.
-    injectionSignal: detectInjectionSignals(r.text),
-  }));
+  const items = included.map((r, index) => {
+    const chunkAnnotation = chunkAnnotationsByChunkId.get(String(r.chunkId)) || null;
+    return {
+      evidenceId: `E${index + 1}`,
+      symbol: r.symbol || null,
+      companyName: companyNames[r.symbol] || null,
+      fiscalYear: r.fiscalYear || null,
+      fiscalQuarter: r.fiscalQuarter || null,
+      documentId: r.registryDocumentId || null,
+      chunkId: r.chunkId,
+      documentTitle: r.title || null,
+      documentType: r.documentType || null,
+      sourceAuthority: r.sourceAuthority || null,
+      publishedAt: r.publishedAt || null,
+      sourceUrl: r.sourceUrl || null,
+      pageStart: Number.isInteger(r.pageStart) ? r.pageStart : null,
+      pageEnd: Number.isInteger(r.pageEnd) ? r.pageEnd : null,
+      text: r.text,
+      retrievalRank: index + 1,
+      retrievalMode,
+      untrustedContent: true,
+      // Diagnostic only, exactly like toUntrustedEvidenceEnvelope's own
+      // injectionSignal above — never consulted to include/exclude/alter
+      // this evidence.
+      injectionSignal: detectInjectionSignals(r.text),
+      // Only ever present when the caller's pre-fetched map had a VERIFIED
+      // entry for this chunk (Phase 4E.1) — absent entirely otherwise, so
+      // reconcileEvidenceEnvelope's existing `item.chunkAnnotation || null`
+      // fallback behaves identically to before this field existed.
+      ...(chunkAnnotation ? { chunkAnnotation } : {}),
+    };
+  });
 
   return {
     items,
@@ -431,10 +451,12 @@ const temporalStatusFor = (evidenceId, canonicalById, relationships) => {
  */
 export const reconcileEvidenceEnvelope = (envelope) => {
   const items = envelope?.items || [];
-  // `chunkAnnotation`, when present, was attached by attachVerifiedChunkAnnotations
-  // below (Phase 4E Part 6) — an item with no such field (every existing
-  // Phase 4D test fixture, and any item nobody has annotated yet) falls
-  // through to `null` here exactly as before this field existed.
+  // `chunkAnnotation`, when present, was attached by buildResearchEvidenceEnvelope
+  // itself (Phase 4E.1 — from a pre-fetched map its caller passed in, never
+  // a database read this module performs) — an item with no such field
+  // (every existing Phase 4D test fixture, and any item nobody has
+  // annotated yet) falls through to `null` here exactly as before this
+  // field existed.
   const canonicalRecords = items.map((item) => normalizeGuidanceEvidence(item, {
     structured: item.structuredGuidance || null,
     chunkAnnotation: item.chunkAnnotation || null,
@@ -481,40 +503,7 @@ export const reconcileEvidenceEnvelope = (envelope) => {
   return { ...envelope, items: annotatedItems, relationships };
 };
 
-/**
- * attachVerifiedChunkAnnotations - Phase 4E Part 6: the ONLY place a
- * document-chunk evidence item is ever given a `chunkAnnotation` field.
- * A deliberately separate, ADDITIVE, async step — never folded into
- * buildResearchEvidenceEnvelope or reconcileEvidenceEnvelope themselves,
- * both of which stay fully synchronous and DB-free so every existing
- * Phase 4D test (which calls them synchronously, with no `await`) keeps
- * working completely unchanged. A caller inserts this between building
- * the envelope (+ any Earnings Intelligence merge) and reconciling it —
- * see graph/nodes/executeTools.js.
- *
- * Only ever attaches a VERIFIED annotation (guidanceAnnotationLookup.js
- * never returns anything else); an item with no VERIFIED annotation for
- * its chunkId is returned completely unchanged (no `chunkAnnotation` key
- * at all), which is exactly the "existing behavior unchanged for chunks
- * without annotations" the fallback order in guidanceNormalization.js
- * depends on.
- */
-export const attachVerifiedChunkAnnotations = async (envelope) => {
-  const items = envelope?.items || [];
-  const chunkIds = items.map((item) => item.chunkId).filter(Boolean);
-  if (!chunkIds.length) return envelope;
-
-  const annotationsByChunkId = await getVerifiedAnnotationsByChunkIds(chunkIds);
-  if (!annotationsByChunkId.size) return envelope;
-
-  const annotatedItems = items.map((item) => {
-    const annotation = item.chunkId ? annotationsByChunkId.get(String(item.chunkId)) : null;
-    return annotation ? { ...item, chunkAnnotation: annotation } : item;
-  });
-  return { ...envelope, items: annotatedItems };
-};
-
 export default {
   detectInjectionSignals, toUntrustedEvidenceEnvelope, toUntrustedEvidenceEnvelopes, buildResearchEvidenceEnvelope,
-  buildEarningsIntelligenceEnvelopeItems, mergeEarningsIntelligenceEvidence, reconcileEvidenceEnvelope, attachVerifiedChunkAnnotations,
+  buildEarningsIntelligenceEnvelopeItems, mergeEarningsIntelligenceEvidence, reconcileEvidenceEnvelope,
 };

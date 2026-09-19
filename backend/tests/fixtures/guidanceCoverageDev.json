@@ -1,0 +1,159 @@
+{
+  "_meta": {
+    "split": "dev",
+    "createdBy": "Phase 4E.1 manual adjudication",
+    "createdAt": "2026-09-19T07:04:11.385Z",
+    "purpose": "Chunks specifically inspected and used to diagnose/correct the discourse-aware attribution rule. Expected to score well by construction -- NOT used as the final measurement."
+  },
+  "chunkLevelEntries": [
+    {
+      "chunkId": "6aa83667078e904772d31a78",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83674078e904772d31c44",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83674078e904772d31c92",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83674078e904772d31cca",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa83674078e904772d31cc8",
+      "expectedIsCandidate": true
+    },
+    {
+      "chunkId": "6aa8368a078e904772d31f26",
+      "expectedIsCandidate": true
+    }
+  ],
+  "sentenceLevelEntries": [
+    {
+      "chunkId": "6aa83667078e904772d31a78",
+      "supportingSpan": "Our operating margin guidance remains at 22% to 24%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2022",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/28eec8d6-de9e-4e4d-92d8-beff066c9b25.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 22,
+        "upperBound": 24,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83674078e904772d31c44",
+      "supportingSpan": "Based on our sustained momentum in the financial year '23, the strong pipeline of opportunities, especially the ones in cost efficiency and consolidation, while also keeping in mind the uncertain environment, our revenue growth guidance for this financial year is 4% to 7% in constant currency.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2024",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c94d45c5-a44a-49d9-89af-6ef6532c4a30.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 4,
+        "upperBound": 7,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83674078e904772d31c44",
+      "supportingSpan": "Our operating margin guidance for the financial year is 20% to 22%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2024",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c94d45c5-a44a-49d9-89af-6ef6532c4a30.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 20,
+        "upperBound": 22,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83674078e904772d31c92",
+      "supportingSpan": "Based on our sustained momentum in financial year ‘23, a strong pipeline of opportunities, especially focused on cost, efficiency and consolidation, while also keeping in mind the uncertain environment, our revenue growth guidance for this financial year is 4% to 7% in constant currency.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2024",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c94d45c5-a44a-49d9-89af-6ef6532c4a30.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 4,
+        "upperBound": 7,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83674078e904772d31c92",
+      "supportingSpan": "Operating margin guidance for this financial year is 20% to 22%.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2024",
+      "expectedSourceUrl": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/c94d45c5-a44a-49d9-89af-6ef6532c4a30.pdf",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 20,
+        "upperBound": 22,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true
+    },
+    {
+      "chunkId": "6aa83674078e904772d31cca",
+      "supportingSpan": "ng fiscal '24 with a net new deal wins of $3.9 bn, which is pretty similar to last year, but the guidance implies incremental revenues of $1 bn at the midpoint.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2024",
+      "category": "deal_win",
+      "note": "the original false positive -- deal-win actual figure, analyst voice split across a sentence boundary within the same turn"
+    },
+    {
+      "chunkId": "6aa83674078e904772d31cc8",
+      "supportingSpan": "You are entering fiscal '24 with a net new deal wins of $3.9 bn, which is pretty similar to last year, but the guidance implies incremental revenues of $1 bn at the midpoint.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2024",
+      "category": "deal_win",
+      "note": "sibling chunk, leading \"You\" intact -- same analyst deal-win framing"
+    },
+    {
+      "chunkId": "6aa8368a078e904772d31f26",
+      "supportingSpan": "So if I look at we are implying a EBIT margin guidance of 21.3% in the second half versus 21.5% in the second quarter, this is a QoQ decline versus Nilanjan your first quarter comment was into Q3, Q4 we may see a QoQ increase in the margins and the way we are in terms of the utilization as well as likelihood of lower subcontracting cost, likelihood of lower pass through cost is it fair to say again on margin we are conservative or there are some additional cost headwind which we should be aware about.",
+      "expectedLabel": "NOT_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "category": "analyst_question",
+      "note": "long rambling analyst question addressing \"Nilanjan your...\" -- no trailing \"?\" in the extracted fragment"
+    },
+    {
+      "chunkId": "6aa8369a078e904772d32268",
+      "supportingSpan": "There is some seasonality on the revenue line as well, which I talked about, but I think overall giving the guidance of 13% to 15% - I do not recall in the last 10 years that we have given such a guidance.",
+      "expectedLabel": "TRUE_GUIDANCE",
+      "expectedSymbol": "INFY",
+      "expectedFiscalYear": "FY2023",
+      "expectedGuidanceKind": "ORIGINAL",
+      "expectedNumeric": {
+        "lowerBound": 13,
+        "upperBound": 15,
+        "exactValue": null
+      },
+      "category": "genuine_guidance",
+      "isNumeric": true,
+      "note": "a genuine CFO guidance statement, wrongly REJECTED via NEIGHBOR_SECOND_PERSON_ADDRESS because the PRECEDING sentence (same speaker, same turn) contains an informal \"if you see our year on year growth\" aside near the word \"growth\" -- a documented, accepted precision-over-recall tradeoff (Task: \"UNRESOLVED is acceptable\"), not further special-cased to avoid overfitting."
+    }
+  ]
+}

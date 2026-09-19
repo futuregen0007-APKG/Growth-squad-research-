@@ -41,6 +41,7 @@ import Watchlist from '../../models/Watchlist.js';
 import PortfolioHolding from '../../models/PortfolioHolding.js';
 import { buildEvidenceRecord } from '../evidence.js';
 import { buildResearchEvidenceEnvelope } from '../../services/EvidenceEnvelope.js';
+import { getVerifiedAnnotationsByChunkIds } from '../../services/guidanceAnnotationLookup.js';
 import { retrieveResearchEvidence, RETRIEVAL_MODES, RETRIEVAL_STATUS } from '../../services/ResearchRetrieverService.js';
 import { SUPPORTED_STOCKS } from '../../utils/constants.js';
 import { DEFAULT_COMPARISON_DIMENSIONS } from '../dimensions.js';
@@ -655,9 +656,22 @@ export const retrieveGroundedEvidence = async ({
       signal: context.signal,
     });
 
+    // Phase 4E.1 Part 7: batch-load VERIFIED offline annotations for the
+    // COMPLETE bounded candidate pool (outcome.results — already capped at
+    // RAG_TOP_K by the retriever) BEFORE the envelope is built, so the
+    // envelope's own pre-budget SUPERSEDES prioritization pass can see them
+    // too, not just the final post-budget reconciliation. This is the only
+    // database access in this whole flow — EvidenceEnvelope.js itself stays
+    // a pure, synchronous, DB-free module; it only ever consumes the plain
+    // Map built here.
+    const chunkAnnotationsByChunkId = await getVerifiedAnnotationsByChunkIds(
+      (outcome.results || []).map((r) => r.chunkId),
+    );
+
     const envelope = buildResearchEvidenceEnvelope(outcome.results, {
       retrievalMode: outcome.retrievalMode || mode,
       companyNames: { [normalized]: SUPPORTED_STOCKS[normalized]?.name || null },
+      chunkAnnotationsByChunkId,
     });
 
     const status = toolStatusForRetrieval(outcome.status, envelope.items.length > 0);
