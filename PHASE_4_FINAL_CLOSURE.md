@@ -138,7 +138,7 @@ Idempotency: each symbol's v3 extraction was run 3 times consecutively; chunk/ca
 
 ## 12. Commit hash
 
-`b4a5b21` — `fix: add first-class qualitative guidance and EI-document linkage` (see git log; exact hash confirmed after commit below).
+`5923305` — `fix: add first-class qualitative guidance and EI-document linkage`.
 
 ## 13. Git-ahead count
 
