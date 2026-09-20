@@ -27,6 +27,9 @@ import { createCacheError } from './errorHandler.js';
 
 let redisClient = null;
 
+// How many times a DROPPED connection is retried before giving up for good.
+const MAX_RECONNECT_ATTEMPTS = 10;
+
 // Simple wrapper exports for convenience (backwards compatible)
 const redisWrapper = {
   get: async (k) => {
@@ -66,7 +69,28 @@ export const initializeRedis = async () => {
       db: parseInt(process.env.REDIS_DB || 0),
       socket: {
         connectTimeout: 2000,
-        reconnectStrategy: false,
+        /**
+         * Phase 5B: bounded reconnect, replacing `reconnectStrategy: false`.
+         *
+         * WHY THIS CHANGED. With reconnect disabled, a connection that
+         * dropped NEVER came back — verified live against a real Redis
+         * container: stop it, start it again, and the same client stays
+         * `isOpen: false` until the process restarts. That silently turned
+         * a momentary blip into "no cache, and shared metrics stuck in
+         * degraded, until the next deploy."
+         *
+         * BOUNDED, so this cannot become the failure mode the old setting
+         * was avoiding: attempts back off 200ms, 400ms, 600ms ... capped at
+         * 3s, and after MAX_RECONNECT_ATTEMPTS the client gives up for good
+         * and every caller falls back exactly as it does today. This only
+         * ever applies to a connection that was ALREADY established — the
+         * initial connect still has its own 2s timeout, and a Redis that was
+         * never reachable still ends with a null client and no retry loop.
+         */
+        reconnectStrategy: (retries) => {
+          if (retries >= MAX_RECONNECT_ATTEMPTS) return new Error('Redis reconnect attempts exhausted');
+          return Math.min((retries + 1) * 200, 3000);
+        },
       },
     });
 

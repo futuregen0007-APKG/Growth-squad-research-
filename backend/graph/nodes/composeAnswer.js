@@ -10,6 +10,7 @@ import { resolveResearchScope } from '../researchScope.js';
 import { generateGroundedAnswer } from '../groundedAnswer.js';
 import { logger } from '../../utils/logger.js';
 import { emitEvent } from '../../services/telemetry/ragTelemetry.js';
+import { recordLlmCall } from '../../services/telemetry/costLedger.js';
 
 // Re-exported unchanged for backward compatibility — extractCitations now
 // lives in graph/citations.js (see its own module note for why: it's used
@@ -164,7 +165,7 @@ const composeAnswerInner = async (state) => {
     return {
       draftAnswer, validationStatus: 'SKIPPED_GENERAL_EDUCATION',
       warnings: ['Response generation skipped: request deadline exhausted.'],
-      llmCalls: [{ node: 'composeAnswer', role: 'synthesis', model: LLM_CONFIG.synthesisModel, durationMs: 0, timedOut: false, skipped: 'SKIPPED_NO_BUDGET' }],
+      llmCalls: [recordLlmCall({ node: 'composeAnswer', role: 'synthesis', model: LLM_CONFIG.synthesisModel, durationMs: 0, timedOut: false, skipped: 'SKIPPED_NO_BUDGET' })],
     };
   }
 
@@ -229,16 +230,16 @@ const composeAnswerInner = async (state) => {
       }
     }
 
-    const llmCalls = [{
+    const llmCalls = [recordLlmCall({
       node: 'composeAnswer', role: 'synthesis', model, durationMs: Date.now() - startedAt, timedOut: false,
       inputTokens: tokenUsage?.inputTokens ?? null, outputTokens: tokenUsage?.outputTokens ?? null,
       cachedInputTokens: tokenUsage?.cachedInputTokens ?? null, reasoningTokens: tokenUsage?.reasoningTokens ?? null,
-    }];
+    })];
     if (state.onEvent) state.onEvent({ type: 'status', message: 'Verifying claims and citations…' });
     return { draftAnswer: full, tokenUsage, llmCalls };
   } catch (error) {
     const timedOut = error?.isAbort || error?.name === 'APIUserAbortError' || combinedSignal.aborted;
-    const llmCalls = [{ node: 'composeAnswer', role: 'synthesis', model, durationMs: Date.now() - startedAt, timedOut }];
+    const llmCalls = [recordLlmCall({ node: 'composeAnswer', role: 'synthesis', model, durationMs: Date.now() - startedAt, timedOut })];
     if (timedOut) {
       // A caller-initiated cancellation (client disconnect / deadline) is
       // never reported as a provider failure, and there is nothing safe

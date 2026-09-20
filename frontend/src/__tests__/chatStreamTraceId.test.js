@@ -26,6 +26,21 @@ const scriptStream = (events) => {
 
 beforeEach(() => { jest.clearAllMocks(); });
 
+/**
+ * useChatStream resolves send()'s promise as soon as `message.completed`
+ * arrives, while its OWN cleanup (setIsStreaming(false), clearing the draft)
+ * runs a few microtasks later in the promise chain's `.finally()`. That is
+ * deliberate — the caller gets its answer without waiting for teardown — so
+ * the trailing state update lands after an `act()` that only awaited send.
+ *
+ * This flushes that tail INSIDE act, which is the correct way to model it in
+ * a test. There is nothing to fix in the hook: in the real app React handles
+ * the update normally.
+ */
+const flushHookCleanup = async () => {
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+};
+
 test('a completed turn resolves with the server trace id', async () => {
   scriptStream([
     { type: 'message.started', threadId: 't1' },
@@ -35,6 +50,7 @@ test('a completed turn resolves with the server trace id', async () => {
   const { result } = renderHook(() => useChatStream({ threadId: 't1' }));
   let resolved;
   await act(async () => { resolved = await result.current.send('what did TCS guide?'); });
+  await flushHookCleanup();
 
   expect(resolved.traceId).toBe(TRACE_ID);
   expect(resolved.content).toBe('TCS guided 15% growth.');
@@ -46,6 +62,7 @@ test('a turn whose server sent no trace id resolves with null -- never an invent
   const { result } = renderHook(() => useChatStream({ threadId: 't1' }));
   let resolved;
   await act(async () => { resolved = await result.current.send('hello'); });
+  await flushHookCleanup();
 
   expect(resolved.traceId).toBeNull();
 });
@@ -60,6 +77,7 @@ test('a failed turn rejects with an Error carrying the trace id, so it can be sh
   await act(async () => {
     try { await result.current.send('what did TCS guide?'); } catch (error) { caught = error; }
   });
+  await flushHookCleanup();
 
   expect(caught).toBeInstanceOf(Error);
   expect(caught.traceId).toBe(TRACE_ID);
@@ -74,6 +92,7 @@ test('a failure with no trace id still rejects cleanly, with traceId null', asyn
   await act(async () => {
     try { await result.current.send('hi'); } catch (error) { caught = error; }
   });
+  await flushHookCleanup();
 
   expect(caught).toBeInstanceOf(Error);
   expect(caught.traceId).toBeNull();
@@ -95,6 +114,7 @@ test('the trace id never carries internal diagnostics alongside it', async () =>
   const { result } = renderHook(() => useChatStream({ threadId: 't1' }));
   let resolved;
   await act(async () => { resolved = await result.current.send('hello'); });
+  await flushHookCleanup();
 
   expect(resolved.traceId).toBe(TRACE_ID);
   expect(resolved.nodeTimings).toBeUndefined();
@@ -106,6 +126,7 @@ test('streaming state settles after a turn completes, with the trace id already 
 
   const { result } = renderHook(() => useChatStream({ threadId: 't1' }));
   await act(async () => { await result.current.send('hello'); });
+  await flushHookCleanup();
 
   await waitFor(() => expect(result.current.isStreaming).toBe(false));
 });

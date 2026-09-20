@@ -7,24 +7,23 @@
  * `completion_tokens` when the provider returns them — this module never
  * estimates usage itself, and never makes a model/network call of its own).
  *
- * The price table is explicitly VERSIONED and dated — never presented as
- * permanently current. Update PRICE_TABLE_VERSION and PRICE_TABLE_ASOF
- * whenever prices change; this file's own git history is the source of
- * truth for "when did this change," not a runtime timestamp.
+ * Phase 5B: the price DATA moved to services/telemetry/modelPricing.js — a
+ * validated configuration module that records where the figures came from,
+ * when they were last confirmed, whether they are stale, and which entries
+ * it rejected. This module keeps only the arithmetic. The exports below are
+ * unchanged in name, shape, and value, so every Phase 5A caller and test
+ * continues to work against them.
  */
+import {
+  getPricing, resolveModelId, PRICING_TABLE, PRICING_VERSION, PRICING_LAST_UPDATED, PRICING_CURRENCY,
+} from './modelPricing.js';
 
-export const PRICE_TABLE_VERSION = '2026-09-1';
-// Manually confirmed against OpenAI's published pricing as of this date —
-// NOT auto-fetched, NOT guaranteed current at any later date. $ per 1M
-// tokens, input/output priced separately (cached input, when known, is
-// priced separately too since providers typically discount it).
-export const PRICE_TABLE_ASOF = '2026-09-19';
-export const PRICE_TABLE = Object.freeze({
-  'gpt-4o-mini': { inputPer1M: 0.15, cachedInputPer1M: 0.075, outputPer1M: 0.60 },
-  'gpt-4o': { inputPer1M: 2.50, cachedInputPer1M: 1.25, outputPer1M: 10.00 },
-  'gpt-4.1-mini': { inputPer1M: 0.40, cachedInputPer1M: 0.10, outputPer1M: 1.60 },
-  'gpt-4.1': { inputPer1M: 2.00, cachedInputPer1M: 0.50, outputPer1M: 8.00 },
-});
+// Phase 5A compatibility surface. PRICE_TABLE is modelPricing's own
+// validated table (a rejected entry is absent from both, so an invalid
+// price can never be used here either).
+export const PRICE_TABLE_VERSION = PRICING_VERSION;
+export const PRICE_TABLE_ASOF = PRICING_LAST_UPDATED;
+export const PRICE_TABLE = PRICING_TABLE;
 
 /**
  * estimateCallCost - one LLM call's estimated cost, or `null` when the
@@ -34,7 +33,10 @@ export const PRICE_TABLE = Object.freeze({
  */
 export const estimateCallCost = ({ model, inputTokens, outputTokens, cachedInputTokens = 0 } = {}) => {
   if (!Number.isFinite(inputTokens) || !Number.isFinite(outputTokens)) return null;
-  const pricing = PRICE_TABLE[model];
+  // Alias-aware: a pinned/dated model id the provider returned is priced
+  // as its canonical entry, but only via modelPricing's explicit alias map —
+  // an unknown model still prices as null, never at a guessed rate.
+  const pricing = getPricing(model);
   if (!pricing) return null;
 
   const billableInput = Math.max(0, inputTokens - (Number.isFinite(cachedInputTokens) ? cachedInputTokens : 0));
@@ -67,15 +69,17 @@ export const estimateRequestCost = (llmCalls = []) => {
   }
 
   if (knownCount === 0 && unknownCount === 0) {
-    return { estimatedCost: null, currency: 'USD', priceTableVersion: PRICE_TABLE_VERSION, unknownCallCount: 0, isEstimate: true };
+    return { estimatedCost: null, currency: PRICING_CURRENCY, priceTableVersion: PRICE_TABLE_VERSION, unknownCallCount: 0, isEstimate: true };
   }
   return {
     estimatedCost: knownCount > 0 ? Number(total.toFixed(8)) : null,
-    currency: 'USD',
+    currency: PRICING_CURRENCY,
     priceTableVersion: PRICE_TABLE_VERSION,
     unknownCallCount: unknownCount,
     isEstimate: true,
   };
 };
 
-export default { PRICE_TABLE_VERSION, PRICE_TABLE_ASOF, PRICE_TABLE, estimateCallCost, estimateRequestCost };
+export default {
+  PRICE_TABLE_VERSION, PRICE_TABLE_ASOF, PRICE_TABLE, estimateCallCost, estimateRequestCost, resolveModelId,
+};

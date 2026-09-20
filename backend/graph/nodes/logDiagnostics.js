@@ -4,6 +4,7 @@ import { emitEvent } from '../../services/telemetry/ragTelemetry.js';
 import { metricsStore } from '../../services/telemetry/metricsStore.js';
 import { buildTurnMetrics } from '../../services/telemetry/turnClassification.js';
 import { estimateRequestCost } from '../../services/telemetry/costEstimation.js';
+import { costLedger } from '../../services/telemetry/costLedger.js';
 
 /**
  * logDiagnostics - the ONE place a structured, safe summary of the whole
@@ -98,14 +99,14 @@ export const logDiagnostics = async (state) => {
   metricsStore.recordRejectedClaimCount(turnMetrics.rejectedClaimCount);
   if (turnMetrics.retrievalMode) metricsStore.recordRetrievalMode(turnMetrics.retrievalMode);
   metricsStore.recordErrorCategory(turnMetrics.errorCategory);
-  for (const call of state.llmCalls || []) {
-    metricsStore.recordTokenUsage({
-      inputTokens: call.inputTokens, outputTokens: call.outputTokens,
-      cachedInputTokens: call.cachedInputTokens, reasoningTokens: call.reasoningTokens,
-      usageUnknown: call.inputTokens == null && call.outputTokens == null && !call.skipped,
-    });
-  }
-  metricsStore.recordCost(cost.estimatedCost);
+  // Phase 5B: every real LLM call was already recorded by the cost ledger at
+  // its own call site, the moment it completed — which is what makes a turn
+  // that dies before reaching this node still cost-accounted. This sweep is
+  // the safety net for any call that somehow was not: the ledger recognises
+  // the objects it has already seen (by identity) and counts each exactly
+  // once. Token totals and costUnknownCount now come from there, so this
+  // node no longer writes them itself.
+  costLedger.recordMany(state.llmCalls || []);
 
   emitEvent('rag.request.completed', {
     traceId: state.traceId, requestId: state.requestId, intent: state.intent,

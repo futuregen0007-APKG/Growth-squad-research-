@@ -6,6 +6,7 @@ import { boundedTimeout, hasBudgetFor } from '../requestBudget.js';
 import { repairGroundedAnswerNode } from '../groundedAnswer.js';
 import { logger } from '../../utils/logger.js';
 import { emitEvent } from '../../services/telemetry/ragTelemetry.js';
+import { recordLlmCall } from '../../services/telemetry/costLedger.js';
 
 const MIN_REPAIR_BUDGET_MS = 800;
 
@@ -73,16 +74,18 @@ const repairAnswerInner = async (state) => {
 
     const repaired = response.choices?.[0]?.message?.content || null;
     const usage = response.usage;
-    const llmCalls = [{
+    const llmCalls = [recordLlmCall({
       node: 'repairAnswer', role: 'repair', model, durationMs: Date.now() - startedAt, timedOut: false,
       inputTokens: usage?.prompt_tokens ?? null, outputTokens: usage?.completion_tokens ?? null,
-    }];
+      cachedInputTokens: usage?.prompt_tokens_details?.cached_tokens ?? null,
+      reasoningTokens: usage?.completion_tokens_details?.reasoning_tokens ?? null,
+    })];
 
     if (!repaired) return { repairCount, llmCalls };
     return { draftAnswer: repaired, repairCount, llmCalls };
   } catch (error) {
     const timedOut = error?.isAbort || error?.name === 'APIUserAbortError' || combinedSignal.aborted;
-    const llmCalls = [{ node: 'repairAnswer', role: 'repair', model, durationMs: Date.now() - startedAt, timedOut }];
+    const llmCalls = [recordLlmCall({ node: 'repairAnswer', role: 'repair', model, durationMs: Date.now() - startedAt, timedOut })];
     if (!timedOut) {
       const mapped = mapOpenAIError(error, { operation: 'repairAnswer' });
       logger.warn(`[Graph] repairAnswer failed: ${mapped.message}`);

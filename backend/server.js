@@ -24,6 +24,9 @@ import newsRoute from './routes/news.js';
 import { createGoalRoutes } from './routes/goals.js';
 import earningsIntelligenceRoute from './routes/earningsIntelligence.js';
 import opsRoute from './routes/ops.js';
+import { initializeOtlpExporter, shutdownOtlpExporter } from './services/telemetry/otlpExporter.js';
+import { initializeSharedMetrics, shutdownSharedMetrics } from './services/telemetry/sharedMetrics.js';
+import { getDependencySnapshot } from './services/telemetry/dependencyState.js';
 import { seedHistoricalIntelligence } from './scripts/seedHistoricalIntelligence.js';
 import { createPortfolioRoutes } from './routes/portfolio.js';
 import { createWatchlistRoutes } from './routes/watchlist.js';
@@ -108,6 +111,10 @@ const readinessHandler = createReadinessHandler({
   mongoAttempted: () => mongoConnectAttempted,
   getMongoLastError: () => mongoLastError,
   getRedisClient,
+  // Phase 5B: the per-dependency breakdown, reporting-only. It reads the
+  // same already-tracked in-memory state this handler already uses (no
+  // query, no ping, no billable call), so /ready stays instant.
+  getDependencies: getDependencySnapshot,
 });
 app.get('/ready', readinessHandler);
 app.get('/api/ready', readinessHandler);
@@ -246,11 +253,27 @@ const startServer = () => {
     }
   })();
 
-  initializeRedis().catch((err) => logger.warn(`Redis initialization error: ${err.message}`));
+  initializeRedis()
+    .catch((err) => logger.warn(`Redis initialization error: ${err.message}`))
+    // Phase 5B: the shared-metrics mirror is started AFTER the Redis
+    // attempt settles, so its first tick sees whatever state that reached.
+    // It is a no-op unless RAG_METRICS_SHARED_AGGREGATION=true, and it
+    // degrades to in-process metrics on its own if Redis never comes up.
+    .finally(() => { initializeSharedMetrics(); });
+
+  // Phase 5B: registers the OTLP exporter only when an endpoint is
+  // configured. Unconfigured, this logs one line and changes nothing.
+  initializeOtlpExporter();
 
   const shutdown = async (signal) => {
     logger.info(`Received ${signal}. Shutting down gracefully...`);
     try {
+      // Phase 5B: flush telemetry BEFORE tearing down its transports, so the
+      // last few seconds of events are not lost on a deploy. Both calls are
+      // internally time-bounded and never reject, so a dead collector or a
+      // dead Redis cannot stall or fail the shutdown.
+      await shutdownSharedMetrics().catch((err) => logger.warn(`Shared metrics shutdown: ${err.message}`));
+      await shutdownOtlpExporter().catch((err) => logger.warn(`OTLP exporter shutdown: ${err.message}`));
       await closeRedis();
       await stockSocket.stop();
       if (server) {

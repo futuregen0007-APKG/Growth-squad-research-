@@ -24,6 +24,7 @@
 import { zodResponseFormat } from 'openai/helpers/zod';
 import { OpenAIClientFactory } from '../llm/OpenAIClientFactory.js';
 import { boundedTimeout } from './requestBudget.js';
+import { recordLlmCall } from '../services/telemetry/costLedger.js';
 
 export const SKIPPED_NO_BUDGET = 'SKIPPED_NO_BUDGET';
 
@@ -68,7 +69,11 @@ export const invokeRoutingModel = async ({
     return {
       parsed,
       error: parsed ? null : 'NO_PARSED_RESULT',
-      diagnostic: {
+      // Phase 5B: recorded the moment the call completes, so its cost is
+      // captured even if this turn later dies before logDiagnostics runs.
+      // recordLlmCall returns the SAME object, so logDiagnostics' end-of-turn
+      // sweep recognises it and never counts it twice.
+      diagnostic: recordLlmCall({
         ...baseDiagnostic,
         durationMs: Date.now() - startedAt,
         timedOut: false,
@@ -80,7 +85,7 @@ export const invokeRoutingModel = async ({
         // null-vs-0 distinction for "unknown usage").
         cachedInputTokens: usage?.prompt_tokens_details?.cached_tokens ?? null,
         reasoningTokens: usage?.completion_tokens_details?.reasoning_tokens ?? null,
-      },
+      }),
     };
   } catch (error) {
     const timedOut = error?.name === 'AbortError' || combinedSignal.aborted;
@@ -91,7 +96,7 @@ export const invokeRoutingModel = async ({
     return {
       parsed: null,
       error: timedOut ? 'CANCELLED' : 'PROVIDER_ERROR',
-      diagnostic: { ...baseDiagnostic, durationMs: Date.now() - startedAt, timedOut },
+      diagnostic: recordLlmCall({ ...baseDiagnostic, durationMs: Date.now() - startedAt, timedOut }),
     };
   } finally {
     clearTimeout(timer);

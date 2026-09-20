@@ -116,3 +116,15 @@ frontend/node_modules/.cache/default-development/0.pack
 
 # Legacy flat-file user store (superseded by MongoDB) - contains real PII/password hashes
 backend/data/*.json
+
+# ============================================================
+# Environment TEMPLATE — tracked on purpose
+# ============================================================
+# Real environment files (.env, .env.local, backend/.env, ...) stay ignored
+# by the rules above. The TEMPLATE is the one exception: it documents every
+# variable the app reads, with placeholders only and never a real value, so
+# it belongs in version control where a new developer or a deploy can find
+# it. A negation has to come AFTER the patterns it overrides, because the
+# last matching pattern in a .gitignore wins.
+!.env.example
+!**/.env.example
