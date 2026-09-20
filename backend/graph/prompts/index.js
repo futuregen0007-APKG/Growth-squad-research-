@@ -89,11 +89,69 @@ Tool results (status per tool — EMPTY/UNAVAILABLE/ERROR means no usable data f
 ${JSON.stringify(toolResults.map((t) => ({ tool: t.tool, status: t.status, warning: t.warning })))}
 
 Numbered evidence you may cite (cite ONLY using the bracketed number inline in your prose, e.g. "revenue grew 12% [2]" — never invent a number outside this list, never cite a number for a claim that source doesn't actually support):
-${evidence.map((item, i) => `[${i + 1}] ${item.claimType}${item.symbol ? ` (${item.symbol})` : ''}: ${item.title || 'untitled'}${item.publishedAt ? ` — ${item.publishedAt}` : ''}${item.excerpt ? ` — "${item.excerpt}"` : ''}`).join('\n') || '(no evidence available)'}
+${evidence.map((item, i) => `[${i + 1}] ${item.claimType}${item.symbol ? ` (${item.symbol})` : ''}${item.reportingPeriod ? ` [period: ${item.reportingPeriod}]` : ''}: ${item.title || 'untitled'}${item.publishedAt ? ` — as of ${item.publishedAt}` : ''}${item.excerpt ? ` — "${item.excerpt}"` : ''}`).join('\n') || '(no evidence available)'}
 
 ${missingDataNotes.length ? `Data you were asked for but genuinely could not get this turn — say so plainly and honestly wherever the question touches these, do not paper over the gap by reusing a different, unrelated piece of evidence:\n${missingDataNotes.map((n) => `- ${n}`).join('\n')}` : ''}
 
 ${warnings.length ? `Known limitations this turn: ${warnings.join(' ')}` : ''}
+
+HOW TO WRITE THIS ANSWER (Phase 6A — each rule fixes a measured failure):
+
+1. PROVENANCE. Give the reporting period or as-of date alongside every
+   material figure, in the prose or the table — "NIM 4.78% (FY2024)", not
+   "NIM 4.78%". The evidence list above carries the period; use it.
+
+2. NEVER COMPARE ACROSS PERIODS SILENTLY. If the only figures you have for
+   two companies are from different periods, you may still show them, but
+   you MUST say the periods differ and that this limits the comparison. Do
+   not describe a FY2022 number and a FY2024 number as if they were a
+   like-for-like gap.
+
+3. SECTOR-APPROPRIATE METRICS. For a bank or lender, the meaningful
+   measures are net interest margin (NIM), ROA, ROE, and asset quality
+   (GNPA/NNPA) — never "operating margin" or EBITDA, which do not describe a
+   bank. For non-financial companies use operating/EBITDA margin, revenue,
+   and profit. If the sector-appropriate metric is not in the evidence, say
+   it is not available; never substitute a metric that means something else.
+
+4. COMPARISONS. When comparing companies, structure the answer as: a short
+   verdict sentence; a metric table (one row per metric, one column per
+   company, with the period); each company's strengths; risks; valuation if
+   you genuinely have valuation evidence; who it may suit by horizon and
+   risk appetite; and finally the data limitations. Omit any section you
+   have no evidence for rather than padding it.
+
+5. "WHICH IS BETTER" IS CONDITIONAL, NEVER A RECOMMENDATION. Do not issue a
+   buy/sell/hold call or name a winner outright. Answer in the form "on
+   these figures, X looks stronger on <metric>, Y on <metric>; for a
+   long-horizon investor prioritising <factor>, X's profile fits better,
+   while <factor> favours Y" — grounded in the cited evidence, and always
+   noting that this is not investment advice.
+
+6. EVERY CLAIM CARRIES ITS CITATION. A deterministic verifier checks each
+   sentence of your answer against the numbered evidence and rejects the
+   whole answer if any factual or comparative sentence is not backed by a
+   listed item. So: put the [N] marker on every sentence that states or
+   compares a figure, including the verdict sentence and every table row.
+   Restate what the cited figure shows rather than reasoning beyond it —
+   "ICICI's NIM is 4.78% (FY2024) [10] versus HDFC's 4.0% (FY2022) [1]" is
+   verifiable; "this means ICICI earns more from its assets" is not, and
+   costs the reader the entire answer. Interpretation is welcome only when
+   it restates cited figures and carries their citations. Write no sentence
+   you cannot point at a number for.
+
+7. NEVER INVENT. No price target, no forecast, no trend direction, no
+   growth rate, and no citation that is not in the numbered list. If the
+   question asks for something you have no evidence for (valuation
+   multiples, five-year outlook, margin TREND across years when you hold
+   only one period), say plainly that you do not have it and answer the
+   part you can support. A partial, sourced answer is the goal — not an
+   apology, and not a guess.
+
+8. DATA THAT IS MISSING. State exactly which company and which metric is
+   missing, and do not imply the gap is temporary unless you were told it
+   is. Say "no verified filing data is held for BEL" rather than "data is
+   temporarily unavailable".
 
 Write the final answer now.`;
 
@@ -180,6 +238,19 @@ Rewrite the answer so that:
 - Any requested but unavailable data is stated as unavailable, plainly and briefly.
 - No new factual claim is introduced beyond what was already in the original draft and supportable by the evidence.
 - No guaranteed-return language and no unqualified immediate buy/sell instruction.
+
+THIS IS THE LAST ATTEMPT (Phase 6A). There is exactly one repair pass: if
+this rewrite still contains an unsupported claim, the whole answer is
+discarded and the user receives a bare list instead of your work. So be
+strictly conservative rather than complete:
+- DELETE every flagged sentence outright. Do not rescue, soften, hedge, or
+  rephrase it — deletion always beats another failed attempt.
+- Add NO new sentence, no new interpretation, no summarising conclusion, and
+  no transition prose. Only supported claims, each with its [N] citation.
+- Keep the structure (headings, table rows) that survives, and drop any
+  heading left empty.
+- A short, fully-cited answer is a success here. A richer answer with one
+  uncited sentence is a total loss for the reader.
 
 Write the corrected final answer now.`;
 

@@ -128,7 +128,16 @@ test('required test 13: repair that still leaves an unsafe draft is rejected -- 
 
       assert.equal(finalState.repairCount, 1, 'exactly one repair attempt, never a second');
       assert.notEqual(finalState.answer, 'TCS revenue grew 12% [1] and profit doubled [7].', 'the still-broken repair must never be published');
-      assert.equal(finalState.validationStatus, 'ABSTAINED');
+    // Phase 6A: the zero-evidence abstention is now PRECISE - it names the
+    // company and why the data is missing instead of a generic apology - so
+    // it carries its own status (ABSTAINED_PRECISE) and is published
+    // directly rather than routed through buildSafeFallback. The safety
+    // property these tests exist for is unchanged: no LLM synthesis call,
+    // no fabricated figure, and an honest statement of the gap.
+    assert.ok(
+      ['ABSTAINED', 'ABSTAINED_PRECISE'].includes(finalState.validationStatus),
+      `expected an abstention, got ${finalState.validationStatus}`,
+    );
 
       const tokenText = emitted.filter((e) => e.type === 'token').map((e) => e.token).join('');
       assert.equal(tokenText, finalState.answer, 'only the final safe fallback text is ever streamed, never the rejected repair');
@@ -258,9 +267,22 @@ test('required test 1 (full pipeline): a comparison with zero evidence for both 
 
   try {
     const finalState = await graph.invoke({ messages: [new HumanMessage('Compare HAL and BEL')], onEvent: () => {} });
-    assert.equal(finalState.validationStatus, 'ABSTAINED');
+    // Phase 6A: the zero-evidence abstention is now PRECISE - it names the
+    // company and why the data is missing instead of a generic apology - so
+    // it carries its own status (ABSTAINED_PRECISE) and is published
+    // directly rather than routed through buildSafeFallback. The safety
+    // property these tests exist for is unchanged: no LLM synthesis call,
+    // no fabricated figure, and an honest statement of the gap.
+    assert.ok(
+      ['ABSTAINED', 'ABSTAINED_PRECISE'].includes(finalState.validationStatus),
+      `expected an abstention, got ${finalState.validationStatus}`,
+    );
     assert.ok(!/1940|1954|founded/i.test(finalState.answer), 'the fabricated founding-year claim must never survive to the final published answer');
-    assert.match(finalState.answer, /don't have verified data|couldn't produce/i);
+    // Phase 6A: a zero-evidence turn now abstains PRECISELY ("I could not
+    // answer this from verified data. Specifically: ...") naming each company
+    // and why, alongside the legacy generic wording. Both are honest
+    // refusals; this assertion exists to prove the answer IS a refusal.
+    assert.match(finalState.answer, /don't have verified data|couldn't produce|could not answer this from verified data/i);
   } finally {
     OpenAIClientFactory.getClient = originalGetClient;
     OpenAIClientFactory.isConfigured = originalIsConfigured;

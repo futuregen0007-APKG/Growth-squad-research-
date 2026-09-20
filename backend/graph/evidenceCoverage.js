@@ -33,7 +33,11 @@ export const EVIDENCE_COVERAGE_STATUS = Object.freeze({
 // decide COVERED in the first place (a single source of truth, not a
 // second copy that could drift).
 export const DIMENSION_CLAIM_TYPES = Object.freeze({
-  PRICE: ['LIVE_PRICE'],
+  PRICE: ['LIVE_PRICE', 'MARKET_HISTORY'],
+  // Phase 6A: back to FINANCIAL_DATA only. Stored NSE price history now has
+  // its own MARKET_HISTORY type under PRICE, so a company with no filings
+  // reports an honest financials gap rather than having price history
+  // silently stand in for filing data.
   FINANCIALS: ['FINANCIAL_DATA'],
   COMPANY_RESEARCH: ['COMPANY_PROFILE', 'KEY_METRIC', 'SHAREHOLDING', 'CORPORATE_ACTION', 'ANALYST_FORECAST'],
   NEWS: ['COMPANY_NEWS'],
@@ -127,7 +131,12 @@ export const computeEvidenceCoverage = ({
 
 const STATUS_PHRASE = Object.freeze({
   EMPTY: 'no data was found',
-  UNAVAILABLE: 'temporarily unavailable',
+  // Phase 6A: "temporarily unavailable" was shown for data that is not
+  // temporary at all - a company we hold no filings for reads the same as a
+  // provider that is briefly rate-limited. The reader cannot tell whether
+  // retrying would help. This wording says only what is actually known:
+  // the data was not obtained for this turn, without promising it exists.
+  UNAVAILABLE: 'not available from any source this turn',
   UNSUPPORTED: 'not a capability GS Copilot currently supports',
   AUTH_REQUIRED: 'requires the user to be signed in',
 });

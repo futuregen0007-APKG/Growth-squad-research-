@@ -346,7 +346,12 @@ test('required test 11: a zero-evidence COMPANY_RESEARCH turn never publishes a 
     try {
       const finalState = await graph.invoke({ messages: [new HumanMessage('Tell me about TCS')], onEvent: () => {} });
       assert.ok(!/1968|founded/i.test(finalState.answer), 'the fabricated founding fact must never survive to the published answer');
-      assert.ok(['ABSTAINED', 'PASSED'].includes(finalState.validationStatus));
+      // Phase 6A: a zero-evidence turn may now abstain PRECISELY, naming each
+    // company and why its data is missing. That is a third honest,
+    // non-fabricating terminal state alongside the two this test already
+    // accepted - the property under test (never publishes a fabricated
+    // factual answer) is unchanged and asserted below.
+    assert.ok(['ABSTAINED', 'ABSTAINED_PRECISE', 'PASSED'].includes(finalState.validationStatus));
     } finally {
       TOOL_REGISTRY.getCompanyFinancials = originalFinancials;
       TOOL_REGISTRY.getCompanyResearch = originalResearch;

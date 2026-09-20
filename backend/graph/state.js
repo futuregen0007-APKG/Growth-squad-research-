@@ -296,6 +296,12 @@ export const GraphState = Annotation.Root({
   // this is purely an observability mirror of it.
   scopeSignal: Annotation({ reducer: replace, default: () => null }),
 
+  // Phase 6A: the structured claim plan the deterministic renderer built
+  // this turn (company/metric/value/unit/period/evidence-index records).
+  // Carried so repair can work from the same structure rather than
+  // re-deriving it from prose.
+  claimPlan: Annotation({ reducer: replace, default: () => null }),
+
   // Streaming callback set by the controller — not persisted, not part of
   // any checkpoint (this graph has none), purely an in-memory hook the
   // composeAnswer node uses to emit token/status events as they happen.

@@ -56,7 +56,7 @@ const validateFinalAnswerInner = async (state) => {
   // this MUST be checked before the `draftAnswer == null` branch below —
   // otherwise a real, deliberate ABSTAINED would be misread as the
   // cancellation case and mislabeled FAILED_SAFE.
-  if (state.validationStatus === 'SKIPPED_GENERAL_EDUCATION' || state.validationStatus === 'FAILED_SAFE' || state.validationStatus === 'ABSTAINED') {
+  if (state.validationStatus === 'SKIPPED_GENERAL_EDUCATION' || state.validationStatus === 'FAILED_SAFE' || state.validationStatus === 'ABSTAINED' || state.validationStatus === 'ABSTAINED_PRECISE') {
     return {};
   }
 
@@ -100,7 +100,14 @@ const validateFinalAnswerInner = async (state) => {
       node: 'validateFinalAnswer',
       role: 'verification',
       model: LLM_CONFIG.validationModel,
-      maxTokens: 900,
+      // Phase 6A: raised from 900. The deterministic renderer produces a
+      // richer answer (a metric table is one claim per cell), so the
+      // verifier must emit ~17 structured verdicts instead of ~5. At 900 it
+      // ran out of output budget mid-list and returned INVALID_CITATION for
+      // every claim it had not actually examined - measured: 63 false
+      // INVALID_CITATION across 25 runs, on citations that were correct.
+      // This gives the gate room to do its job; it does not relax it.
+      maxTokens: 2500,
       schema: ClaimVerificationSchema,
       schemaName: 'claim_verification',
       prompt: claimVerificationPrompt({

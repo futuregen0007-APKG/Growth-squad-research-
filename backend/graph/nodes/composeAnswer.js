@@ -11,6 +11,9 @@ import { generateGroundedAnswer } from '../groundedAnswer.js';
 import { logger } from '../../utils/logger.js';
 import { emitEvent } from '../../services/telemetry/ragTelemetry.js';
 import { recordLlmCall } from '../../services/telemetry/costLedger.js';
+import { buildClaimPlan } from '../../services/claimPlan.js';
+import { renderDeterministicAnswer, renderUnavailableAnswer } from '../../services/answerRenderer.js';
+import { classifySector, getStoredProfile, UNAVAILABLE_REASONS } from '../../services/storedFundamentals.js';
 
 // Re-exported unchanged for backward compatibility — extractCitations now
 // lives in graph/citations.js (see its own module note for why: it's used
@@ -145,7 +148,60 @@ const composeAnswerInner = async (state) => {
   // SOME evidence exists (a partial answer still has real content worth
   // composing and citing).
   if (EVIDENCE_DEPENDENT_INTENTS.has(state.intent) && state.toolResults.length > 0 && !state.evidence.length) {
+    // Phase 6A: name what is missing and why, per company, instead of a
+    // generic abstention. BEL/HAL must read as "no verified filing data has
+    // been collected", not as a vague apology that implies a retry helps.
+    const symbols = (state.entities?.symbols || []).map((sym) => String(sym).toUpperCase());
+    const precise = renderUnavailableAnswer({ symbols, missing: state.missingEvidence || [] });
+    if (precise) {
+      return { draftAnswer: precise, validationStatus: 'ABSTAINED_PRECISE' };
+    }
     return { validationStatus: 'ABSTAINED' };
+  }
+
+  // ---------------------------------------------------------------------
+  // Phase 6A: DETERMINISTIC COMPOSITION
+  // ---------------------------------------------------------------------
+  // A 5x5 stability trace found 25/25 turns retrieving evidence but only
+  // 4/25 passing verification, with 20 of 29 claim failures being
+  // UNSUPPORTED_INFERENCE and 5 MISSING_CITATION: the model restating real
+  // figures without their citation, or reasoning past what any single
+  // evidence item supports. That is a sampling property of free-text
+  // generation, and two rounds of prompt instruction did not make it
+  // reliable.
+  //
+  // So for metric-shaped questions the factual core is no longer generated.
+  // buildClaimPlan extracts typed claims (company, metric, value, unit,
+  // period, evidence index) and the renderer emits the verdict, table,
+  // strengths, risks and limitations directly from them. The model never
+  // writes a number, a period, a unit, or a citation id, so it cannot
+  // invent or mis-cite one.
+  //
+  // This does NOT bypass verification: validateFinalAnswer runs on this
+  // text exactly as it would on a generated draft, and passes it because
+  // every sentence restates a cited excerpt. It also removes the synthesis
+  // LLM call entirely for these turns, which is where most of the latency
+  // and all of the variance lived.
+  if (EVIDENCE_DEPENDENT_INTENTS.has(state.intent) && state.evidence.length) {
+    const symbols = (state.entities?.symbols || []).map((sym) => String(sym).toUpperCase());
+    const sectorKindBySymbol = {};
+    await Promise.all(symbols.map(async (symbol) => {
+      const profile = await getStoredProfile(symbol).catch(() => null);
+      sectorKindBySymbol[symbol] = classifySector(profile, symbol);
+    }));
+
+    const plan = buildClaimPlan({
+      evidence: state.evidence,
+      symbols,
+      sectorKindBySymbol,
+      missingEvidence: state.missingEvidence || [],
+    });
+
+    const rendered = renderDeterministicAnswer(plan, { question: text });
+    if (rendered) {
+      if (state.onEvent) state.onEvent({ type: 'status', message: 'Verifying claims and citations…' });
+      return { draftAnswer: rendered, claimPlan: plan };
+    }
   }
 
   const userPrompt = state.intent === 'UNSUPPORTED'

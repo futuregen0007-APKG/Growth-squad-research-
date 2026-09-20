@@ -11,6 +11,11 @@ import { v4 as uuidv4 } from 'uuid';
 
 export const CLAIM_TYPES = Object.freeze([
   'LIVE_PRICE',
+  // Phase 6A: NSE-derived historical price/market metrics (close, 52-week
+  // range, one-year return, volatility, drawdown). Real price evidence, but
+  // explicitly NOT a live quote - kept separate so an answer can never pass
+  // historical data off as the current price.
+  'MARKET_HISTORY',
   'COMPANY_PROFILE',
   'FINANCIAL_DATA',
   'KEY_METRIC',

@@ -40,7 +40,16 @@ test('composeAnswer: evidence-dependent intent, tools genuinely ran, zero eviden
     // `scopeSignal` mirror of its own internal resolveResearchScope call
     // (see services/telemetry/errorTaxonomy.js) alongside whatever
     // composeAnswerInner's branching logic decided.
-    assert.equal(result.validationStatus, 'ABSTAINED');
+    // Phase 6A: the zero-evidence abstention is now PRECISE - it names the
+    // company and why the data is missing instead of a generic apology - so
+    // it carries its own status (ABSTAINED_PRECISE) and is published
+    // directly rather than routed through buildSafeFallback. The safety
+    // property these tests exist for is unchanged: no LLM synthesis call,
+    // no fabricated figure, and an honest statement of the gap.
+    assert.ok(
+      ['ABSTAINED', 'ABSTAINED_PRECISE'].includes(result.validationStatus),
+      `expected an abstention, got ${result.validationStatus}`,
+    );
     assert.deepEqual(result.scopeSignal, {
       researchQuestionType: 'NORMAL_STOCK_DATA', needsResearchCorpus: false, ambiguousCompany: false, symbol: null, fiscalYear: null, fiscalQuarter: null,
     });
@@ -136,7 +145,6 @@ test('full pipeline: a zero-evidence comparison makes NO synthesis or repair LLM
   const originalLiveQuote = TOOL_REGISTRY.getLiveQuote;
   const originalFinancials = TOOL_REGISTRY.getCompanyFinancials;
   const originalResearch = TOOL_REGISTRY.getCompanyResearch;
-  TOOL_REGISTRY.compareStocks = async () => ({ ...emptyResult('compareStocks'), data: [], dimensions: ['PRICE', 'FINANCIALS', 'COMPANY_RESEARCH'], operationCount: 6 });
   TOOL_REGISTRY.getLiveQuote = async () => emptyResult('getLiveQuote');
   TOOL_REGISTRY.getCompanyFinancials = async () => emptyResult('getCompanyFinancials');
   TOOL_REGISTRY.getCompanyResearch = async () => emptyResult('getCompanyResearch');
@@ -144,13 +152,23 @@ test('full pipeline: a zero-evidence comparison makes NO synthesis or repair LLM
   const emitted = [];
   try {
     const finalState = await graph.invoke({ messages: [new HumanMessage('Compare HAL and BEL')], onEvent: (e) => emitted.push(e) });
+    // Phase 6A: a zero-evidence turn now abstains PRECISELY - naming each
+    // company and why its data is missing rather than one generic sentence -
+    // so it carries its own terminal status. This is asserted exactly, not
+    // as a set of acceptable outcomes: the intent classifier is stubbed
+    // above, so routing here is fully determined.
+    assert.equal(finalState.intent, 'STOCK_COMPARISON', 'the stubbed classifier decides routing, not a live call');
+    assert.equal(finalState.validationStatus, 'ABSTAINED_PRECISE');
 
-    assert.equal(finalState.validationStatus, 'ABSTAINED');
     assert.equal(finalState.repairCount, 0, 'no repair call was ever needed or attempted');
     assert.ok(!finalState.llmCalls.some((c) => c.role === 'synthesis'), 'no compose call');
     assert.ok(!finalState.llmCalls.some((c) => c.role === 'repair'), 'no repair call');
     assert.ok(!finalState.llmCalls.some((c) => c.role === 'verification'), 'no verifier call');
-    assert.match(finalState.answer, /don't have verified data|couldn't produce/i);
+    // Phase 6A added a PRECISE abstention ("I could not answer this from
+    // verified data. Specifically: ...") alongside the legacy generic text.
+    // Both are honest refusals; the point of this assertion is that the
+    // answer is a refusal at all, not which wording it used.
+    assert.match(finalState.answer, /don't have verified data|couldn't produce|could not answer this from verified data/i);
     assert.ok(!/founded|1940|1954/i.test(finalState.answer), 'no unsupported/fabricated claim');
 
     const tokenText = emitted.filter((e) => e.type === 'token').map((e) => e.token).join('');

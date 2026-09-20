@@ -39,6 +39,8 @@ const factLineFor = (row, evidence) => {
  *   - if nothing at all is covered, abstains entirely.
  * Citations are recomputed from THIS text, never inherited.
  */
+const SEPARATOR = "\n\n";
+
 export const buildSafeFallback = async (state) => {
   // Phase 4B/4C: grounded RAG branch — see graph/groundedAnswer.js's own
   // module note. Covers every way a grounded turn can land here: zero
@@ -52,8 +54,21 @@ export const buildSafeFallback = async (state) => {
   const scope = resolveResearchScope({ text: String(lastMessage?.content || ''), entities: state.entities, intent: state.intent });
   if (scope.needsResearchCorpus) {
     const update = buildGroundedSafeFallback(state);
+    // Phase 6A: composeAnswer may have already produced a PRECISE
+    // abstention - naming each company and why its data is missing, rather
+    // than one generic sentence. Prefer it over the generic fallback text.
+    // Everything else about this node (streaming, safety, no fabrication)
+    // is unchanged.
+    if (state.validationStatus === 'ABSTAINED_PRECISE' && state.draftAnswer) {
+      update.answer = state.draftAnswer;
+    }
     emitInChunks(state.onEvent, update.answer);
-    return { ...update, validationStatus: state.validationStatus === 'FAILED_SAFE' ? 'FAILED_SAFE' : 'ABSTAINED' };
+    return {
+      ...update,
+      validationStatus: state.validationStatus === 'FAILED_SAFE'
+        ? 'FAILED_SAFE'
+        : (state.validationStatus === 'ABSTAINED_PRECISE' && state.draftAnswer ? 'ABSTAINED_PRECISE' : 'ABSTAINED'),
+    };
   }
 
   const coveredLines = (state.evidenceCoverage || [])
@@ -73,7 +88,12 @@ export const buildSafeFallback = async (state) => {
     parts.push("I couldn't produce a fully verified answer to this right now. Please try again in a moment.");
   }
 
-  const answer = parts.join('\n\n');
+  // Phase 6A: composeAnswer may already have produced a PRECISE abstention -
+  // naming each company and why its data is missing, rather than one generic
+  // sentence. Prefer it; everything else about this node (streaming, safety,
+  // citation recomputation, no fabrication) is unchanged.
+  const usePrecise = state.validationStatus === 'ABSTAINED_PRECISE' && Boolean(state.draftAnswer);
+  const answer = usePrecise ? state.draftAnswer : parts.join(SEPARATOR);
   const citations = extractCitations(answer, state.evidence);
   emitInChunks(state.onEvent, answer);
 
@@ -82,7 +102,11 @@ export const buildSafeFallback = async (state) => {
   // one repair didn't fix it) — both land here, but only the former keeps
   // the FAILED_SAFE label; everything else is recorded as a deliberate,
   // honest ABSTAINED.
-  const validationStatus = state.validationStatus === 'FAILED_SAFE' ? 'FAILED_SAFE' : 'ABSTAINED';
+  // The precise abstention keeps its own label so callers and tests can tell
+  // "named the gap per company" apart from the generic refusal.
+  const validationStatus = state.validationStatus === 'FAILED_SAFE'
+    ? 'FAILED_SAFE'
+    : (usePrecise ? 'ABSTAINED_PRECISE' : 'ABSTAINED');
 
   return { answer, citations, validationStatus };
 };

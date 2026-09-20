@@ -105,7 +105,13 @@ test('formatMissingEvidenceForPrompt renders a plain-language, per-gap note the 
     { symbol: null, dimension: 'WATCHLIST', status: EVIDENCE_COVERAGE_STATUS.AUTH_REQUIRED },
   ]);
   assert.equal(notes.length, 3);
-  assert.match(notes[0], /INFY.*news.*unavailable/i);
+  // Phase 6A: the UNAVAILABLE phrasing changed from "temporarily
+  // unavailable" to "not available from any source this turn". The old
+  // wording implied a retry would help, which was untrue for a company we
+  // simply hold no data for. The test's intent - a plain-language, per-gap,
+  // per-symbol note - is unchanged.
+  assert.match(notes[0], /INFY.*news.*not available/i);
+  assert.equal(/temporar/i.test(notes[0]), false, 'never promise the gap is temporary');
   assert.match(notes[1], /TCS.*guidance.*no data/i);
   assert.match(notes[2], /watchlist.*signed in/i);
 });

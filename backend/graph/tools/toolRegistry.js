@@ -52,6 +52,7 @@ import { boundedTimeout } from '../requestBudget.js';
 import { getProviderBreaker, isBreakerCountedFailure } from './circuitBreaker.js';
 import { getOrCompute, buildCacheKey, CACHE_TTL_MS } from './toolCache.js';
 import { logger } from '../../utils/logger.js';
+import { buildStoredFundamentalsView } from '../../services/storedFundamentals.js';
 
 export const TOOL_STATUS = Object.freeze({
   SUCCESS: 'SUCCESS', EMPTY: 'EMPTY', UNAVAILABLE: 'UNAVAILABLE', UNSUPPORTED: 'UNSUPPORTED', ERROR: 'ERROR',
@@ -338,13 +339,30 @@ export const getCompanyResearch = async ({ symbol }, context = {}) => {
     if (filteredEvidence.length) {
       return result('getCompanyResearch', TOOL_STATUS.SUCCESS, bundle, filteredEvidence, null, null, meta);
     }
+    // Phase 6A: the provider produced no usable section - fall back to
+    // stored verified filings and real market history before reporting
+    // nothing. MEASURED FAILURE: "Analyse RELIANCE for a five-year
+    // investor" returned "temporarily unavailable" on a rate-limited
+    // provider while 143 verified RELIANCE facts sat in MongoDB.
+    const storedFallback = await storedFundamentalsEvidence(normalized).catch(() => ({ evidence: [] }));
+    if (storedFallback.evidence.length) {
+      return result('getCompanyResearch', TOOL_STATUS.SUCCESS, storedFallback.view, storedFallback.evidence, null, null,
+        { ...meta, dataSource: 'STORED_VERIFIED' });
+    }
     const outcome = deriveBundleOutcome(bundle.sections);
-    return result('getCompanyResearch', outcome.status, outcome.status === TOOL_STATUS.SUCCESS ? bundle : null, [], outcome.reason, outcome.errorCode, meta);
+    return result('getCompanyResearch', outcome.status, outcome.status === TOOL_STATUS.SUCCESS ? bundle : null, [], outcome.reason, outcome.errorCode,
+      { ...meta, storedFallbackTried: true });
   } catch (error) {
     const meta = { circuitState: error.circuitState ?? circuitState, cancellationMode: 'SOFT' };
     if (error.code === 'CANCELLED') return result('getCompanyResearch', TOOL_STATUS.ERROR, null, [], 'Request was cancelled.', 'CANCELLED', meta);
     logger.warn(`[Tool] getCompanyResearch(${normalized}) failed: ${error.message}`);
-    return result('getCompanyResearch', TOOL_STATUS.ERROR, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, error.errorCode || (error.code === 'CIRCUIT_OPEN' ? 'CIRCUIT_OPEN' : null), meta);
+    const storedFallback = await storedFundamentalsEvidence(normalized).catch(() => ({ evidence: [] }));
+    if (storedFallback.evidence.length) {
+      return result('getCompanyResearch', TOOL_STATUS.SUCCESS, storedFallback.view, storedFallback.evidence, null, null,
+        { ...meta, dataSource: 'STORED_VERIFIED', liveProviderError: error.errorCode || error.code || null });
+    }
+    return result('getCompanyResearch', TOOL_STATUS.ERROR, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, error.errorCode || (error.code === 'CIRCUIT_OPEN' ? 'CIRCUIT_OPEN' : null),
+      { ...meta, storedFallbackTried: true });
   }
 };
 
@@ -360,16 +378,33 @@ export const getCompanyFinancials = async ({ symbol }, context = {}) => {
     const meta = { circuitState, cancellationMode: 'SOFT' };
 
     if (!section.available) {
+      // Phase 6A: the live provider failed - try the stored verified
+      // filings before giving up. This is the difference between "I can't
+      // help" and a real, sourced answer.
+      const fallback = await storedFundamentalsEvidence(normalized);
+      if (fallback.evidence.length) {
+        return result('getCompanyFinancials', TOOL_STATUS.SUCCESS, fallback.view, fallback.evidence, null, null,
+          { ...meta, dataSource: 'STORED_VERIFIED', liveProviderError: section.error?.code || null });
+      }
       const classified = classifyErrorCode(section.error?.code);
       return result(
         'getCompanyFinancials', classified ? TOOL_STATUS[classified.toolStatus] : TOOL_STATUS.UNAVAILABLE,
-        null, [], classified ? classified.reason : SAFE_REASONS.PROVIDER_UNAVAILABLE, section.error?.code || null, meta,
+        null, [], classified ? classified.reason : SAFE_REASONS.PROVIDER_UNAVAILABLE, section.error?.code || null,
+        { ...meta, storedFallbackTried: true },
       );
     }
 
     const entriesWithData = (section.data || []).filter((entry) => entry.lineItems?.length);
     if (!entriesWithData.length) {
-      return result('getCompanyFinancials', TOOL_STATUS.EMPTY, section.data || [], [], SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD, null, meta);
+      // The provider answered but had nothing for this company/period -
+      // stored filings may still.
+      const fallback = await storedFundamentalsEvidence(normalized);
+      if (fallback.evidence.length) {
+        return result('getCompanyFinancials', TOOL_STATUS.SUCCESS, fallback.view, fallback.evidence, null, null,
+          { ...meta, dataSource: 'STORED_VERIFIED' });
+      }
+      return result('getCompanyFinancials', TOOL_STATUS.EMPTY, section.data || [], [], SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD, null,
+        { ...meta, storedFallbackTried: true });
     }
 
     const evidence = entriesWithData.slice(0, 5).map((entry) => buildEvidenceRecord({
@@ -387,7 +422,14 @@ export const getCompanyFinancials = async ({ symbol }, context = {}) => {
     const meta = { circuitState: error.circuitState ?? circuitState, cancellationMode: 'SOFT' };
     if (error.code === 'CANCELLED') return result('getCompanyFinancials', TOOL_STATUS.ERROR, null, [], 'Request was cancelled.', 'CANCELLED', meta);
     logger.warn(`[Tool] getCompanyFinancials(${normalized}) failed: ${error.message}`);
-    return result('getCompanyFinancials', TOOL_STATUS.ERROR, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, error.errorCode || (error.code === 'CIRCUIT_OPEN' ? 'CIRCUIT_OPEN' : null), meta);
+    // Same fallback on a thrown provider/circuit failure.
+    const fallback = await storedFundamentalsEvidence(normalized).catch(() => ({ evidence: [] }));
+    if (fallback.evidence.length) {
+      return result('getCompanyFinancials', TOOL_STATUS.SUCCESS, fallback.view, fallback.evidence, null, null,
+        { ...meta, dataSource: 'STORED_VERIFIED', liveProviderError: error.errorCode || error.code || null });
+    }
+    return result('getCompanyFinancials', TOOL_STATUS.ERROR, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, error.errorCode || (error.code === 'CIRCUIT_OPEN' ? 'CIRCUIT_OPEN' : null),
+      { ...meta, storedFallbackTried: true });
   }
 };
 
@@ -810,6 +852,73 @@ export const getPortfolio = async ({}, { userId } = {}) => {
 // No LLM call happens inside a tool — the comparison explanation is
 // composed later by composeAnswer from this structured data plus evidence.
 // ---------------------------------------------------------------------------
+/**
+ * ---------------------------------------------------------------------------
+ * Phase 6A: STORED-EVIDENCE FALLBACK
+ * ---------------------------------------------------------------------------
+ * The Phase 6A baseline showed every mandatory query abstaining with
+ * "temporarily unavailable" while MongoDB held thousands of verified,
+ * source-linked facts for the very companies being asked about. The live
+ * provider is still tried FIRST and is still preferred; this only runs when
+ * that path yields nothing, so a provider failure becomes the final answer
+ * only after a real fallback has been exhausted.
+ *
+ * Every figure carries its own period, unit, source URL and as-of date, and
+ * is subject to storedFundamentals' unit/range contract - nothing here is
+ * derived, averaged, or estimated.
+ */
+const storedFundamentalsEvidence = async (symbol) => {
+  const view = await buildStoredFundamentalsView(symbol);
+  if (!view.hasAnyData) return { view, evidence: [] };
+
+  const evidence = [];
+  for (const metric of view.metrics.slice(0, 8)) {
+    const record = buildEvidenceRecord({
+      claimType: 'FINANCIAL_DATA',
+      symbol: view.symbol,
+      title: `${view.symbol} ${metric.metric}${metric.period ? ` - ${metric.period}` : ''}`,
+      sourceUrl: metric.sourceUrl,
+      provider: 'stored-verified-filings',
+      publishedAt: metric.asOf,
+      reportingPeriod: metric.period,
+      pageNumber: metric.pageNumber,
+      excerpt: `${metric.metric}: ${metric.value}${metric.unit ? ` ${metric.unit}` : ''}${metric.period ? ` (${metric.period})` : ''}${metric.title ? ` - ${metric.title}` : ''}`,
+      evidenceQuality: 'VERIFIED_FILING',
+    });
+    if (record) evidence.push(record);
+  }
+
+  // Real NSE-bhavcopy-derived market metrics: present for many symbols that
+  // have no stored filings at all, which is what lets a comparison say
+  // something true about them instead of nothing.
+  const market = view.marketMetrics;
+  if (market && Number.isFinite(market.lastClose)) {
+    const record = buildEvidenceRecord({
+      // MARKET_HISTORY, not FINANCIAL_DATA and not LIVE_PRICE: this is real
+      // NSE price history. Labelling it "financials" made the baseline
+      // answer describe BEL's 52-week range as filing data; labelling it a
+      // live quote would be worse still.
+      claimType: 'MARKET_HISTORY',
+      symbol: view.symbol,
+      title: `${view.symbol} share-price history (NSE)`,
+      provider: market.provider || 'NSE_BHAVCOPY',
+      publishedAt: market.dataAsOf,
+      excerpt: [
+        `close INR ${market.lastClose}`,
+        Number.isFinite(market.oneYearReturn) ? `1-year return ${market.oneYearReturn}%` : null,
+        Number.isFinite(market.fiftyTwoWeekLow) && Number.isFinite(market.fiftyTwoWeekHigh)
+          ? `52-week range INR ${market.fiftyTwoWeekLow}-${market.fiftyTwoWeekHigh}` : null,
+        Number.isFinite(market.annualizedVolatility) ? `annualised volatility ${market.annualizedVolatility}%` : null,
+        Number.isFinite(market.maximumDrawdown) ? `max drawdown ${market.maximumDrawdown}%` : null,
+      ].filter(Boolean).join(', '),
+      evidenceQuality: 'VERIFIED_MARKET_HISTORY',
+    });
+    if (record) evidence.push(record);
+  }
+
+  return { view, evidence };
+};
+
 const MAX_COMPARISON_SYMBOLS = 4;
 
 // A single planned step (`compareStocks`) still counts as ONE call against
@@ -887,9 +996,36 @@ export const compareStocks = async ({ symbols, dimensions } = {}, context = {}) 
     return { symbol, dimensions: byDimension };
   }));
 
+  // Phase 6A: preserve every partial success, and never let a narrowed
+  // dimension set discard data we really do hold.
+  //
+  // MEASURED FAILURE: "HDFCBANK vs ICICIBANK margin trends" resolves to the
+  // FINANCIALS dimension alone (dimensions.js matches "margin"), so PRICE is
+  // never fetched. With the live provider rate-limited, FINANCIALS failed for
+  // both symbols and the whole comparison returned EMPTY with zero evidence -
+  // even though verified filings and real NSE market history existed for both
+  // companies. Asking a NARROWER question produced a WORSE answer than asking
+  // a vague one, which is the opposite of what should happen.
+  //
+  // So: any symbol whose requested dimensions all failed gets the stored
+  // verified view attached. Per symbol, not per comparison, so one company
+  // succeeding never masks another failing - and vice versa.
+  const storedBySymbol = {};
+  await Promise.all(perSymbol.map(async (entry) => {
+    const symbolResults = Object.values(entry.dimensions);
+    const symbolSucceeded = symbolResults.some((r) => r.status === TOOL_STATUS.SUCCESS && (r.evidence || []).length);
+    if (symbolSucceeded) return;
+    const fallback = await storedFundamentalsEvidence(entry.symbol).catch(() => ({ evidence: [], view: null }));
+    if (fallback.evidence.length) {
+      entry.storedFallback = fallback.view;
+      storedBySymbol[entry.symbol] = fallback;
+    }
+  }));
+
   const allResults = perSymbol.flatMap((entry) => Object.values(entry.dimensions));
-  const evidence = allResults.flatMap((r) => r.evidence || []);
-  const anySuccess = allResults.some((r) => r.status === TOOL_STATUS.SUCCESS);
+  const fallbackEvidence = Object.values(storedBySymbol).flatMap((f) => f.evidence);
+  const evidence = [...allResults.flatMap((r) => r.evidence || []), ...fallbackEvidence];
+  const anySuccess = allResults.some((r) => r.status === TOOL_STATUS.SUCCESS) || fallbackEvidence.length > 0;
   const operationCount = list.length * resolvedDimensions.length;
   const operationFingerprints = list.flatMap((symbol) => resolvedDimensions.map(
     (dimension) => fingerprintToolCall({ tool: COMPARISON_DIMENSION_OPERATIONS[dimension].toolName, args: { symbol } }),
@@ -902,7 +1038,14 @@ export const compareStocks = async ({ symbols, dimensions } = {}, context = {}) 
   return result(
     'compareStocks', anySuccess ? TOOL_STATUS.SUCCESS : TOOL_STATUS.EMPTY,
     perSymbol, evidence, warning, null,
-    { dimensions: resolvedDimensions, operationCount, operationFingerprints },
+    {
+      dimensions: resolvedDimensions,
+      operationCount,
+      operationFingerprints,
+      // Which symbols are being answered from stored filings rather than
+      // live provider data - so the answer can say so, per company.
+      storedFallbackSymbols: Object.keys(storedBySymbol),
+    },
   );
 };
 

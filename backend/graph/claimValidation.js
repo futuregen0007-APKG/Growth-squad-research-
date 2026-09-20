@@ -72,7 +72,13 @@ const ABSTENTION_LANGUAGE = /\b(i (can'?t|cannot|could not|couldn'?t|don'?t have
 const NUMERIC_CLAIM_PATTERN = /₹\s?[\d,]+(\.\d+)?|\b\d+(\.\d+)?\s?%|\b\d{2,}\b/;
 
 const DIMENSION_ASSERTION_PATTERNS = Object.freeze({
-  PRICE: /₹\s?[\d,]+|\btrading at\b|\bcurrent price\b|\bshare price (is|was|stands)\b|\blive price\b/i,
+  // Phase 6A: a rupee figure denominated in CRORE/LAKH/MILLION is a
+  // financial magnitude (a PAT or revenue line), never a share price - no
+  // stock trades at 17,616 Cr. Excluding those stops a profit figure being
+  // treated as an uncited price claim, while a bare rupee amount is still
+  // flagged exactly as before. This narrows a false positive; it does not
+  // let any real price claim through unevidenced.
+  PRICE: /₹\s?[\d,]+(?:\.\d+)?(?![\d,.]*\s*(?:Cr\b|crore|lakh|mn\b|million|bn\b|billion))|\btrading at\b|\bcurrent price\b|\bshare price (is|was|stands)\b|\blive price\b/i,
   FINANCIALS: /\b(revenue|profit|margins?|ebitda|\bpat\b)\b[^.]{0,30}\b(grew|grow|grows|increased|decreased|fell|rose|up|down)\b|\b(revenue|profit|margins?)\s+of\s+₹?\s?\d/i,
   NEWS: /\b(recent news|according to (a |the )?(news|article|report)|news outlets?|headlines?|(has |have )?announced|reported that)\b/i,
 });
@@ -161,7 +167,12 @@ export const runDeterministicChecks = ({
   // requested (drift/hallucination is still drift/hallucination even for
   // an unrequested dimension).
   const claimTypesPresent = new Set(evidence.map((e) => e.claimType));
-  if (DIMENSION_ASSERTION_PATTERNS.PRICE.test(text) && !claimTypesPresent.has('LIVE_PRICE')) {
+  // Phase 6A: MARKET_HISTORY is real price evidence too (NSE close/52-week
+  // range/returns), just not a live quote. Price language backed by it is
+  // supported; price language with NO price evidence of either kind is
+  // still rejected exactly as before.
+  const hasPriceEvidence = claimTypesPresent.has('LIVE_PRICE') || claimTypesPresent.has('MARKET_HISTORY');
+  if (DIMENSION_ASSERTION_PATTERNS.PRICE.test(text) && !hasPriceEvidence) {
     issues.push(SAFE_VALIDATION_REASONS.PRICE_WITHOUT_EVIDENCE);
   }
   if (DIMENSION_ASSERTION_PATTERNS.FINANCIALS.test(text) && !claimTypesPresent.has('FINANCIAL_DATA')) {

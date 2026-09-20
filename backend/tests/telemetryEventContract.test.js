@@ -298,7 +298,13 @@ test('a real generation emits rag.generation.completed with a model and duration
     assert.equal(typeof generation[0].model, 'string');
     assert.equal(Number.isFinite(generation[0].durationMs), true);
     assert.equal(JSON.stringify(generation[0]).includes('P/E'), false, 'the prompt never reaches telemetry');
-    assert.equal(JSON.stringify(generation[0]).includes('120'), false, 'token counts stay on llmCalls, never on a stage event');
+    // Token counts stay on llmCalls, never on a stage event. Asserted by
+    // FIELD rather than by substring: a substring check for the mocked
+    // token value also matches a durationMs that happens to contain the
+    // same digits (e.g. 1120ms), which made this flake under suite load.
+    assert.equal('inputTokens' in generation[0], false);
+    assert.equal('outputTokens' in generation[0], false);
+    assert.equal('cachedInputTokens' in generation[0], false);
   } finally {
     OpenAIClientFactory.getClient = originalGetClient;
     OpenAIClientFactory.isConfigured = originalIsConfigured;
