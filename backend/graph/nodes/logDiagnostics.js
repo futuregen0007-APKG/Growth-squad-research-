@@ -1,5 +1,9 @@
 import { remainingMs } from '../requestBudget.js';
 import { logger } from '../../utils/logger.js';
+import { emitEvent } from '../../services/telemetry/ragTelemetry.js';
+import { metricsStore } from '../../services/telemetry/metricsStore.js';
+import { buildTurnMetrics } from '../../services/telemetry/turnClassification.js';
+import { estimateRequestCost } from '../../services/telemetry/costEstimation.js';
 
 /**
  * logDiagnostics - the ONE place a structured, safe summary of the whole
@@ -65,9 +69,58 @@ export const buildDiagnostics = (state) => {
   };
 };
 
+/**
+ * Phase 5A Part 3/6/9: the ONE place a completed turn's safe operational
+ * summary feeds the telemetry event stream + bounded metrics store —
+ * reusing buildDiagnostics' own already-safe fields entirely rather than
+ * recomputing anything, and adding nothing that risks leaking a prompt,
+ * an evidence excerpt, or a secret (buildDiagnostics already excludes all
+ * of those — see its own module note above).
+ */
 export const logDiagnostics = async (state) => {
   const diagnostics = buildDiagnostics(state);
   logger.info(`[GS Copilot] ${JSON.stringify(diagnostics)}`);
+
+  const turnMetrics = buildTurnMetrics(state);
+  const cost = estimateRequestCost(state.llmCalls || []);
+
+  metricsStore.recordRequest({
+    completionStatus: turnMetrics.completionStatus,
+    isResearch: turnMetrics.isResearch,
+    repairAttempted: turnMetrics.repairAttempted,
+    repairSucceeded: turnMetrics.repairSucceeded,
+  });
+  if (turnMetrics.ambiguousCompany) metricsStore.recordAmbiguousCompany();
+  if (turnMetrics.errorCategory === 'UNSUPPORTED_PERIOD') metricsStore.recordUnsupportedPeriod();
+  if (turnMetrics.isResearch && turnMetrics.evidenceCount === 0) metricsStore.recordZeroEvidence();
+  metricsStore.recordCitationCount(turnMetrics.citationCount);
+  metricsStore.recordVerifiedClaimCount(turnMetrics.verifiedClaimCount);
+  metricsStore.recordRejectedClaimCount(turnMetrics.rejectedClaimCount);
+  if (turnMetrics.retrievalMode) metricsStore.recordRetrievalMode(turnMetrics.retrievalMode);
+  metricsStore.recordErrorCategory(turnMetrics.errorCategory);
+  for (const call of state.llmCalls || []) {
+    metricsStore.recordTokenUsage({
+      inputTokens: call.inputTokens, outputTokens: call.outputTokens,
+      cachedInputTokens: call.cachedInputTokens, reasoningTokens: call.reasoningTokens,
+      usageUnknown: call.inputTokens == null && call.outputTokens == null && !call.skipped,
+    });
+  }
+  metricsStore.recordCost(cost.estimatedCost);
+
+  emitEvent('rag.request.completed', {
+    traceId: state.traceId, requestId: state.requestId, intent: state.intent,
+    researchQuestionType: state.scopeSignal?.researchQuestionType || null,
+    companySymbol: state.scopeSignal?.symbol || null,
+    fiscalYear: state.scopeSignal?.fiscalYear || null,
+    retrievalMode: state.retrievalMode || null,
+    groundingStatus: state.groundingStatus || null,
+    completionStatus: turnMetrics.completionStatus, errorCategory: turnMetrics.errorCategory,
+    durationMs: diagnostics.durationMs, evidenceCount: turnMetrics.evidenceCount,
+    citationCount: turnMetrics.citationCount, verifiedClaimCount: turnMetrics.verifiedClaimCount,
+    rejectedClaimCount: turnMetrics.rejectedClaimCount, repairAttempted: turnMetrics.repairAttempted,
+    estimatedCost: cost.estimatedCost, llmCallCount: (state.llmCalls || []).length,
+  });
+
   return {};
 };
 

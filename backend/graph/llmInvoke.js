@@ -74,6 +74,12 @@ export const invokeRoutingModel = async ({
         timedOut: false,
         inputTokens: usage?.prompt_tokens ?? null,
         outputTokens: usage?.completion_tokens ?? null,
+        // Phase 5A Part 5: additive — present only when the provider's
+        // response actually includes these newer usage sub-fields; never
+        // estimated, never defaulted to 0 (see logDiagnostics.js's own
+        // null-vs-0 distinction for "unknown usage").
+        cachedInputTokens: usage?.prompt_tokens_details?.cached_tokens ?? null,
+        reasoningTokens: usage?.completion_tokens_details?.reasoning_tokens ?? null,
       },
     };
   } catch (error) {

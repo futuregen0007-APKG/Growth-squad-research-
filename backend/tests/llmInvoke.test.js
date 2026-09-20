@@ -46,7 +46,12 @@ test('invokeRoutingModel proceeds normally when plenty of budget remains, and re
     assert.equal(result.diagnostic.role, 'routing');
     assert.equal(result.diagnostic.inputTokens, 12);
     assert.equal(result.diagnostic.outputTokens, 3);
-    assert.deepEqual(Object.keys(result.diagnostic).sort(), ['durationMs', 'inputTokens', 'model', 'node', 'outputTokens', 'role', 'timedOut']);
+    // Phase 5A Part 5: cachedInputTokens/reasoningTokens are additive —
+    // present (null when the provider's response omits the newer usage
+    // sub-fields, as this mock does) alongside the pre-existing keys.
+    assert.deepEqual(Object.keys(result.diagnostic).sort(), ['cachedInputTokens', 'durationMs', 'inputTokens', 'model', 'node', 'outputTokens', 'reasoningTokens', 'role', 'timedOut']);
+    assert.equal(result.diagnostic.cachedInputTokens, null);
+    assert.equal(result.diagnostic.reasoningTokens, null);
   });
 });
 

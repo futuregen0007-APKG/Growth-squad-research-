@@ -5,6 +5,7 @@ import { formatMissingEvidenceForPrompt } from '../evidenceCoverage.js';
 import { boundedTimeout, hasBudgetFor } from '../requestBudget.js';
 import { repairGroundedAnswerNode } from '../groundedAnswer.js';
 import { logger } from '../../utils/logger.js';
+import { emitEvent } from '../../services/telemetry/ragTelemetry.js';
 
 const MIN_REPAIR_BUDGET_MS = 800;
 
@@ -23,7 +24,7 @@ const MIN_REPAIR_BUDGET_MS = 800;
  * will see repairCount >= 1 and route to buildSafeFallback rather than
  * publishing it or trying again.
  */
-export const repairAnswer = async (state) => {
+const repairAnswerInner = async (state) => {
   // Phase 4B: grounded RAG branch — see graph/groundedAnswer.js's own
   // module note. repairGroundedAnswerNode increments repairCount itself,
   // exactly like the legacy path below, so routeAfterValidation's cap
@@ -93,6 +94,45 @@ export const repairAnswer = async (state) => {
   } finally {
     clearTimeout(timer);
   }
+};
+
+/**
+ * repairAnswer - Phase 5A wrapper around the untouched repairAnswerInner
+ * above. Emits rag.repair.started on entry and exactly one
+ * rag.repair.completed on exit, covering BOTH the grounded branch and the
+ * legacy branch and every one of the inner function's early returns
+ * (not-configured, cancelled, no-budget, empty repair, provider failure) —
+ * so a repair that never really ran is still reported as a completed pass
+ * that produced nothing, never as a silently missing event.
+ *
+ * `repairSucceeded` here means THIS PASS produced a new draft, which is not
+ * the same question as whether the turn ended well — validateFinalAnswer
+ * re-checks the repaired draft from scratch and may still reject it. The
+ * turn-level judgement lives on rag.request.completed.
+ *
+ * graph.js caps this node at one pass per turn (routeAfterValidation reads
+ * repairCount), so one turn can never emit more than one started/completed
+ * pair. Never changes the inner function's return value or control flow.
+ */
+export const repairAnswer = async (state) => {
+  emitEvent('rag.repair.started', {
+    traceId: state.traceId,
+    requestId: state.requestId,
+    verificationVerdict: state.validationStatus || null,
+  });
+
+  const startedAt = performance.now();
+  const update = await repairAnswerInner(state);
+
+  emitEvent('rag.repair.completed', {
+    traceId: state.traceId,
+    requestId: state.requestId,
+    repairSucceeded: Boolean(update?.draftAnswer || update?.groundedAnswer),
+    llmCallCount: (update?.llmCalls || []).length,
+    durationMs: Math.round(performance.now() - startedAt),
+  });
+
+  return update;
 };
 
 export default repairAnswer;

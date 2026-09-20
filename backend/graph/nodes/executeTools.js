@@ -4,6 +4,7 @@ import { hasBudgetFor } from '../requestBudget.js';
 import { mergeEarningsIntelligenceEvidence, reconcileEvidenceEnvelope } from '../../services/EvidenceEnvelope.js';
 import { SUPPORTED_STOCKS } from '../../utils/constants.js';
 import { logger } from '../../utils/logger.js';
+import { emitEvent } from '../../services/telemetry/ragTelemetry.js';
 
 const STATUS_LABEL = Object.freeze({
   getLiveQuote: 'Checking live market data…',
@@ -24,6 +25,11 @@ const STATUS_LABEL = Object.freeze({
 // this only skips work when the deadline is genuinely almost/already gone,
 // never a normal in-budget request.
 const MIN_TOOL_BUDGET_MS = 300;
+
+// Phase 5A: the tool-level error codes that mean "this dependency ran out of
+// time" rather than "this dependency broke" — the same distinction
+// services/telemetry/errorTaxonomy.js draws for the turn as a whole.
+const DEPENDENCY_TIMEOUT_CODES = new Set(['TIMEOUT', 'CANCELLED', 'DEADLINE_EXCEEDED']);
 
 const budgetExhaustedResult = (toolName) => ({
   tool: toolName, status: 'ERROR', data: null, evidence: [],
@@ -56,6 +62,9 @@ const budgetExhaustedResult = (toolName) => ({
 export const executeTools = async (state) => {
   if (state.errors.length || !state.toolPlan.length) return {};
 
+  // Phase 5A: monotonic, so a system clock adjustment mid-round can never
+  // produce a negative or wildly wrong retrieval duration.
+  const roundStartedAt = performance.now();
   const steps = state.toolPlan;
   const fingerprints = steps.map(fingerprintToolCall);
   const firstIndexByFingerprint = new Map();
@@ -220,6 +229,36 @@ export const executeTools = async (state) => {
     researchEvidence = reconciled.items;
     researchRelationships = reconciled.relationships;
   }
+
+  // Phase 5A: one rag.retrieval.completed per RETRIEVAL ROUND. A replan
+  // cycle genuinely re-enters this node, so a second event is a real second
+  // round, not a duplicate (see RAG_EVENT_SCHEMA's own note). Counts only —
+  // never a query string, an evidence item, or a tool argument.
+  emitEvent('rag.retrieval.completed', {
+    traceId: state.traceId,
+    requestId: state.requestId,
+    toolCount: steps.length,
+    resultCount: toolResults.reduce((sum, t) => sum + (t.resultCount ?? 0), 0),
+    evidenceCount: researchEvidence.length,
+    retrievalMode,
+    durationMs: Math.round(performance.now() - roundStartedAt),
+  });
+
+  // One dependency event per GENUINELY-EXECUTED failing step. A deduplicated
+  // repeat never made a real call, so it never reports its own failure —
+  // that would count one outage twice. A timeout/cancellation is kept
+  // distinct from any other failure, exactly as errorTaxonomy.js keeps them.
+  toolResults.forEach((result) => {
+    if (result.deduplicated || !result.errorCode) return;
+    const isTimeout = DEPENDENCY_TIMEOUT_CODES.has(result.errorCode);
+    emitEvent(isTimeout ? 'dependency.timeout' : 'dependency.failure', {
+      traceId: state.traceId,
+      requestId: state.requestId,
+      tool: result.tool,
+      toolStatus: result.status || null,
+      durationMs: Number.isFinite(result.durationMs) ? result.durationMs : null,
+    });
+  });
 
   return {
     toolResults, evidence, warnings, deduplicatedToolCalls, toolCallFingerprints, providerOperationCount, researchEvidence, retrievalMode, researchRelationships,

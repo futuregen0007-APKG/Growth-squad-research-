@@ -50,7 +50,16 @@ test('Phase 2 regression + Phase 4A fast path: a replan round that legitimately 
     }));
 
     assert.equal(called, false, 'the zero-evidence fast path must skip the OpenAI call entirely, not just pick a different prompt');
-    assert.deepEqual(result, { validationStatus: 'ABSTAINED' });
+    // Phase 5A: composeAnswer now always additionally returns a
+    // `scopeSignal` mirror of its own internal resolveResearchScope call
+    // (for operational telemetry's error-category classification — see
+    // services/telemetry/errorTaxonomy.js) alongside whatever
+    // composeAnswerInner's branching logic decided — never a change to
+    // that branching logic or its own returned fields.
+    assert.equal(result.validationStatus, 'ABSTAINED');
+    assert.deepEqual(result.scopeSignal, {
+      researchQuestionType: 'NORMAL_STOCK_DATA', needsResearchCorpus: false, ambiguousCompany: false, symbol: null, fiscalYear: null, fiscalQuarter: null,
+    });
   } finally {
     OpenAIClientFactory.getClient = originalGetClient;
     OpenAIClientFactory.isConfigured = originalIsConfigured;

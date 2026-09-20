@@ -8,6 +8,9 @@ import { createNotFoundError, createInvalidInputError, AppError } from '../utils
 import { MAX_INPUT_LENGTH } from '../graph/nodes/validateInput.js';
 import { resolveTotalDeadlineMs } from '../graph/requestBudget.js';
 import { logger } from '../utils/logger.js';
+import { resolveTraceId, TRACE_ID_HEADER } from '../services/telemetry/traceContext.js';
+import { emitEvent } from '../services/telemetry/ragTelemetry.js';
+import { metricsStore } from '../services/telemetry/metricsStore.js';
 
 /**
  * makeRequestScope - one AbortController + deadline per HTTP request, the
@@ -112,15 +115,25 @@ export const sendMessage = async (req, res, next) => {
   }
   if (dedupeKey) inFlightClientMessages.add(dedupeKey);
 
+  // Phase 5A Part 2: a caller-supplied trace id is accepted only after
+  // strict validation (see traceContext.js) — never trusted verbatim into
+  // logs/metrics otherwise. Distinct from `requestId` below, which keeps
+  // its own pre-existing, unrelated meaning.
+  const traceId = resolveTraceId(req.headers?.[TRACE_ID_HEADER.toLowerCase()]);
+  const requestStartedAt = performance.now();
+
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache, no-transform',
     Connection: 'keep-alive',
     'X-Accel-Buffering': 'no',
+    [TRACE_ID_HEADER]: traceId,
   });
 
   const requestId = uuidv4();
+  emitEvent('rag.request.started', { traceId, requestId, route: 'POST /api/chat/messages' });
   let clientDisconnected = false;
+  let graphCompleted = false;
   const scope = makeRequestScope();
   // res.on('close') -- not req.on('close') -- is the correct disconnect
   // signal; see legacySendMessage's fuller note below for why. This was
@@ -162,12 +175,18 @@ export const sendMessage = async (req, res, next) => {
       userId: req.userId,
       threadId,
       requestId,
+      traceId,
       currentMessageId: String(userMessage._id),
       onEvent,
       aborted: () => clientDisconnected,
       deadlineAt: scope.deadlineAt,
       abortSignal: scope.signal,
     });
+    // Phase 5A: from here on, logDiagnostics (a graph node) has ALREADY
+    // recorded this request and emitted rag.request.completed. Anything that
+    // throws after this point must not also be counted as a failed request —
+    // that would count one turn twice, once in each direction.
+    graphCompleted = true;
 
     if (clientDisconnected) return res.end();
 
@@ -191,12 +210,30 @@ export const sendMessage = async (req, res, next) => {
       coverage: finalState.coverage || null,
       retrievalMode: finalState.retrievalMode || null,
       repairAttempted: Boolean(finalState.repairAttempted),
+      // Phase 5A Part 14: lets the frontend show/report the trace id on a
+      // support request — never internal node names or diagnostics.
+      traceId,
     });
     res.end();
   } catch (error) {
     logger.error(`[Chat] sendMessage failed: ${error.message}`);
+    // Phase 5A: the graph itself always resolves to a safe fallback
+    // answer internally (buildSafeFallback.js) — reaching this catch means
+    // something OUTSIDE that safety net threw (a genuine bug, or the
+    // client aborting mid-await). Recorded distinctly from a normal
+    // completion so operators can tell "the graph answered honestly" apart
+    // from "the request itself blew up."
+    if (!graphCompleted) {
+      metricsStore.recordRequest({ completionStatus: 'failed', isResearch: false });
+      metricsStore.recordErrorCategory(clientDisconnected ? 'CLIENT_ABORTED' : 'INTERNAL_ERROR');
+      emitEvent('rag.request.failed', {
+        traceId, requestId, route: 'POST /api/chat/messages',
+        errorCategory: clientDisconnected ? 'CLIENT_ABORTED' : 'INTERNAL_ERROR',
+        durationMs: Math.round(performance.now() - requestStartedAt),
+      });
+    }
     if (!clientDisconnected) {
-      writeEvent(res, 'message.error', { code: error.errorCode || 'INTERNAL_ERROR', message: 'GS Copilot ran into a problem answering that. Please try again.' });
+      writeEvent(res, 'message.error', { code: error.errorCode || 'INTERNAL_ERROR', message: 'GS Copilot ran into a problem answering that. Please try again.', traceId });
       res.end();
     }
   } finally {
@@ -221,8 +258,16 @@ export const legacySendMessage = async (req, res) => {
   // downstream (classifyIntent/etc. only ever read state.requestId, they
   // never create one).
   const requestId = uuidv4();
+  const traceId = resolveTraceId(req?.headers?.[TRACE_ID_HEADER.toLowerCase()]);
+  // Phase 5A: the legacy route emits the SAME request lifecycle events as the
+  // streaming route, so one turn is observable identically whichever entry
+  // point served it. rag.request.completed is emitted by logDiagnostics (a
+  // graph node), so it is already shared by both paths.
+  emitEvent('rag.request.started', { traceId, requestId, route: 'POST /api/chat' });
+  const requestStartedAt = performance.now();
   const scope = makeRequestScope();
   let clientDisconnected = false;
+  let graphCompleted = false;
 
   try {
     // req.on is guarded (optional chaining) — legacySendMessage is also
@@ -246,14 +291,26 @@ export const legacySendMessage = async (req, res) => {
     const finalState = await graph.invoke({
       messages: [new HumanMessage(text)],
       requestId,
+      traceId,
       deadlineAt: scope.deadlineAt,
       abortSignal: scope.signal,
       aborted: () => clientDisconnected,
     });
-    res.json({ reply: finalState.answer });
+    graphCompleted = true; // see the streaming path's own note on why
+    res.setHeader?.(TRACE_ID_HEADER, traceId);
+    res.json({ reply: finalState.answer, traceId });
   } catch (error) {
     logger.error(`[Chat] legacySendMessage failed: ${error.message}`);
-    res.status(500).json({ error: error.message });
+    if (!graphCompleted) {
+      metricsStore.recordRequest({ completionStatus: 'failed', isResearch: false });
+      metricsStore.recordErrorCategory(clientDisconnected ? 'CLIENT_ABORTED' : 'INTERNAL_ERROR');
+      emitEvent('rag.request.failed', {
+        traceId, requestId, route: 'POST /api/chat',
+        errorCategory: clientDisconnected ? 'CLIENT_ABORTED' : 'INTERNAL_ERROR',
+        durationMs: Math.round(performance.now() - requestStartedAt),
+      });
+    }
+    res.status(500).json({ error: error.message, traceId });
   } finally {
     scope.dispose();
   }

@@ -104,6 +104,13 @@ export const GraphState = Annotation.Root({
   userId: Annotation({ reducer: replace, default: () => null }),
   threadId: Annotation({ reducer: replace, default: () => null }),
   requestId: Annotation({ reducer: replace, default: () => null }),
+  // Phase 5A Part 2: a SEPARATE, purely observability-scoped identifier
+  // from requestId above (which keeps its own pre-existing meaning —
+  // thread/message correlation, SSE payloads). traceId is either accepted
+  // from a strictly-validated incoming header or minted fresh — see
+  // services/telemetry/traceContext.js — and is safe to hand to an
+  // external tracing backend (CloudWatch/OTel) with no PII risk.
+  traceId: Annotation({ reducer: replace, default: () => null }),
   currentMessageId: Annotation({ reducer: replace, default: () => null }),
   turnStartedAt: Annotation({ reducer: replace, default: () => null }),
 
@@ -280,6 +287,14 @@ export const GraphState = Annotation.Root({
 
   warnings: Annotation({ reducer: (x, y) => x.concat(y), default: () => [] }),
   errors: Annotation({ reducer: (x, y) => x.concat(y), default: () => [] }),
+
+  // Phase 5A Part 7: composeAnswer.js's own resolveResearchScope verdict,
+  // persisted so operational telemetry can distinguish "ambiguous company"/
+  // "no research corpus needed" from other failure categories without
+  // re-parsing draftAnswer text. Never used for any routing/answer-content
+  // decision — composeAnswerInner already made that decision itself,
+  // this is purely an observability mirror of it.
+  scopeSignal: Annotation({ reducer: replace, default: () => null }),
 
   // Streaming callback set by the controller — not persisted, not part of
   // any checkpoint (this graph has none), purely an in-memory hook the

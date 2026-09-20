@@ -5,6 +5,7 @@ import { invokeRoutingModel } from '../llmInvoke.js';
 import { runDeterministicChecks, needsClaimVerifier } from '../claimValidation.js';
 import { hasBudgetFor } from '../requestBudget.js';
 import { verifyGroundedAnswerNode } from '../groundedAnswer.js';
+import { emitEvent } from '../../services/telemetry/ragTelemetry.js';
 
 // Below this remaining budget, the structured verifier call is skipped
 // entirely (fail-closed: see the REPAIR_REQUIRED-with-no-budget path
@@ -32,7 +33,7 @@ const REPAIRABLE_CLAIM_VERDICTS = new Set([
  * repairAnswer, or buildSafeFallback. Never blocks by throwing — a broken
  * verifier call fails closed (FAILED_SAFE), never silently passes.
  */
-export const validateFinalAnswer = async (state) => {
+const validateFinalAnswerInner = async (state) => {
   // Phase 4B: grounded RAG branch — state.groundedAnswer is only ever set
   // by composeAnswer.js's/repairAnswer.js's grounded branches (see
   // graph/groundedAnswer.js), never by the legacy pipeline, so this check
@@ -132,6 +133,43 @@ export const validateFinalAnswer = async (state) => {
   return {
     validationStatus, validationIssues: allIssues, claimValidation, ...(llmCalls ? { llmCalls } : {}),
   };
+};
+
+/**
+ * validateFinalAnswer - Phase 5A wrapper around the untouched
+ * validateFinalAnswerInner above. Emits exactly one
+ * rag.verification.completed per VERIFICATION PASS, from one place, so
+ * every one of the inner function's many early returns (grounded branch,
+ * pass-through, cancellation, no-budget fail-closed, verifier failure,
+ * normal verdict) is covered identically and none can be missed.
+ *
+ * A repaired draft is re-verified (graph.js cycles repairAnswer back into
+ * this node), so a second event for one turn is a real second pass, not a
+ * duplicate — `repairAttempted` tells the two apart. Never changes the
+ * inner function's return value or control flow.
+ */
+export const validateFinalAnswer = async (state) => {
+  const startedAt = performance.now();
+  const update = await validateFinalAnswerInner(state);
+
+  // The verdict this pass produced: an inner branch that returns {} left the
+  // status untouched, so fall back to the status already on state.
+  const verdict = update?.validationStatus || state.validationStatus || null;
+  const claims = update?.groundedClaims || state.groundedClaims || [];
+
+  emitEvent('rag.verification.completed', {
+    traceId: state.traceId,
+    requestId: state.requestId,
+    verificationVerdict: verdict,
+    groundingStatus: update?.groundingStatus || state.groundingStatus || null,
+    verifiedClaimCount: claims.filter((c) => c.verificationStatus === 'VERIFIED').length,
+    rejectedClaimCount: claims.filter((c) => c.verificationStatus && c.verificationStatus !== 'VERIFIED').length,
+    repairAttempted: Boolean(state.repairAttempted || (state.repairCount || 0) > 0),
+    llmCallCount: (update?.llmCalls || []).length,
+    durationMs: Math.round(performance.now() - startedAt),
+  });
+
+  return update;
 };
 
 export default validateFinalAnswer;

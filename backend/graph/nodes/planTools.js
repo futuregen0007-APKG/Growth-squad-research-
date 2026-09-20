@@ -6,6 +6,7 @@ import { DEFAULT_COMPARISON_DIMENSIONS } from '../dimensions.js';
 import { invokeRoutingModel } from '../llmInvoke.js';
 import { resolveResearchScope } from '../researchScope.js';
 import { logger } from '../../utils/logger.js';
+import { emitEvent } from '../../services/telemetry/ragTelemetry.js';
 
 export const MAX_TOOL_CALLS_PER_REQUEST = 4;
 
@@ -228,6 +229,15 @@ export const planTools = async (state) => {
     warnings.push(`Limited tool usage to ${MAX_TOOL_CALLS_PER_REQUEST} calls for this request.`);
     plan = plan.slice(0, MAX_TOOL_CALLS_PER_REQUEST);
   }
+
+  // Phase 5A: one rag.tools.planned event per turn. planTools runs exactly
+  // once (a replan cycle re-enters executeTools, never this node), so this
+  // can never double-count. Carries only counts — never the plan's own
+  // arguments, which contain the user's question text.
+  emitEvent('rag.tools.planned', {
+    traceId: state.traceId, requestId: state.requestId, intent: state.intent,
+    toolCount: plan.length, llmCallCount: llmCalls.length,
+  });
 
   return { toolPlan: plan, warnings, llmCalls };
 };

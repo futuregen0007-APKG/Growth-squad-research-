@@ -79,7 +79,14 @@ test('zero retrieved evidence abstains directly, with no OpenAI call (mirrors th
   try {
     const result = await composeAnswer(baseState({ researchEvidence: [] }));
     assert.equal(called, false);
-    assert.deepEqual(result, { validationStatus: 'ABSTAINED' });
+    // Phase 5A: composeAnswer now always additionally returns a
+    // `scopeSignal` mirror of its own internal resolveResearchScope call
+    // (see services/telemetry/errorTaxonomy.js) alongside whatever
+    // composeAnswerInner's branching logic decided.
+    assert.equal(result.validationStatus, 'ABSTAINED');
+    assert.deepEqual(result.scopeSignal, {
+      researchQuestionType: 'MANAGEMENT_GUIDANCE', needsResearchCorpus: true, ambiguousCompany: false, symbol: 'TCS', fiscalYear: 'FY2023', fiscalQuarter: null,
+    });
   } finally {
     OpenAIClientFactory.getClient = originalGetClient;
     OpenAIClientFactory.isConfigured = originalIsConfigured;

@@ -11,6 +11,10 @@ const nextClientMessageId = () => `cm-${Date.now()}-${(clientMessageCounter += 1
  * final message ({ content, citations, warnings, intent }) once
  * message.completed arrives — or rejects on message.error / a network
  * failure, or resolves with { aborted: true } if the user stopped it.
+ *
+ * Phase 5A Part 14: both the resolved value and a rejected Error carry the
+ * server's `traceId` for the turn (when it sent one), so the UI can show a
+ * support reference without exposing anything else about the run.
  */
 export const useChatStream = ({ threadId, onThreadCreated } = {}) => {
   const [isStreaming, setIsStreaming] = useState(false);
@@ -56,11 +60,20 @@ export const useChatStream = ({ threadId, onThreadCreated } = {}) => {
             coverage: event.coverage || null,
             retrievalMode: event.retrievalMode || null,
             repairAttempted: Boolean(event.repairAttempted),
+            // Phase 5A Part 14: the server's own observability trace id for
+            // this turn, so a user can quote it on a support request and an
+            // operator can find the matching telemetry. Never an internal
+            // node name, prompt, or diagnostic — just the id.
+            traceId: event.traceId || null,
           });
           return;
         }
         if (event.type === 'message.error') {
-          settleReject(new Error(event.message || 'GS Copilot ran into a problem.'));
+          const error = new Error(event.message || 'GS Copilot ran into a problem.');
+          // Carried on the Error itself so the caller can show it beside the
+          // failure message — the one moment it is genuinely useful.
+          error.traceId = event.traceId || null;
+          settleReject(error);
           return;
         }
         setDraft((prev) => {

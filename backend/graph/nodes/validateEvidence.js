@@ -1,5 +1,6 @@
 import { evidenceForPrompt } from '../evidence.js';
 import { resolveResearchScope } from '../researchScope.js';
+import { emitEvent } from '../../services/telemetry/ragTelemetry.js';
 
 const EVIDENCE_DEPENDENT_INTENTS = new Set([
   'LIVE_MARKET_DATA', 'COMPANY_RESEARCH', 'EARNINGS_INTELLIGENCE',
@@ -39,6 +40,14 @@ export const validateEvidence = async (state) => {
     && EVIDENCE_DEPENDENT_INTENTS.has(state.intent) && state.toolPlan.length && !deduped.length) {
     warnings.push('No verifiable evidence was found for this request — say so explicitly rather than guessing.');
   }
+
+  // Phase 5A: one rag.evidence.built event per evidence round. Carries only
+  // the COUNT of de-duplicated evidence records — never an evidence item, a
+  // document excerpt, or a citation URL.
+  emitEvent('rag.evidence.built', {
+    traceId: state.traceId, requestId: state.requestId,
+    evidenceCount: deduped.length, retrievalMode: state.retrievalMode || null,
+  });
 
   return { evidence: evidenceForPrompt(deduped), warnings };
 };

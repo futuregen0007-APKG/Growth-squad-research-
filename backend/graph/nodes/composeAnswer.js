@@ -9,6 +9,7 @@ import { EVIDENCE_DEPENDENT_INTENTS } from '../claimValidation.js';
 import { resolveResearchScope } from '../researchScope.js';
 import { generateGroundedAnswer } from '../groundedAnswer.js';
 import { logger } from '../../utils/logger.js';
+import { emitEvent } from '../../services/telemetry/ragTelemetry.js';
 
 // Re-exported unchanged for backward compatibility — extractCitations now
 // lives in graph/citations.js (see its own module note for why: it's used
@@ -54,7 +55,7 @@ const UNSUPPORTED_SYSTEM_NOTE = `This request needs a capability GS Copilot does
  * The one exception is a genuine cancellation/timeout, where draftAnswer
  * stays null (nothing to publish) and validationStatus is 'FAILED_SAFE'.
  */
-export const composeAnswer = async (state) => {
+const composeAnswerInner = async (state) => {
   if (state.errors.length) {
     const draftAnswer = state.errors[0];
     return { draftAnswer, validationStatus: 'SKIPPED_GENERAL_EDUCATION' };
@@ -216,6 +217,10 @@ export const composeAnswer = async (state) => {
           inputTokens: chunk.usage.prompt_tokens ?? null,
           outputTokens: chunk.usage.completion_tokens ?? null,
           totalTokens: chunk.usage.total_tokens ?? null,
+          // Phase 5A Part 5: additive, present only when the provider
+          // actually includes it — never estimated.
+          cachedInputTokens: chunk.usage.prompt_tokens_details?.cached_tokens ?? null,
+          reasoningTokens: chunk.usage.completion_tokens_details?.reasoning_tokens ?? null,
         };
       }
       if (state.aborted?.()) {
@@ -227,6 +232,7 @@ export const composeAnswer = async (state) => {
     const llmCalls = [{
       node: 'composeAnswer', role: 'synthesis', model, durationMs: Date.now() - startedAt, timedOut: false,
       inputTokens: tokenUsage?.inputTokens ?? null, outputTokens: tokenUsage?.outputTokens ?? null,
+      cachedInputTokens: tokenUsage?.cachedInputTokens ?? null, reasoningTokens: tokenUsage?.reasoningTokens ?? null,
     }];
     if (state.onEvent) state.onEvent({ type: 'status', message: 'Verifying claims and citations…' });
     return { draftAnswer: full, tokenUsage, llmCalls };
@@ -247,6 +253,74 @@ export const composeAnswer = async (state) => {
   } finally {
     clearTimeout(timer);
   }
+};
+
+/**
+ * composeAnswer - Phase 5A Part 2/7 addition: a thin wrapper around the
+ * existing, untouched composeAnswerInner. Recomputes resolveResearchScope
+ * (the SAME pure, deterministic call composeAnswerInner already makes
+ * internally — cheap, no I/O, safe to call twice) purely to persist its
+ * verdict into state as `scopeSignal`, so operational telemetry
+ * (services/telemetry/errorTaxonomy.js) and the canonical trace context
+ * (researchQuestionType, ambiguousCompany, symbol, fiscalYear/Quarter) can
+ * read it without composeAnswerInner's own branching logic changing at
+ * all. Never changes composeAnswerInner's return value or control flow —
+ * only adds one additional field alongside whatever it already returned.
+ */
+export const composeAnswer = async (state) => {
+  const lastMessage = state.messages[state.messages.length - 1];
+  const text = String(lastMessage?.content || '');
+  const scope = resolveResearchScope({ text, entities: state.entities, intent: state.intent });
+  const scopeSignal = {
+    researchQuestionType: scope.researchQuestionType,
+    needsResearchCorpus: scope.needsResearchCorpus,
+    ambiguousCompany: scope.ambiguousCompany,
+    symbol: scope.symbol,
+    fiscalYear: scope.fiscalYear,
+    fiscalQuarter: scope.fiscalQuarter,
+  };
+  // Phase 5A: rag.scope.resolved — emitted once per turn, from the one node
+  // every path reaches (validateInput routes an input error straight here,
+  // see graph.js), so it can never double-count. planTools.js resolves the
+  // same scope for its own planning but deliberately does NOT emit: one
+  // scope decision, one event. Carries the resolved scope labels only —
+  // never the question text they were derived from.
+  emitEvent('rag.scope.resolved', {
+    traceId: state.traceId,
+    requestId: state.requestId,
+    intent: state.intent,
+    researchQuestionType: scopeSignal.researchQuestionType,
+    companySymbol: scopeSignal.symbol,
+    fiscalYear: scopeSignal.fiscalYear,
+    fiscalQuarter: scopeSignal.fiscalQuarter,
+  });
+
+  const generationStartedAt = performance.now();
+  const update = await composeAnswerInner(state);
+
+  // rag.generation.completed — ONLY when a generation call genuinely ran.
+  // The zero-evidence fast path and every fixed-safe-string branch return no
+  // llmCalls at all, and must not look like a generation that produced
+  // nothing. Prefers the call's OWN measured duration over this wrapper's,
+  // which would also include prompt assembly. Carries no prompt, no answer
+  // text, and no token counts (see RAG_EVENT_SCHEMA's note on where those
+  // legitimately live).
+  const generationCall = (update?.llmCalls || [])[0];
+  if (generationCall) {
+    emitEvent('rag.generation.completed', {
+      traceId: state.traceId,
+      requestId: state.requestId,
+      model: generationCall.model || null,
+      role: generationCall.role || null,
+      llmCallCount: update.llmCalls.length,
+      groundingStatus: update.groundingStatus || null,
+      durationMs: Number.isFinite(generationCall.durationMs)
+        ? generationCall.durationMs
+        : Math.round(performance.now() - generationStartedAt),
+    });
+  }
+
+  return { ...update, scopeSignal };
 };
 
 export default composeAnswer;

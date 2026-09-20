@@ -36,7 +36,14 @@ test('composeAnswer: evidence-dependent intent, tools genuinely ran, zero eviden
       evidence: [],
     }));
     assert.equal(called, false, 'composeAnswer must not call OpenAI at all for a genuinely zero-evidence evidence-dependent turn');
-    assert.deepEqual(result, { validationStatus: 'ABSTAINED' });
+    // Phase 5A: composeAnswer now always additionally returns a
+    // `scopeSignal` mirror of its own internal resolveResearchScope call
+    // (see services/telemetry/errorTaxonomy.js) alongside whatever
+    // composeAnswerInner's branching logic decided.
+    assert.equal(result.validationStatus, 'ABSTAINED');
+    assert.deepEqual(result.scopeSignal, {
+      researchQuestionType: 'NORMAL_STOCK_DATA', needsResearchCorpus: false, ambiguousCompany: false, symbol: null, fiscalYear: null, fiscalQuarter: null,
+    });
   } finally {
     OpenAIClientFactory.getClient = originalGetClient;
     OpenAIClientFactory.isConfigured = originalIsConfigured;

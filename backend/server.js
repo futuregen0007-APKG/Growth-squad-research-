@@ -23,6 +23,7 @@ import authRoutes from './routes/auth.js';
 import newsRoute from './routes/news.js';
 import { createGoalRoutes } from './routes/goals.js';
 import earningsIntelligenceRoute from './routes/earningsIntelligence.js';
+import opsRoute from './routes/ops.js';
 import { seedHistoricalIntelligence } from './scripts/seedHistoricalIntelligence.js';
 import { createPortfolioRoutes } from './routes/portfolio.js';
 import { createWatchlistRoutes } from './routes/watchlist.js';
@@ -139,6 +140,7 @@ app.use((req, res, next) => {
 
 app.use('/api/chat', chatRoute);
 app.use('/api/auth', authRoutes);
+app.use('/api/ops', opsRoute);
 
 let server = null;
 

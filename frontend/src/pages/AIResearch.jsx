@@ -20,6 +20,7 @@ export default function AIResearch() {
   const [messagesError, setMessagesError] = useState(null);
   const [pendingUserText, setPendingUserText] = useState(null); // optimistic user bubble while sending
   const [sendError, setSendError] = useState(null);
+  const [sendErrorTraceId, setSendErrorTraceId] = useState(null);
 
   const scrollRef = useRef(null);
   const lastUserTextRef = useRef(null);
@@ -59,6 +60,7 @@ export default function AIResearch() {
 
   const handleSend = useCallback((text) => {
     setSendError(null);
+    setSendErrorTraceId(null);
     setPendingUserText(text);
     lastUserTextRef.current = text;
     send(text)
@@ -84,6 +86,10 @@ export default function AIResearch() {
       .catch((error) => {
         setPendingUserText(null);
         setSendError(errorMessage(error));
+        // Phase 5A Part 14: shown only when a send genuinely failed, purely
+        // so the user can quote it to support — never displayed on a normal
+        // answer, and never accompanied by any internal diagnostic.
+        setSendErrorTraceId(error?.traceId || null);
       });
   }, [send, loadThreads]);
 
@@ -98,6 +104,7 @@ export default function AIResearch() {
     setMessages([]);
     setMessagesError(null);
     setSendError(null);
+    setSendErrorTraceId(null);
   };
 
   const handleSelectThread = (threadId) => {
@@ -198,7 +205,15 @@ export default function AIResearch() {
 
           {sendError && (
             <div className="flex items-start gap-2 text-sm text-gs-textMuted">
-              <AlertCircle className="w-4 h-4 text-gs-neg flex-shrink-0 mt-0.5" /> {sendError}
+              <AlertCircle className="w-4 h-4 text-gs-neg flex-shrink-0 mt-0.5" />
+              <div>
+                {sendError}
+                {sendErrorTraceId && (
+                  <div className="font-mono text-[10px] uppercase tracking-wider text-gs-textDim mt-1" data-testid="send-error-trace-id">
+                    Reference: {sendErrorTraceId}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
