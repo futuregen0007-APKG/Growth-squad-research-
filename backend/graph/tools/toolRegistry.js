@@ -53,6 +53,8 @@ import { getProviderBreaker, isBreakerCountedFailure } from './circuitBreaker.js
 import { getOrCompute, buildCacheKey, CACHE_TTL_MS } from './toolCache.js';
 import { logger } from '../../utils/logger.js';
 import { buildStoredFundamentalsView } from '../../services/storedFundamentals.js';
+import { readiness, getRateLimitGate, inFlight } from '../../services/providers/providerResilience.js';
+import StockPriceHistorySnapshot from '../../models/StockPriceHistorySnapshot.js';
 
 export const TOOL_STATUS = Object.freeze({
   SUCCESS: 'SUCCESS', EMPTY: 'EMPTY', UNAVAILABLE: 'UNAVAILABLE', UNSUPPORTED: 'UNSUPPORTED', ERROR: 'ERROR',
@@ -199,8 +201,16 @@ export const getLiveQuote = async ({ symbol }, context = {}) => {
       buildCacheKey('getLiveQuote', normalized),
       CACHE_TTL_MS.LIVE_QUOTE,
       async () => {
+        // Phase 6B: a provider that is still downloading its scrip master
+        // cannot serve this request, and waiting out the timeout to learn
+        // that costs the whole tool budget (measured: 10,003ms per call,
+        // every call, until the breaker opened). Reporting it immediately
+        // lets the turn fall back to stored market history in milliseconds.
+        if (readiness.isWarming('angel-one')) {
+          throw Object.assign(new Error('angel-one is still warming up'), { code: 'PROVIDER_WARMING', errorCode: 'UPSTREAM_UNAVAILABLE' });
+        }
         const outcome = await withBreaker('angel-one', () => withTimeout(
-          getStockService().getStock(normalized), boundedCallTimeout(10000, context), 'getLiveQuote', context.signal,
+          getStockService().getStock(normalized), boundedCallTimeout(6000, context), 'getLiveQuote', context.signal,
         ));
         circuitState = outcome.circuitState;
         if (outcome.blocked) throw Object.assign(new Error('angel-one circuit is open'), { code: 'CIRCUIT_OPEN' });
@@ -254,10 +264,35 @@ const keyMetricExcerpt = (category, max = 8) => {
 // speedup). IndianApiProvider's client has no signal parameter of its
 // own, so cancellation here is SOFT, same as getLiveQuote.
 const fetchResearchBundle = async (normalized, toolLabel, context) => {
-  const outcome = await withBreaker('indian-api', () => withTimeout(
-    getCompanyResearchBundle(normalized), boundedCallTimeout(15000, context), toolLabel, context?.signal,
-  ));
+  // Phase 6B: skip the network entirely while the provider is rate-limiting
+  // us. Without this every request paid a round trip per section to be told
+  // no again.
+  const gate = getRateLimitGate('indian-api');
+  if (gate.isBlocked()) {
+    gate.countSkip();
+    throw Object.assign(new Error('indian-api is rate-limited'), { code: 'RATE_LIMITED', errorCode: 'RATE_LIMITED' });
+  }
+
+  // De-duplicate concurrent identical bundle fetches. One comparison fans
+  // out to several tools per symbol and comparisons can overlap; without
+  // this the same symbol's bundle is requested repeatedly while the first
+  // is still in flight.
+  const outcome = await inFlight.run(`research-bundle:${normalized}`, () => withBreaker('indian-api', () => withTimeout(
+    getCompanyResearchBundle(normalized), boundedCallTimeout(8000, context), toolLabel, context?.signal,
+  )));
   if (outcome.blocked) throw Object.assign(new Error('indian-api circuit is open'), { code: 'CIRCUIT_OPEN', circuitState: outcome.circuitState });
+
+  // The bundle RESOLVES even when every section failed, because
+  // CompanyResearchService catches per-section errors. That hid rate
+  // limiting from the circuit breaker entirely. Surface it here so the
+  // breaker and the gate both see the truth.
+  const sections = Object.values(outcome.value?.sections || {});
+  const rateLimitedSections = sections.filter((section) => section?.error?.code === 'RATE_LIMITED');
+  if (sections.length && rateLimitedSections.length === sections.length) {
+    gate.recordRateLimited();
+    throw Object.assign(new Error('indian-api rate-limited every section'), { code: 'RATE_LIMITED', errorCode: 'RATE_LIMITED' });
+  }
+
   return { bundle: outcome.value, circuitState: outcome.circuitState };
 };
 
@@ -462,6 +497,9 @@ export const getCompanyNews = async ({ symbol }, context = {}) => {
       provider: article.source || 'news-api',
       publishedAt: article.publishedAt,
       excerpt: article.description,
+      // UI Phase 1C.2: real, provider-validated image (or null — never a
+      // placeholder) from services/NewsAPIService.js's own normalize().
+      imageUrl: article.imageUrl,
     })).filter(Boolean);
     return result('getCompanyNews', articles.length ? TOOL_STATUS.SUCCESS : TOOL_STATUS.EMPTY, articles, evidence, articles.length ? null : SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD, null, meta);
   } catch (error) {
@@ -469,6 +507,132 @@ export const getCompanyNews = async ({ symbol }, context = {}) => {
     if (error.code === 'CANCELLED') return result('getCompanyNews', TOOL_STATUS.ERROR, null, [], 'Request was cancelled.', 'CANCELLED', meta);
     logger.warn(`[Tool] getCompanyNews(${normalized}) failed: ${error.message}`);
     return result('getCompanyNews', TOOL_STATUS.UNAVAILABLE, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, error.code === 'CIRCUIT_OPEN' ? 'CIRCUIT_OPEN' : null, meta);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// getPriceHistory — UI Phase 1C.3
+// ---------------------------------------------------------------------------
+// Mongo-backed (StockPriceHistorySnapshot, the durable NSE-bhavcopy daily
+// record — see that model's own module note), like getEarningsTimeline
+// below: cached, but deliberately no circuit breaker (there is no external
+// provider here to trip one).
+
+const DEFAULT_PRICE_HISTORY_DAYS = 180; // ~6 months when the question named no explicit range
+const MAX_PRICE_HISTORY_QUERY_DAYS = 400; // calendar days -- comfortably covers this project's ~1-trading-year bhavcopy backfill with room to spare
+// Defense-in-depth row cap for the calendar-window query below -- 400
+// calendar days can never realistically produce more than ~286 trading-day
+// rows (5 trading days per 7 calendar days), so 500 is a ceiling that never
+// binds in practice, not a real limit on how much history a request can see.
+const PRICE_HISTORY_ROW_SAFETY_LIMIT = 500;
+
+/**
+ * buildPriceHistoryEvidence - ONE evidence record carrying the whole
+ * bounded series, never one record per point (see graph/evidence.js's
+ * chartSeries note and services/claimPlan.js's PRICE_HISTORY_EXCERPT note
+ * for why: a chart is one claim, not N).
+ *
+ * NEVER MIXES PRICE BASES. `rows` (already sorted ascending by
+ * tradingDate) is filtered down to adjustmentStatus === 'NOT_REQUIRED'
+ * only — the plain, uncomplicated basis every row in this project's
+ * corpus carries today (see models/StockPriceHistorySnapshot.js's own
+ * note: no corporate-action feed exists yet to safely confirm an
+ * 'ADJUSTED' row, and 'UNVERIFIED' means a discontinuity could not be
+ * explained). A row that fails this filter is DROPPED, never blended in
+ * under the majority basis — the point immediately after a drop is
+ * flagged `gapBefore: true` so the chart can show the break honestly
+ * instead of silently connecting across it.
+ */
+const buildPriceHistoryEvidence = (symbol, rows, requestedRangeDays) => {
+  const usable = rows.filter((r) => r.adjustmentStatus === 'NOT_REQUIRED' && Number.isFinite(r.close) && r.close > 0);
+  if (usable.length < 2) return null;
+
+  let previousKeptIndex = -1;
+  const series = usable.map((row, i) => {
+    const date = row.tradingDate.toISOString().slice(0, 10);
+    // A gap exists when the row immediately before THIS ONE in the raw,
+    // unfiltered `rows` array was excluded by the basis filter above --
+    // i.e. this point does not immediately follow its neighbour in the
+    // real trading-day sequence.
+    const rawIndex = rows.indexOf(row);
+    const gapBefore = i > 0 && previousKeptIndex >= 0 && rawIndex !== previousKeptIndex + 1;
+    previousKeptIndex = rawIndex;
+    return { date, close: row.close, gapBefore: i === 0 ? false : gapBefore };
+  });
+
+  const first = usable[0];
+  const last = usable[usable.length - 1];
+  const provider = last.provider || 'NSE_BHAVCOPY';
+
+  return buildEvidenceRecord({
+    claimType: 'MARKET_HISTORY',
+    symbol,
+    title: `${symbol} share-price history (NSE)`,
+    sourceUrl: last.sourceUrl,
+    provider,
+    publishedAt: last.dataAsOf ? last.dataAsOf.toISOString() : null,
+    excerpt: `PRICE_HISTORY: ${series.length} points, INR, ${provider}, NOT_REQUIRED (${first.tradingDate.toISOString().slice(0, 10)} to ${last.tradingDate.toISOString().slice(0, 10)})`,
+    evidenceQuality: 'VERIFIED_MARKET_HISTORY',
+    chartSeries: series,
+    requestedRangeDays,
+  });
+};
+
+export const getPriceHistory = async ({ symbol, days }, context = {}) => {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return result('getPriceHistory', TOOL_STATUS.ERROR, null, [], 'A symbol is required');
+  const boundedDays = Number.isInteger(days) && days > 0 ? Math.min(days, MAX_PRICE_HISTORY_QUERY_DAYS) : DEFAULT_PRICE_HISTORY_DAYS;
+
+  try {
+    // UI Phase 1D audit fix: `days` is a CALENDAR-day window ("last 90
+    // days" means the last 90 calendar days, the plain-language meaning a
+    // user asking that actually intends), never a row/observation count.
+    // The previous implementation used `.limit(boundedDays)` sorted
+    // newest-first, which fetched the last `boundedDays` TRADING-DAY ROWS
+    // -- since a week holds ~5 trading days out of 7 calendar days, "last
+    // 90 days" actually returned roughly the last 126 CALENDAR days of
+    // history, a systematic ~40% overshoot, confirmed via a live check
+    // ("last 90 days" returned 2026-05-07 to 2026-09-11, a 127-day span).
+    // Filtering by a real calendar-date cutoff instead means the returned
+    // rangeStart/rangeEnd the chart reports are honestly the window that
+    // was actually asked for -- weekends/holidays are simply absent from
+    // it (fewer POINTS than `days`), not a longer calendar span than
+    // requested.
+    const cutoffDate = new Date(Date.now() - boundedDays * 24 * 60 * 60 * 1000);
+    const { value: rows, cacheStatus, storedAt } = await getOrCompute(
+      buildCacheKey('getPriceHistory', normalized, String(boundedDays)),
+      CACHE_TTL_MS.PRICE_HISTORY,
+      () => withTimeout(
+        StockPriceHistorySnapshot.find({ symbol: normalized, tradingDate: { $gte: cutoffDate } })
+          .sort({ tradingDate: 1 }).limit(PRICE_HISTORY_ROW_SAFETY_LIMIT).lean(),
+        boundedCallTimeout(8000, context), 'getPriceHistory', context.signal,
+      ),
+    );
+    const meta = { cacheStatus, cancellationMode: 'SOFT', fetchedAt: new Date(storedAt).toISOString() };
+    const ascending = rows; // already chronological (ascending sort, no row-count limit trick needed)
+
+    if (!ascending.length) {
+      return result('getPriceHistory', TOOL_STATUS.EMPTY, [], [], SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD, null, meta);
+    }
+
+    // requestedRangeDays reflects what the QUESTION asked for, not the
+    // clamped query bound used internally -- null when planTools.js parsed
+    // no explicit range at all (see its own note on why that distinction
+    // matters for the chart's honest "requested vs available" framing).
+    const explicitlyRequested = Number.isInteger(days) && days > 0 ? boundedDays : null;
+    const record = buildPriceHistoryEvidence(normalized, ascending, explicitlyRequested);
+    if (!record) {
+      // Real rows exist, but none survive the "never mix price bases"
+      // filter (or fewer than two do) -- an honest EMPTY, never a chart
+      // assembled from an unsafe basis.
+      return result('getPriceHistory', TOOL_STATUS.EMPTY, ascending, [], SAFE_REASONS.DATA_NOT_AVAILABLE_FOR_PERIOD, null, meta);
+    }
+    return result('getPriceHistory', TOOL_STATUS.SUCCESS, ascending, [record], null, null, meta);
+  } catch (error) {
+    const meta = { cancellationMode: 'SOFT' };
+    if (error.code === 'CANCELLED') return result('getPriceHistory', TOOL_STATUS.ERROR, null, [], 'Request was cancelled.', 'CANCELLED', meta);
+    logger.warn(`[Tool] getPriceHistory(${normalized}) failed: ${error.message}`);
+    return result('getPriceHistory', TOOL_STATUS.UNAVAILABLE, null, [], SAFE_REASONS.PROVIDER_UNAVAILABLE, null, meta);
   }
 };
 
@@ -1067,6 +1231,7 @@ export const TOOL_REGISTRY = {
   getPortfolio,
   compareStocks,
   retrieveGroundedEvidence,
+  getPriceHistory,
 };
 
 export const AUTH_REQUIRED_TOOLS = Object.freeze(['getWatchlist', 'getPortfolio']);

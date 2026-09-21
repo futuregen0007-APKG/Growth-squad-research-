@@ -12,6 +12,47 @@ export const MAX_TOOL_CALLS_PER_REQUEST = 4;
 
 const DEBT_KEYWORDS = /\bdebt|leverage|borrowing/i;
 const NEWS_KEYWORDS = /\bnews|headline|announcement/i;
+// UI Phase 1C.3: "relevant historical-price/chart requests" only — a plain
+// "what's TCS's price" (LIVE_MARKET_DATA's own getLiveQuote already covers
+// that) does not, by itself, trigger a second tool call and a chart block
+// nobody asked for.
+const CHART_KEYWORDS = /\bchart|graph|plot|price (history|trend|movement|chart)|historical price|share price trend|performance over|52.?week|price over time\b/i;
+const RANGE_PATTERN = /\b(?:last|past|previous)\s+(\d+)\s*(day|week|month|year)s?\b/i;
+const YTD_PATTERN = /\bytd\b|year.to.date/i;
+const DAYS_PER_UNIT = { day: 1, week: 7, month: 30, year: 365 };
+
+const wantsChartSignal = (message) => CHART_KEYWORDS.test(message);
+
+// Intents with no single-company context at all (watchlist/portfolio have
+// no resolved symbol to chart) or that already own their own complete
+// tool-planning story (a genuine research-corpus turn, or a multi-company
+// comparison compareStocks already handles end to end).
+const CHART_INELIGIBLE_INTENTS = new Set(['GENERAL_EDUCATION', 'UNSUPPORTED', 'WATCHLIST_ANALYSIS', 'PORTFOLIO_ANALYSIS', 'STOCK_COMPARISON']);
+
+/**
+ * parseRequestedRangeDays - deterministic, code-controlled parsing of a
+ * plain-language date range ("last 6 months", "past 2 years", "YTD") into a
+ * calendar-day count for getPriceHistory's `days` arg. Returns null when
+ * the question named no explicit range at all — getPriceHistory then
+ * applies its own DEFAULT_PRICE_HISTORY_DAYS, and the chart honestly
+ * states the available range it actually got (see graph/schemas.js's
+ * ChartBlockSchema requestedRangeDays note) rather than pretending a
+ * default was requested.
+ */
+export const parseRequestedRangeDays = (message) => {
+  const rangeMatch = String(message || '').match(RANGE_PATTERN);
+  if (rangeMatch) {
+    const count = Number(rangeMatch[1]);
+    const unit = rangeMatch[2].toLowerCase();
+    if (Number.isFinite(count) && count > 0) return Math.round(count * DAYS_PER_UNIT[unit]);
+  }
+  if (YTD_PATTERN.test(message)) {
+    const now = new Date();
+    const startOfYear = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+    return Math.max(1, Math.round((now - startOfYear) / (24 * 60 * 60 * 1000)));
+  }
+  return null;
+};
 // Confirmed bug: "Analyse HAL Q2 FY26 results" matched none of these, so
 // only getCompanyResearch (profile/keyMetrics/shareholding/corporate
 // actions/analyst — never the financials array) was planned for a request
@@ -123,6 +164,7 @@ const deterministicPlan = (intent, entities, message, requestedDimensions) => {
       if (/\bpromise|guidance|earnings|reliability/i.test(message)) {
         return [{ tool: 'getEarningsTimeline', args: { symbol: primary } }];
       }
+      if (wantsChartSignal(message)) return []; // the chart-wiring below (independent of intent) supplies getPriceHistory
       return [{ tool: 'getCompanyResearch', args: { symbol: primary } }];
     }
 
@@ -220,6 +262,29 @@ export const planTools = async (state) => {
         logger.warn(`[Graph] planTools LLM fallback failed: ${error}`);
         plan = [];
       }
+    }
+  }
+
+  // UI Phase 1C.3: a chart/historical-price request is planned INDEPENDENT
+  // of which specific intent bucket classifyIntent.js's LLM call landed on
+  // — the exact same "do not gate a deterministic, text-only signal on an
+  // unreliable intent label" principle resolveResearchScope's own module
+  // note documents above (that fix targeted grounded-RAG routing; a live
+  // check for THIS phase found the identical failure mode elsewhere:
+  // "Show me a chart of TCS price history for the last 90 days" was
+  // classified DOCUMENT_RESEARCH by the LLM, and deterministicPlan's own
+  // DOCUMENT_RESEARCH case returns [] whenever resolveResearchScope finds
+  // no grounded-corpus symbol to resolve — silently swallowing an
+  // unambiguous chart request with a real, directly-resolved entity
+  // symbol). Never added for a genuine research-corpus turn (a real
+  // guidance/filing question is a document question first, even if it also
+  // mentions a date range), never for an intent with no single-company
+  // context at all, and never duplicated if a case above already planned
+  // it.
+  if (!scope.needsResearchCorpus && !CHART_INELIGIBLE_INTENTS.has(state.intent) && wantsChartSignal(text)) {
+    const primary = (state.entities?.symbols || [])[0];
+    if (primary && !plan.some((step) => step.tool === 'getPriceHistory')) {
+      plan = [...plan, { tool: 'getPriceHistory', args: { symbol: primary, days: parseRequestedRangeDays(text) } }];
     }
   }
 

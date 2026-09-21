@@ -15,6 +15,22 @@ test('deterministicIntent recognizes an explicit price request for a known symbo
   assert.equal(deterministicIntent('What is the current price of TCS?').intent, 'LIVE_MARKET_DATA');
 });
 
+// UI Phase 1D fix: a confirmed live bug -- "Show me a chart of TCS price
+// history for the last 90 days" was classified GENERAL_EDUCATION,
+// DOCUMENT_RESEARCH, and FOLLOW_UP on three separate live runs (the LLM
+// classifier is non-deterministic for this exact phrasing). GENERAL_
+// EDUCATION was the worst outcome: composeAnswer.js discards ANY evidence
+// for that intent by design. Mirrors PRICE_PHRASES's own deterministic
+// rule immediately above.
+test('deterministicIntent recognizes an explicit chart/historical-price request for a known symbol, never leaving it to the flaky LLM classifier', () => {
+  assert.equal(deterministicIntent('Show me a chart of TCS price history for the last 90 days').intent, 'LIVE_MARKET_DATA');
+  assert.equal(deterministicIntent('What is the historical price trend for INFY?').intent, 'LIVE_MARKET_DATA');
+});
+
+test('deterministicIntent leaves a genuinely general chart question (no known symbol) to the model', () => {
+  assert.equal(deterministicIntent('What is a candlestick chart?'), null);
+});
+
 test('deterministicIntent recognizes known Earnings Intelligence phrasing', () => {
   assert.equal(deterministicIntent('Was the NEWGEN revenue guidance fulfilled?').intent, 'EARNINGS_INTELLIGENCE');
 });

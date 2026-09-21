@@ -210,6 +210,12 @@ export const sendMessage = async (req, res, next) => {
       coverage: finalState.coverage || null,
       retrievalMode: finalState.retrievalMode || null,
       repairAttempted: Boolean(finalState.repairAttempted),
+      // UI Phase 1B: additive-only, same contract as groundingStatus/
+      // coverage above — [] for every turn (buildSafeFallback path, or a
+      // publish path where every builder found nothing valid), so an
+      // existing client reading only answer/citations is unaffected. See
+      // graph/nodes/buildResponseBlocks.js.
+      responseBlocks: finalState.responseBlocks || [],
       // Phase 5A Part 14: lets the frontend show/report the trace id on a
       // support request — never internal node names or diagnostics.
       traceId,

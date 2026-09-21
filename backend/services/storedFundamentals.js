@@ -33,6 +33,7 @@ import CompanyHistoricalFact from '../models/CompanyHistoricalFact.js';
 import StockHistoricalMetricsSnapshot from '../models/StockHistoricalMetricsSnapshot.js';
 import CompanyResearchProfile from '../models/CompanyResearchProfile.js';
 import { logger } from '../utils/logger.js';
+import { screenFact, FACT_VERDICTS } from './factQuarantine.js';
 
 /** Why a figure is missing. The distinction the baseline conflated into "temporarily unavailable". */
 export const UNAVAILABLE_REASONS = Object.freeze({
@@ -233,7 +234,7 @@ const byRecency = (a, b) => {
 export const getStoredFinancialFacts = async (symbol, { limit = 400 } = {}) => {
   const normalized = String(symbol || '').toUpperCase();
   if (!normalized || !isStoreReachable()) {
-    return { symbol: normalized || null, facts: [], byMetric: {}, rejected: [], available: false, reason: UNAVAILABLE_REASONS.NOT_COLLECTED };
+    return { symbol: normalized || null, facts: [], byMetric: {}, rejected: [], quarantined: [], available: false, reason: UNAVAILABLE_REASONS.NOT_COLLECTED };
   }
 
   let rows = [];
@@ -254,6 +255,7 @@ export const getStoredFinancialFacts = async (symbol, { limit = 400 } = {}) => {
 
   const byMetric = {};
   const rejected = [];
+  const quarantined = [];
   for (const fact of usable) {
     const metric = resolveFactMetric(fact);
     if (!metric) continue;
@@ -265,6 +267,18 @@ export const getStoredFinancialFacts = async (symbol, { limit = 400 } = {}) => {
     // not a level - drop it rather than present it as the metric itself.
     if (LEVEL_ONLY_METRICS.has(metric) && isDeltaFact(fact.title)) {
       rejected.push({ metric, value, unit: fact.metrics?.unit || null, period: fact.period || null, reason: 'DELTA_NOT_LEVEL' });
+      continue;
+    }
+    // Phase 6B: dimensional/semantic screen. A suspicious fact is
+    // QUARANTINED - withheld and recorded with a reason - never corrected
+    // into a number the source did not state.
+    const screen = screenFact({ metric, value, unit: fact.metrics?.unit, title: fact.title, statement: fact.fact });
+    if (screen.verdict !== FACT_VERDICTS.USABLE) {
+      quarantined.push({
+        metric, value, unit: fact.metrics?.unit || null, period: fact.period || null,
+        verdict: screen.verdict, reason: screen.reason, detail: screen.detail,
+        sourceUrl: fact.source?.url || null,
+      });
       continue;
     }
     (byMetric[metric] = byMetric[metric] || []).push({
@@ -287,7 +301,7 @@ export const getStoredFinancialFacts = async (symbol, { limit = 400 } = {}) => {
   }
   for (const list of Object.values(byMetric)) list.sort(byRecency);
 
-  return { symbol: normalized, facts: usable, byMetric, rejected, available: true, reason: null };
+  return { symbol: normalized, facts: usable, byMetric, rejected, quarantined, available: true, reason: null };
 };
 
 /**
@@ -381,6 +395,12 @@ export const buildStoredFundamentalsView = async (symbol) => {
     symbol: normalized,
     companyName: profile?.companyName || null,
     sector: profile?.sector || null,
+    // UI Phase 1C.1: a real, stored field (models/CompanyResearchProfile.js
+    // — generated from the actual BSE/NSE scrip master, never invented) —
+    // exposed here additively for services/responseBlocks.js's
+    // buildCompanyHeaderBlock, which infers `exchange: 'NSE'` only when
+    // this is genuinely present, never as a blanket assumption.
+    nseSymbol: profile?.nseSymbol || null,
     sectorKind,
     marginLabel: spec.marginLabel,
     notMeaningfulMetrics: spec.notMeaningful,
@@ -394,6 +414,9 @@ export const buildStoredFundamentalsView = async (symbol) => {
     // Facts dropped for failing their unit/range contract — surfaced for
     // observability, never shown to a user as a figure.
     rejectedFacts: factsResult.rejected || [],
+    // Withheld as ambiguous rather than wrong - shown in diagnostics with
+    // its coverage impact, never rendered into an answer.
+    quarantinedFacts: factsResult.quarantined || [],
   };
 };
 

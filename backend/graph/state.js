@@ -77,12 +77,21 @@ export const mergeToolResults = (current = [], update = []) => {
  * source/period) are always both kept.
  *
  * An identity MATCH replaces the existing entry in place (never just
- * dropped) rather than keeping whichever came first — this is what keeps
- * validateEvidence.js's own dedup+prompt-trim step working correctly:
- * validateEvidence deliberately re-returns `evidence: evidenceForPrompt(
- * deduped)`, a TRIMMED transformation of the exact same records already in
- * state.evidence (same identity, fewer fields) — that update must replace
- * the untrimmed originals, not be silently discarded as "already seen."
+ * dropped) rather than keeping whichever came first — a later, corrected
+ * observation of the same real-world fact (e.g. a replan round's re-fetch)
+ * must win over a stale one with the same identity, never be silently
+ * discarded as "already seen."
+ *
+ * UI Phase 1C.3 note: this reducer's own replace-on-match behavior was
+ * originally justified partly by validateEvidence.js's own excerpt-bounding
+ * step (returning a same-identity, excerpt-trimmed copy of each record) —
+ * that step now preserves every field EXCEPT excerpt length (see
+ * validateEvidence.js's own note: it previously used evidenceForPrompt's
+ * full field-stripping, which silently discarded pageNumber/evidenceQuality/
+ * imageUrl/chartSeries for the rest of the turn's pipeline, a real bug found
+ * via a live check of the chart feature). The identity-replace behavior
+ * itself is unchanged and still exactly right for the excerpt-bounding case
+ * and the original replan-dedup case both.
  */
 const evidenceIdentityKey = (record = {}) => [
   record.claimType, record.symbol, record.sourceUrl, record.reportingPeriod, record.publishedAt, record.title,
@@ -301,6 +310,26 @@ export const GraphState = Annotation.Root({
   // Carried so repair can work from the same structure rather than
   // re-deriving it from prose.
   claimPlan: Annotation({ reducer: replace, default: () => null }),
+
+  // Phase 6B: which valuation multiples were produced and, for each one
+  // that was not, the precise reason. Diagnostics only — a missing multiple
+  // is an absence, and an absence cannot carry a citation, so it is
+  // auditable here rather than asserted in the verified answer.
+  valuationCoverage: Annotation({ reducer: replace, default: () => [] }),
+
+  // UI Phase 1B: structured supplements to `answer`, built ONLY after
+  // validateFinalAnswer has passed and publishFinalAnswer has published —
+  // see graph/nodes/buildResponseBlocks.js. Always [] on the
+  // buildSafeFallback path (that node never runs there) and always []
+  // when every builder finds nothing valid to report — never null, so a
+  // consumer can always safely iterate it.
+  responseBlocks: Annotation({ reducer: replace, default: () => [] }),
+
+  // UI Phase 1C.1: per-symbol {companyName, sector, exchange} reference
+  // metadata, captured by composeAnswer.js from a view fetch it ALREADY
+  // makes for sectorKindBySymbol/valuationBySymbol — zero additional I/O.
+  // Read only by services/responseBlocks.js's buildCompanyHeaderBlock.
+  companyProfiles: Annotation({ reducer: replace, default: () => ({}) }),
 
   // Streaming callback set by the controller — not persisted, not part of
   // any checkpoint (this graph has none), purely an in-memory hook the

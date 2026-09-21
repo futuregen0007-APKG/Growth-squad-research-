@@ -152,6 +152,59 @@ const renderMarket = (plan) => {
   return ['**Share-price history (NSE) — historical, not a live quote.**', ...lines].join('\n');
 };
 
+/**
+ * Bounded historical price series backing a chart — UI Phase 1C.3. One
+ * line, one citation per symbol, deliberately distinct from renderMarket's
+ * single aggregate close: this line exists so buildChartBlock
+ * (services/responseBlocks.js) has an [N] marker to resolve against — the
+ * SAME "the deterministic renderer must actually cite it for a block to be
+ * allowed to show it" rule every other block follows (see
+ * responseBlocks.js's own module note on resolveEvidenceRef). Never states
+ * a price itself — the chart is the presentation of that data, this line
+ * only names that it exists, its point count and its real date range.
+ */
+const renderPriceHistory = (plan) => {
+  const entries = Object.entries(plan.priceHistory || {});
+  if (!entries.length) return null;
+  const lines = entries.map(([symbol, claim]) => {
+    const range = claim.rangeStart && claim.rangeEnd ? ` from ${claim.rangeStart} to ${claim.rangeEnd}` : '';
+    return `- ${symbol}: a ${claim.series.length}-point daily closing-price history${range} [${claim.citation}]`;
+  });
+  return ['**Price history chart available.**', ...lines].join('\n');
+};
+
+/**
+ * Valuation — Phase 6B.
+ *
+ * Every multiple shown carries its FORMULA, the as-of date of each input,
+ * and where the input came from, because a bare "P/E 58.7" is unauditable:
+ * the reader cannot tell which price, which earnings, or which periods
+ * produced it. `buildValuation` has already refused any multiple whose
+ * inputs span incompatible periods, so nothing that reaches here was
+ * assembled from mismatched data.
+ *
+ * Only multiples with real inputs appear. Missing ones are named in the
+ * limitations block with their specific reason rather than omitted.
+ */
+const renderValuation = (plan, symbols) => {
+  const lines = [];
+  for (const symbol of symbols) {
+    for (const multiple of (plan.valuation?.[symbol]?.available || [])) {
+      const asOf = multiple.inputs?.price?.asOf || multiple.inputs?.provider?.asOf;
+      const periods = multiple.inputs?.earningsPerShare?.periods;
+      const basis = [
+        `formula: ${multiple.formula}`,
+        periods?.length ? `earnings periods: ${periods.join(', ')}` : null,
+        asOf ? `as of ${String(asOf).slice(0, 10)}` : null,
+        multiple.source === 'PROVIDER_VERIFIED' ? 'provider-published' : 'computed from held inputs',
+      ].filter(Boolean).join('; ');
+      lines.push(`- ${symbol} ${multiple.label || multiple.metric}: ${multiple.value} (${basis})`);
+    }
+  }
+  if (!lines.length) return null;
+  return ['**Valuation.**', ...lines].join('\n');
+};
+
 /** What is missing, phrased as what I hold rather than as a claim about the company. */
 const renderLimitations = (plan, symbols) => {
   const notes = [];
@@ -178,6 +231,17 @@ const renderLimitations = (plan, symbols) => {
   // (measured on BEL/HAL). Collapsing them to a single, still-specific
   // statement keeps the gap named - which company, which data - at a
   // fraction of the claim count.
+  // Phase 6B: the question asked for a period the held data does not cover.
+  // Showing a different period's figure without saying so answers a
+  // different question than the one that was asked.
+  if (plan.unmatchedRequestedPeriods?.length) {
+    const shown = [...new Set(plan.rows.flatMap((row) => Object.values(row.values).map((c) => c.period)).filter(Boolean))];
+    notes.push(
+      `I hold no data for ${plan.unmatchedRequestedPeriods.join(", ")}`
+      + (shown.length ? `; the figures above are for ${shown.slice(0, 3).join(", ")} instead.` : "."),
+    );
+  }
+
   const gaps = (plan.missing || []).filter((g) => g?.symbol && g?.dimension);
   if (gaps.length) {
     const byDimension = {};
@@ -190,7 +254,41 @@ const renderLimitations = (plan, symbols) => {
     notes.push(`Not held this turn: ${phrases.join('; ')} — neither stored filings nor the live provider returned it.`);
   }
 
-  notes.push('I hold no valuation multiples (P/E, P/B) for these companies, so valuation is not assessed.');
+  // Phase 6B: name the specific missing multiple and WHY, per company,
+  // instead of asserting a blanket absence. This block used to be pushed
+  // unconditionally, so it claimed no multiples were held even when some
+  // were — and it said "these companies" for a single-company answer.
+  //
+  // WHY THERE IS NO "I hold no P/E" SENTENCE HERE, DELIBERATELY.
+  //
+  // This block used to end with an unconditional "I hold no valuation
+  // multiples (P/E, P/B) for these companies" — untrue whenever a multiple
+  // WAS held, and wrongly plural for a single company. Replacing it with a
+  // precise, reason-bearing gap sentence made the answer worse, not better:
+  // an absence cannot be cited, and the verifier extracted it as a claim
+  // non-deterministically. Measured on "What is the net interest margin of
+  // HAL?", same evidence, same draft:
+  //
+  //     without the sentence   6/6 PASSED   (3 claims)
+  //     with it                4/6 PASSED   (4 claims, the 4th
+  //                                          UNSUPPORTED/MISSING_CITATION)
+  //
+  // A failing note is not a plan claim, so repairClaimPlan cannot drop it;
+  // the whole verified answer abstained instead. Rather than weaken the
+  // verifier or publish a sentence it rejects, the valuation GAPS are
+  // reported in diagnostics (composeAnswer's valuationCoverage) where they
+  // are auditable, and only valuation that genuinely exists is rendered —
+  // with its formula and provenance — by renderValuation above.
+
+  // A bank's preference for P/B read against asset quality is expressed
+  // where it has effect — in buildValuation/bankValuationContext, and in
+  // the sector metric vocabulary above — not as an editorial sentence here.
+  // Added as prose it cost Q1 two MISSING_CITATION claims: an unattributed
+  // generalisation is exactly the "unsupported inference" the verifier is
+  // built to reject, and it carried no figure the reader could act on.
+  // A heading with nothing under it is worse than no heading: it tells the
+  // reader limitations were considered and then shows none.
+  if (!notes.length) return null;
   return ['**Data limitations.**', ...notes.map((n) => `- ${n}`)].join('\n');
 };
 
@@ -200,7 +298,7 @@ const renderLimitations = (plan, symbols) => {
  */
 export const renderDeterministicAnswer = (plan) => {
   if (!plan?.hasAnything) return null;
-  const symbols = plan.symbols.filter((s) => plan.rows.some((r) => r.values[s]) || plan.market[s]);
+  const symbols = plan.symbols.filter((s) => plan.rows.some((r) => r.values[s]) || plan.market[s] || plan.priceHistory?.[s]);
   if (!symbols.length) return null;
 
   const sections = [
@@ -209,6 +307,8 @@ export const renderDeterministicAnswer = (plan) => {
     renderSingleCompany(plan, symbols),
     renderNonComparable(plan, symbols),
     renderMarket(plan),
+    renderPriceHistory(plan),
+    renderValuation(plan, symbols),
     renderLimitations(plan, symbols),
   ].filter(Boolean);
 

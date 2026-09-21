@@ -18,6 +18,7 @@ const STATUS_LABEL = Object.freeze({
   getPortfolio: 'Checking your portfolio…',
   compareStocks: 'Comparing companies…',
   retrieveGroundedEvidence: 'Retrieving evidence from research documents…',
+  getPriceHistory: 'Loading price history…',
 });
 
 // A tool call needs at least this much remaining budget to be worth

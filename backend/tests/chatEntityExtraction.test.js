@@ -61,6 +61,58 @@ test('extractEntities resolves a follow-up pronoun ("its debt") using the model 
   }
 });
 
+// UI Phase 1D fix: a confirmed live bug -- a real browser check of "Show me
+// a chart of TCS price history for the last 90 days" (classified FOLLOW_UP,
+// which always takes the LLM extraction path) had the model return
+// periods: ["last 90 days"], which then poisoned claimPlan.js's
+// unmatchedRequestedPeriods and produced a FALSE "I hold no data for LAST
+// 90 DAYS" sentence even though getPriceHistory had genuinely succeeded.
+test('extractEntities discards a model-suggested "period" that is really a chart date range, never a fiscal period ("last 90 days")', async () => {
+  const originalGetClient = OpenAIClientFactory.getClient;
+  OpenAIClientFactory.getClient = () => ({
+    chat: {
+      completions: {
+        parse: async () => ({
+          choices: [{
+            message: {
+              parsed: { symbols: ['TCS'], companyNames: ['Tata Consultancy Services'], periods: ['last 90 days'], comparisonMode: false, resolvedFromFollowUp: true },
+            },
+          }],
+        }),
+      },
+    },
+  });
+  try {
+    const result = await extractEntities(makeState('Show me a chart of TCS price history for the last 90 days', { intent: 'FOLLOW_UP', activeEntities: { symbols: ['TCS'], companyNames: ['Tata Consultancy Services'] } }));
+    assert.deepEqual(result.entities.periods, [], 'a date-range phrase must never survive into periods, however the model phrased it');
+  } finally {
+    OpenAIClientFactory.getClient = originalGetClient;
+  }
+});
+
+test('extractEntities keeps a genuine model-suggested fiscal period ("FY2024"), just re-validated/normalized through the same deterministic pattern', async () => {
+  const originalGetClient = OpenAIClientFactory.getClient;
+  OpenAIClientFactory.getClient = () => ({
+    chat: {
+      completions: {
+        parse: async () => ({
+          choices: [{
+            message: {
+              parsed: { symbols: ['TCS'], companyNames: ['Tata Consultancy Services'], periods: ['FY2024', 'last 90 days'], comparisonMode: false, resolvedFromFollowUp: true },
+            },
+          }],
+        }),
+      },
+    },
+  });
+  try {
+    const result = await extractEntities(makeState('How did TCS do in FY2024 vs its price over the last 90 days?', { intent: 'FOLLOW_UP', activeEntities: { symbols: ['TCS'], companyNames: ['Tata Consultancy Services'] } }));
+    assert.deepEqual(result.entities.periods, ['FY2024'], 'the real fiscal period survives; the date-range phrase does not');
+  } finally {
+    OpenAIClientFactory.getClient = originalGetClient;
+  }
+});
+
 test('extractEntities falls back to deterministic matches (or a warning) when the model call fails, without crashing', async () => {
   const originalGetClient = OpenAIClientFactory.getClient;
   OpenAIClientFactory.getClient = () => ({ chat: { completions: { parse: async () => { throw new Error('upstream down'); } } } });

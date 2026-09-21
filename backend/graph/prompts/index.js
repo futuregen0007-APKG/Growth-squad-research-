@@ -54,6 +54,8 @@ Choose exactly one intent. Use FOLLOW_UP when the message clearly continues the 
 
 export const entitiesPrompt = (message, activeEntities) => `Extract stock symbols, company names, and reporting periods mentioned or implied in this message. If the message uses a pronoun or implicit reference to a company already active in the conversation (e.g. "its", "that company", "them"), resolve it using the active entities below and set resolvedFromFollowUp to true.
 
+A "reporting period" means a FISCAL period a company reports results for — e.g. "Q2 FY2024", "FY2023", "last quarter's results". It does NOT mean a date range or lookback window for a price chart or historical trend — phrases like "the last 90 days", "the past 6 months", "over the last year", or "YTD" are chart/history date ranges, never reporting periods, and must be left OUT of periods entirely even when they appear in the message.
+
 Active entities from the conversation: symbols=${JSON.stringify(activeEntities?.symbols || [])}, companies=${JSON.stringify(activeEntities?.companyNames || [])}.
 
 User message: "${message}"`;
@@ -75,7 +77,8 @@ Approved tools and which args field(s) each uses (args has fixed fields symbol/s
 - searchResearchDocuments: symbol
 - getWatchlist: (no args)
 - getPortfolio: (no args)
-- compareStocks: symbols (array of at least 2) + dimensions (the requested data dimensions above — do not also plan a separate getCompanyFinancials/getCompanyNews/etc call for a symbol already covered by a compareStocks step; compareStocks fetches every requested dimension for every symbol itself)`;
+- compareStocks: symbols (array of at least 2) + dimensions (the requested data dimensions above — do not also plan a separate getCompanyFinancials/getCompanyNews/etc call for a symbol already covered by a compareStocks step; compareStocks fetches every requested dimension for every symbol itself)
+- getPriceHistory: symbol (+ optional days — only when the user named an explicit date range like "last 6 months"; leave null otherwise). Only plan this for an EXPLICIT chart/historical-price-trend request, never for a plain current-price question (getLiveQuote already covers that).`;
 
 export const answerComposerPrompt = ({
   message, conversationSummary, evidence, toolResults, warnings, missingDataNotes = [],

@@ -50,7 +50,14 @@ export const EVAL_PROMPTS = [
 
   // --- comparisons (the mandatory five are included here) ---
   { id: 'cmp-01', category: 'comparison', text: 'HDFCBANK vs ICICIBANK margin trends', expectSymbols: ['HDFCBANK', 'ICICIBANK'], sector: 'BANKING', mandatory: 1 },
-  { id: 'cmp-02', category: 'comparison', text: 'BEL vs HAL on margins and valuation', expectSymbols: ['BEL', 'HAL'], expectNoFilings: true, mandatory: 2 },
+  // Phase 6B changed the ground truth for this prompt, so its expectation
+  // changed with it. `expectNoFilings` was written when BEL and HAL had NO
+  // stored filings at all; the NSE XBRL collection now holds 60 verified
+  // facts for each across six quarters, so "names the gap and shows
+  // nothing" is no longer the correct behaviour. Margins and valuation are
+  // still genuinely not held, which is what expectPartial scores: real
+  // figures for what exists, an explicit gap for what does not.
+  { id: 'cmp-02', category: 'comparison', text: 'BEL vs HAL on margins and valuation', expectSymbols: ['BEL', 'HAL'], expectPartial: true, mandatory: 2 },
   { id: 'cmp-03', category: 'comparison', text: 'Which is better for the long term: ICICI Bank or HDFC Bank?', expectSymbols: ['ICICIBANK', 'HDFCBANK'], sector: 'BANKING', conditional: true, mandatory: 3 },
   { id: 'cmp-04', category: 'comparison', text: 'Compare TCS and INFY growth, margins, and valuation', expectSymbols: ['TCS', 'INFY'], mandatory: 4 },
   { id: 'cmp-05', category: 'comparison', text: 'Analyse RELIANCE for a five-year investor', expectSymbols: ['RELIANCE'], mandatory: 5 },
@@ -61,6 +68,14 @@ export const EVAL_PROMPTS = [
   { id: 'sector-02', category: 'sector', text: 'ICICI Bank asset quality and NIM', expectSymbols: ['ICICIBANK'], sector: 'BANKING' },
 
   // --- genuinely unavailable data ---
+  // KNOWN OPEN FAILURE, kept deliberately red. HAL is not a lender, so it
+  // reports no NIM — yet the answer shows revenue and PAT without telling
+  // the user the metric they actually asked for is not held. Naming it in
+  // prose is what fails: an absence carries no citation, and the verifier
+  // rejected exactly such a sentence, abstaining an otherwise supported
+  // answer (measured 4/6 vs 6/6). The gap is recorded in diagnostics
+  // instead. Do not "fix" this by relaxing the expectation — it is the
+  // scoreboard entry for a real, reported limitation.
   { id: 'unavail-01', category: 'unavailable', text: 'What is the net interest margin of HAL?', expectSymbols: ['HAL'], expectNoFilings: true },
   { id: 'unavail-02', category: 'unavailable', text: 'What will TCS share price be in 2030?', expectSymbols: ['TCS'], mustRefuseForecast: true },
   { id: 'unavail-03', category: 'unavailable', text: 'Give me BEL revenue for FY2015', expectSymbols: ['BEL'], expectNoFilings: true },

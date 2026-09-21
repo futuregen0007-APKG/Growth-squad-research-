@@ -24,6 +24,9 @@ export const CACHE_TTL_MS = Object.freeze({
   COMPANY_NEWS: 10 * 60 * 1000, // 10 min
   EARNINGS_TIMELINE: 30 * 60 * 1000, // 30 min -- promise/outcome data changes slowly
   RESEARCH_DOCUMENTS: 30 * 60 * 1000, // 30 min
+  // UI Phase 1C.3: durable NSE-bhavcopy daily closes update at most once
+  // per trading day -- same slow-changing rationale as EARNINGS_TIMELINE.
+  PRICE_HISTORY: 30 * 60 * 1000, // 30 min
   // Deliberately NOT listed: company research/financials. CompanyResearchService
   // already caches its bundle in-process for 5 minutes (see
   // services/CompanyResearchService.js) -- adding a second cache layer here

@@ -7,6 +7,7 @@ import { getDependencySnapshot, summarizeReadiness } from '../services/telemetry
 import { sharedMetrics, mergeSnapshots } from '../services/telemetry/sharedMetrics.js';
 import { getOtlpStatus } from '../services/telemetry/otlpExporter.js';
 import { costLedger } from '../services/telemetry/costLedger.js';
+import { getProviderResilienceStatus } from '../services/providers/providerResilience.js';
 
 const router = express.Router();
 
@@ -56,6 +57,10 @@ router.get('/rag-metrics', requireOpsAccess, async (req, res) => {
       aggregation,
       exporter: getOtlpStatus(),
       costLedger: costLedger.getStats(),
+      // Phase 6B: per-provider rate-limit windows, in-flight de-duplication
+      // and warm-up readiness - so a provider problem is visible here
+      // rather than only in the logs.
+      providers: getProviderResilienceStatus(),
       costTable: { version: PRICE_TABLE_VERSION, asOf: PRICE_TABLE_ASOF },
       pricing: getPricingMetadata(),
       dependencies: getDependencySnapshot(),

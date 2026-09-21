@@ -4,6 +4,7 @@ import { normalizeCompanyResearch, normalizeCorporateActionsResponse, normalizeH
 import { mapIndianApiError, IndianApiError, INDIAN_API_ERROR_CODES } from './IndianApiErrorMapper.js';
 import { getCache, setCache } from '../../utils/redisClient.js';
 import { logger } from '../../utils/logger.js';
+import { RateLimitGate, isRateLimitError } from '../../services/providers/providerResilience.js';
 
 const DEFAULT_BASE_URL = 'https://stock.indianapi.in';
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -37,6 +38,10 @@ export class IndianApiProvider extends CompanyResearchProvider {
     this.client = axios.create({ baseURL: this.baseUrl, timeout });
     // Per-symbol in-flight request memoization -- see _fetchStockRaw.
     this._inFlightStockFetches = new Map();
+    // Phase 6B: this instance's own rate-limit window. IndianAPI returns
+    // 429 with NO Retry-After and no quota headers (measured), so the
+    // backoff schedule is ours - see services/providers/providerResilience.js.
+    this._rateLimitGate = new RateLimitGate('indian-api');
   }
 
   get providerName() {
@@ -108,10 +113,35 @@ export class IndianApiProvider extends CompanyResearchProvider {
     const inFlight = this._inFlightStockFetches.get(cacheKey);
     if (inFlight) return inFlight;
 
+    // Phase 6B: once this provider has told us it is rate-limited, stop
+    // paying a round trip to be told again. Measured: the 429 itself is fast
+    // (~286ms) but carries NO Retry-After and no quota headers, so the
+    // backoff window is ours to choose - see providerResilience.js. While
+    // the gate is closed we fail immediately with RATE_LIMITED and the tool
+    // layer falls over to stored verified data.
+    // Per-INSTANCE gate, not a process-global one: each provider instance
+    // owns its own rate-limit window. Production has a single instance, so
+    // behaviour is identical; tests construct their own and are isolated
+    // from each other, which a shared registry prevented.
+    const gate = this._rateLimitGate;
+    if (gate.isBlocked()) {
+      gate.countSkip();
+      throw new IndianApiError(
+        INDIAN_API_ERROR_CODES.RATE_LIMITED,
+        `IndianAPI is rate-limited; skipping upstream call for another ${gate.retryAfterMs()}ms`,
+      );
+    }
+
     const fetchPromise = (async () => {
-      const raw = await this._get('/stock', { name: query }, { operation: 'getCompanyResearch' });
-      await setCache(cacheKey, raw, STOCK_CACHE_TTL_SECONDS);
-      return raw;
+      try {
+        const raw = await this._get('/stock', { name: query }, { operation: 'getCompanyResearch' });
+        gate.recordSuccess();
+        await setCache(cacheKey, raw, STOCK_CACHE_TTL_SECONDS);
+        return raw;
+      } catch (error) {
+        if (isRateLimitError(error)) gate.recordRateLimited();
+        throw error;
+      }
     })();
 
     this._inFlightStockFetches.set(cacheKey, fetchPromise);

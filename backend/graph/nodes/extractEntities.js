@@ -168,7 +168,21 @@ export const extractEntities = async (state) => {
   if (parsed) {
     // Union deterministic symbol/period matches with the model's — belt-and-braces.
     const symbols = [...new Set([...symbolsFromText, ...parsed.symbols.map((s) => s.toUpperCase())])];
-    const periods = [...new Set([...periodsFromText, ...parsed.periods])];
+    // UI Phase 1D fix: the model's own `parsed.periods` guesses are
+    // re-validated through the SAME deterministic PERIOD_PATTERN regex
+    // (never trusted as free text) — a confirmed live bug had the model
+    // return "last 90 days" (a chart date-RANGE phrase, from "show me a
+    // chart of TCS price history for the last 90 days") as if it were a
+    // fiscal reporting period. That string then poisoned
+    // claimPlan.js's unmatchedRequestedPeriods (no financial metric row
+    // is ever reported "for the period last 90 days"), which produced a
+    // FALSE "I hold no data for LAST 90 DAYS" sentence in
+    // buildSafeFallback.js even though getPriceHistory had genuinely
+    // succeeded. deterministicPeriods() run over each LLM-suggested
+    // string discards anything that isn't actually shaped like "Q2
+    // FY2024"/"FY2023" — see entitiesPrompt's own updated wording for the
+    // other half of this fix.
+    const periods = [...new Set([...periodsFromText, ...parsed.periods.flatMap((p) => deterministicPeriods(String(p)))])];
     return {
       entities: { ...parsed, symbols, periods }, llmCalls: [diagnostic], requestedDimensions,
     };

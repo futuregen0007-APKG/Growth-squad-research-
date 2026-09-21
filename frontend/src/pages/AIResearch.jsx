@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Sparkles, Cpu, AlertCircle } from "lucide-react";
 import { AI_PROMPT_CHIPS } from "@/data/mockData";
 import ChatSidebar from "@/components/chat/ChatSidebar";
@@ -14,7 +15,20 @@ export default function AIResearch() {
   const [threadsLoading, setThreadsLoading] = useState(true);
   const [threadsError, setThreadsError] = useState(null);
 
-  const [activeThreadId, setActiveThreadId] = useState(null);
+  // UI Phase 1D fix: a confirmed live bug -- reloading /ai-research lost
+  // the open thread entirely (activeThreadId was plain useState, with
+  // nothing persisting which thread was open across a hard reload), so
+  // "refresh the page" silently dropped back to the empty new-chat state
+  // instead of restoring the same conversation. The `thread` query param
+  // is the durable, URL-visible source of truth: a reload (or a shared/
+  // bookmarked link) re-derives activeThreadId from it via the effect
+  // below, and every place that changes threads also writes it back.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeThreadId, setActiveThreadIdState] = useState(searchParams.get('thread') || null);
+  const setActiveThreadId = useCallback((threadId) => {
+    setActiveThreadIdState(threadId);
+    setSearchParams(threadId ? { thread: threadId } : {}, { replace: true });
+  }, [setSearchParams]);
   const [messages, setMessages] = useState([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messagesError, setMessagesError] = useState(null);
@@ -44,6 +58,16 @@ export default function AIResearch() {
       .then((data) => setMessages(data.messages || []))
       .catch((error) => setMessagesError(errorMessage(error)))
       .finally(() => setMessagesLoading(false));
+  }, []);
+
+  // UI Phase 1D fix: restores the thread named in the URL on mount (a
+  // reload, or a shared/bookmarked /ai-research?thread=<id> link) -- runs
+  // once, deliberately not re-triggered by later activeThreadId changes
+  // (handleSelectThread/handleNewChat already load messages themselves;
+  // re-running this on every change would refetch on every click too).
+  useEffect(() => {
+    if (activeThreadId) loadThreadMessages(activeThreadId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const { send, stop, isStreaming, draft } = useChatStream({
@@ -79,6 +103,7 @@ export default function AIResearch() {
             status: result.aborted ? 'ABORTED' : 'COMPLETE',
             groundingStatus: result.groundingStatus || null,
             coverage: result.coverage || null,
+            responseBlocks: result.responseBlocks || [],
           },
         ]);
         loadThreads(); // title may have been set from the first message
@@ -97,6 +122,15 @@ export default function AIResearch() {
     if (!lastUserTextRef.current || isStreaming) return;
     setMessages((prev) => prev.slice(0, -1)); // drop the last assistant answer; a fresh one is appended on completion
     handleSend(lastUserTextRef.current);
+  }, [handleSend, isStreaming]);
+
+  // UI Phase 1B: a suggested-question chip sends its exact fixed text as a
+  // brand-new user turn — same path as typing it into the composer, never
+  // a special "block click" request shape. Ignored while already streaming,
+  // matching handleRegenerate's own guard.
+  const handleAskSuggestedQuestion = useCallback((question) => {
+    if (!question || isStreaming) return;
+    handleSend(question);
   }, [handleSend, isStreaming]);
 
   const handleNewChat = () => {
@@ -186,6 +220,7 @@ export default function AIResearch() {
               message={m}
               isLast={i === messages.length - 1 && m.role === 'assistant'}
               onRegenerate={handleRegenerate}
+              onAskSuggestedQuestion={handleAskSuggestedQuestion}
             />
           ))}
 

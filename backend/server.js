@@ -253,6 +253,24 @@ const startServer = () => {
     }
   })();
 
+  // Phase 6B: start Angel One's 151,599-row scrip-master download at boot,
+  // off the request path. Cold, that download takes ~22.8s; paying it inside
+  // a user's turn blew the tool timeout on every early request and opened
+  // the circuit breaker. Warming here means requests either get a live quote
+  // or an instant "warming" failover - never a 10s wait.
+  (async () => {
+    try {
+      const { getLiveMarketDataProvider } = await import('./providers/ProviderRegistry.js');
+      const provider = getLiveMarketDataProvider();
+      if (typeof provider?.warmUp === 'function') {
+        const ok = await provider.warmUp();
+        logger.info(`Angel One warm-up ${ok ? 'complete' : 'failed (will retry on demand)'}`);
+      }
+    } catch (error) {
+      logger.warn(`Angel One warm-up skipped: ${error.message}`);
+    }
+  })();
+
   initializeRedis()
     .catch((err) => logger.warn(`Redis initialization error: ${err.message}`))
     // Phase 5B: the shared-metrics mirror is started AFTER the Redis

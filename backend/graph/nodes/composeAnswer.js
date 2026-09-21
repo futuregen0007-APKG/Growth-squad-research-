@@ -13,7 +13,8 @@ import { emitEvent } from '../../services/telemetry/ragTelemetry.js';
 import { recordLlmCall } from '../../services/telemetry/costLedger.js';
 import { buildClaimPlan } from '../../services/claimPlan.js';
 import { renderDeterministicAnswer, renderUnavailableAnswer } from '../../services/answerRenderer.js';
-import { classifySector, getStoredProfile, UNAVAILABLE_REASONS } from '../../services/storedFundamentals.js';
+import { classifySector, buildStoredFundamentalsView, UNAVAILABLE_REASONS } from '../../services/storedFundamentals.js';
+import { buildValuation } from '../../services/valuationMetrics.js';
 
 // Re-exported unchanged for backward compatibility — extractCitations now
 // lives in graph/citations.js (see its own module note for why: it's used
@@ -184,23 +185,81 @@ const composeAnswerInner = async (state) => {
   // and all of the variance lived.
   if (EVIDENCE_DEPENDENT_INTENTS.has(state.intent) && state.evidence.length) {
     const symbols = (state.entities?.symbols || []).map((sym) => String(sym).toUpperCase());
+    // ONE stored view per symbol, fetched concurrently, serving both the
+    // sector vocabulary and valuation. It used to be a getStoredProfile
+    // call here plus a full view build for valuation — the view already
+    // loads that same profile internally, so the second round trip bought
+    // nothing (Phase 6A: avoid duplicate provider/database calls).
+    //
+    // Phase 6B valuation is built from this SAME view, so a multiple can
+    // only ever come from period-compatible inputs that are already held,
+    // and `buildValuation` returns the gaps as well as the figures.
     const sectorKindBySymbol = {};
+    const valuationBySymbol = {};
+    // UI Phase 1C.1: reference metadata for company_header, captured from
+    // this SAME per-symbol view fetch — no additional DB call. companyName/
+    // sector/nseSymbol come from CompanyResearchProfile (generated from the
+    // real BSE/NSE scrip master, never invented).
+    const companyProfiles = {};
+    // Metrics the sector expects but the filings held do not report. The
+    // view already works this out; surfacing it as missingEvidence lets the
+    // renderer's existing "Not held this turn:" note name the gap.
+    //
+    // COMPARISONS ONLY, and that boundary is measured, not stylistic. The
+    // note is an absence, so it carries no citation, and how reliably the
+    // verifier tolerates it depends on how much cited material surrounds
+    // it. On "BEL vs HAL on margins and valuation" (~14 claims) it passed
+    // 4/4 and named the gap 4/4. On the single-company "What is the net
+    // interest margin of HAL?" (3 claims) the same note failed 4/4 and
+    // abstained an answer that otherwise passed 6/6 — leaving the user with
+    // less, not more. Single-company gaps stay in valuationCoverage and
+    // missingMetrics diagnostics instead.
+    const metricGaps = [];
     await Promise.all(symbols.map(async (symbol) => {
-      const profile = await getStoredProfile(symbol).catch(() => null);
-      sectorKindBySymbol[symbol] = classifySector(profile, symbol);
+      const view = await buildStoredFundamentalsView(symbol).catch(() => null);
+      sectorKindBySymbol[symbol] = view?.sectorKind || classifySector(null, symbol);
+      if (!view) return;
+      valuationBySymbol[symbol] = buildValuation(view);
+      if (view.companyName) {
+        companyProfiles[symbol] = {
+          companyName: view.companyName,
+          sector: view.sector || null,
+          // A real, sourced signal only -- never a bare assumption. See
+          // storedFundamentals.js's own note on nseSymbol.
+          exchange: view.nseSymbol ? 'NSE' : null,
+        };
+      }
+      if (symbols.length < 2) return;
+      for (const gap of (view.missingMetrics || [])) {
+        metricGaps.push({ symbol, dimension: String(gap.metric).replace(/_/g, ' ').toLowerCase() });
+      }
     }));
 
     const plan = buildClaimPlan({
       evidence: state.evidence,
       symbols,
       sectorKindBySymbol,
-      missingEvidence: state.missingEvidence || [],
+      missingEvidence: [...(state.missingEvidence || []), ...metricGaps],
+      requestedPeriods: state.entities?.periods || [],
+      valuationBySymbol,
     });
+
+    // Valuation coverage goes to diagnostics rather than into the verified
+    // prose: a missing multiple is an absence, and an absence cannot carry a
+    // citation (see answerRenderer's note). Here it stays auditable —
+    // which multiple, for which company, and the precise reason.
+    const valuationCoverage = Object.entries(valuationBySymbol).map(([symbol, valuation]) => ({
+      symbol,
+      available: valuation.available.map((m) => ({ metric: m.metric, value: m.value, source: m.source })),
+      unavailable: valuation.unavailable.map((m) => ({ metric: m.metric, reason: m.reason })),
+    }));
 
     const rendered = renderDeterministicAnswer(plan, { question: text });
     if (rendered) {
       if (state.onEvent) state.onEvent({ type: 'status', message: 'Verifying claims and citations…' });
-      return { draftAnswer: rendered, claimPlan: plan };
+      return {
+        draftAnswer: rendered, claimPlan: plan, valuationCoverage, companyProfiles,
+      };
     }
   }
 

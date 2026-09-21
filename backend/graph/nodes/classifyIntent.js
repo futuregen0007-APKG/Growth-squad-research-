@@ -17,6 +17,26 @@ const containsKnownSymbol = (text) => {
 };
 
 const PRICE_PHRASES = /\b(current price|live price|share price|stock price|quote|trading at|ltp)\b/i;
+// UI Phase 1D fix: a confirmed live bug -- "Show me a chart of TCS price
+// history for the last 90 days" (a known symbol named directly, explicit
+// chart language) was classified GENERAL_EDUCATION by the LLM on one run,
+// DOCUMENT_RESEARCH on another, and FOLLOW_UP on a third -- non-
+// deterministic across otherwise-identical requests. GENERAL_EDUCATION is
+// the worst outcome: composeAnswer.js's own isGeneralEducation check
+// discards ANY evidence a tool fetched for that intent by design (a
+// genuinely general question must never carry company-specific
+// citations), so a chart request misclassified this way is silently
+// unanswerable regardless of any planTools.js fix. The real, durable fix
+// is here: exactly like PRICE_PHRASES above, a chart/historical-price
+// phrase naming a KNOWN symbol never reaches the LLM classifier at all —
+// LIVE_MARKET_DATA is the closest existing intent bucket for "market/
+// price data about a specific company," and planTools.js's own
+// chart-keyword wiring (kept in sync with this pattern) takes it from
+// there. Mirrors planTools.js's CHART_KEYWORDS — kept as a separate
+// constant (this file's own established convention: DEBT_KEYWORDS/
+// FINANCIALS_KEYWORDS-style patterns are never shared across files here)
+// but deliberately the same phrase set.
+const CHART_PHRASES = /\b(chart|price (history|trend|movement|chart)|historical price|share price trend|performance over|price over time)\b/i;
 const WATCHLIST_PHRASES = /\b(my watchlist|watch list)\b/i;
 const PORTFOLIO_PHRASES = /\b(my portfolio|my holdings|my investments)\b/i;
 const EARNINGS_PHRASES = /\b(management promise|guidance|earnings intelligence|reliability score|track record|promise|missed target|fulfilled)\b/i;
@@ -60,6 +80,10 @@ export const deterministicIntent = (message) => {
 
   if (PRICE_PHRASES.test(text) && containsKnownSymbol(text)) {
     return { intent: 'LIVE_MARKET_DATA', confidence: 0.9, reasoning: 'Explicit price request for a known symbol.' };
+  }
+
+  if (CHART_PHRASES.test(text) && containsKnownSymbol(text)) {
+    return { intent: 'LIVE_MARKET_DATA', confidence: 0.9, reasoning: 'Explicit chart/historical-price request for a known symbol.' };
   }
 
   if (EARNINGS_PHRASES.test(text)) {

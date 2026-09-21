@@ -92,6 +92,15 @@ export const buildSafeFallback = async (state) => {
   // naming each company and why its data is missing, rather than one generic
   // sentence. Prefer it; everything else about this node (streaming, safety,
   // citation recomputation, no fabrication) is unchanged.
+  // Phase 6B: when the question named a reporting period the held data does
+  // not cover, say so here too. The verifier correctly refuses to present a
+  // Q4 FY2024 figure as an answer about FY2015, and the fallback must not
+  // quietly do it either.
+  const unmatchedPeriods = state.claimPlan?.unmatchedRequestedPeriods || [];
+  if (unmatchedPeriods.length) {
+    parts.push(`I hold no data for ${unmatchedPeriods.join(', ')}; any figures above are for a different period.`);
+  }
+
   const usePrecise = state.validationStatus === 'ABSTAINED_PRECISE' && Boolean(state.draftAnswer);
   const answer = usePrecise ? state.draftAnswer : parts.join(SEPARATOR);
   const citations = extractCitations(answer, state.evidence);

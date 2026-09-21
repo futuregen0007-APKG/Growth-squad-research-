@@ -60,6 +60,10 @@ export const useChatStream = ({ threadId, onThreadCreated } = {}) => {
             coverage: event.coverage || null,
             retrievalMode: event.retrievalMode || null,
             repairAttempted: Boolean(event.repairAttempted),
+            // UI Phase 1B: additive, same contract as claims/groundingStatus
+            // above — [] for every turn that produced nothing valid, never
+            // undefined, so a consumer can always safely iterate it.
+            responseBlocks: event.responseBlocks || [],
             // Phase 5A Part 14: the server's own observability trace id for
             // this turn, so a user can quote it on a support request and an
             // operator can find the matching telemetry. Never an internal

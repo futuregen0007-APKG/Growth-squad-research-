@@ -104,6 +104,46 @@ test('sendMessage streams message.started, token, and message.completed events i
   }
 });
 
+// UI Phase 1B ---------------------------------------------------------------
+
+test('message.completed carries responseBlocks from the graph\'s final state, additively', async () => {
+  const restoreDb = installDbMocks();
+  const originalInvoke = graph.invoke;
+  const fakeBlocks = [{ type: 'suggested_questions', questions: ['What is TCS revenue?'] }];
+  graph.invoke = async () => ({ answer: 'TCS revenue was ₹1 Cr.', citations: [], warnings: [], intent: 'COMPANY_RESEARCH', responseBlocks: fakeBlocks });
+
+  try {
+    const req = makeFakeReq({ params: { threadId: THREAD_ID }, body: { message: 'TCS revenue?', clientMessageId: 'cmid-blocks' } });
+    const res = makeFakeRes();
+    await sendMessage(req, res, (err) => { throw err; });
+
+    const completed = parseFrames(res.frames).find((e) => e.type === 'message.completed');
+    assert.deepEqual(completed.responseBlocks, fakeBlocks);
+  } finally {
+    restoreDb();
+    graph.invoke = originalInvoke;
+  }
+});
+
+test('message.completed sends responseBlocks: [] (never omitted/undefined) when the final state has none -- an existing client reading only answer/citations sees an unchanged payload shape', async () => {
+  const restoreDb = installDbMocks();
+  const originalInvoke = graph.invoke;
+  graph.invoke = async () => ({ answer: 'Hello.', citations: [], warnings: [], intent: 'GENERAL_EDUCATION' }); // no responseBlocks key at all, exactly like a pre-Phase-1B graph state
+
+  try {
+    const req = makeFakeReq({ params: { threadId: THREAD_ID }, body: { message: 'Hi', clientMessageId: 'cmid-noblocks' } });
+    const res = makeFakeRes();
+    await sendMessage(req, res, (err) => { throw err; });
+
+    const completed = parseFrames(res.frames).find((e) => e.type === 'message.completed');
+    assert.deepEqual(completed.responseBlocks, []);
+    assert.equal(completed.answer, 'Hello.', 'answer is unaffected');
+  } finally {
+    restoreDb();
+    graph.invoke = originalInvoke;
+  }
+});
+
 test('sendMessage rejects a request for a thread the caller does not own (404), before invoking the graph', async () => {
   const originalThreadFindOne = ChatThread.findOne;
   const originalInvoke = graph.invoke;

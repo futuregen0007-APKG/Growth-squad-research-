@@ -1,6 +1,29 @@
-import { evidenceForPrompt } from '../evidence.js';
 import { resolveResearchScope } from '../researchScope.js';
 import { emitEvent } from '../../services/telemetry/ragTelemetry.js';
+
+// UI Phase 1C.3 fix: bounds an evidence item's excerpt to the SAME 500-char
+// prompt-token-economy limit graph/evidence.js's evidenceForPrompt already
+// enforces, WITHOUT dropping the other fields that function's own
+// (unchanged, still correctly used/tested elsewhere) narrow field whitelist
+// omits. Previously this node returned `evidenceForPrompt(deduped)`
+// directly, which REPLACED state.evidence for the rest of the turn's
+// pipeline with that narrow shape — silently discarding pageNumber/
+// evidenceQuality/imageUrl(news_list)/chartSeries(chart) for every
+// downstream node (composeAnswer's claim plan, publishFinalAnswer's
+// citations, buildResponseBlocks) even though answerComposerPrompt (the
+// ONLY place evidence text actually reaches an LLM prompt) already
+// cherry-picks its own specific fields and never needed evidence to
+// arrive pre-trimmed. Found via a live end-to-end check for the chart
+// feature: a real getPriceHistory evidence record's chartSeries was
+// present immediately after executeTools but gone by composeAnswer,
+// making renderDeterministicAnswer silently fall through to free-text
+// composition every time. The exact same mechanism affects news_list's
+// imageUrl in production today (unconfirmed live, since Phase 1C.2's own
+// live verification could not get past a provider auth failure to reach
+// this code path) -- this fix resolves both.
+const boundExcerpt = (item) => (
+  item?.excerpt && item.excerpt.length > 500 ? { ...item, excerpt: item.excerpt.slice(0, 500) } : item
+);
 
 const EVIDENCE_DEPENDENT_INTENTS = new Set([
   'LIVE_MARKET_DATA', 'COMPANY_RESEARCH', 'EARNINGS_INTELLIGENCE',
@@ -49,7 +72,7 @@ export const validateEvidence = async (state) => {
     evidenceCount: deduped.length, retrievalMode: state.retrievalMode || null,
   });
 
-  return { evidence: evidenceForPrompt(deduped), warnings };
+  return { evidence: deduped.map(boundExcerpt), warnings };
 };
 
 export default validateEvidence;

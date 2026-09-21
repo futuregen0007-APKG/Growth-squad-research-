@@ -45,6 +45,33 @@ const METRIC_EXCERPT = /^([A-Z_]+):\s*(-?[\d.]+)\s*([A-Z_%]+)?\s*(?:\(([^)]+)\))
 /** Market-history excerpt: `close INR 404.35, 1-year return 1.48%, ...` */
 const MARKET_EXCERPT = /close INR\s+(-?[\d.]+)/i;
 
+/**
+ * Live-quote excerpt: `Price ₹2105.5, change -1.23% as of 2026-09-11T...`
+ * (graph/tools/toolRegistry.js's getLiveQuote). UI Phase 1C.1: parsed so
+ * company_header can show a real, cited live price — the SAME
+ * code-controlled-format parsing technique METRIC_EXCERPT/MARKET_EXCERPT
+ * already use, applied to a claim type (LIVE_PRICE) neither of them
+ * recognizes. Deliberately kept a SEPARATE claim kind from MARKET (never
+ * blurred together) — the whole reason evidence.js keeps LIVE_PRICE and
+ * MARKET_HISTORY as distinct claim types is so a stale historical close is
+ * never labelled as a live quote.
+ */
+const LIVE_PRICE_EXCERPT = /^Price\s*₹(-?[\d.]+),\s*change\s*(-?[\d.]+)%\s*as of\s*(.+)$/i;
+
+/**
+ * Price-history excerpt: `PRICE_HISTORY: 90 points, INR, NSE_BHAVCOPY,
+ * NOT_REQUIRED (2026-03-01 to 2026-09-01)` (graph/tools/toolRegistry.js's
+ * getPriceHistory). UI Phase 1C.3: a THIRD, distinct claim kind — never
+ * matched by MARKET_EXCERPT (no "close INR" substring) so a bounded
+ * per-day series never collides with or overwrites the single aggregate
+ * MARKET claim renderMarket already prints. The actual {date, close}[]
+ * values are read directly from the evidence item's own `chartSeries`
+ * field below (structured data, never re-derived from this string) — the
+ * regex only confirms the excerpt is well-formed and extracts the human-
+ * readable currency/provider/basis/range for the rendered prose line.
+ */
+const PRICE_HISTORY_EXCERPT = /^PRICE_HISTORY:\s*(\d+)\s*points?,\s*([A-Z]+),\s*([A-Z_]+),\s*([A-Z_]+)\s*\(([\d-]+)\s*to\s*([\d-]+)\)$/;
+
 export const METRIC_LABELS = Object.freeze({
   NIM: 'Net interest margin (NIM)',
   ROA: 'Return on assets (ROA)',
@@ -121,15 +148,65 @@ export const extractClaims = (evidence = []) => {
       return;
     }
 
-    if (MARKET_EXCERPT.test(excerpt)) {
+    const marketMatch = excerpt.match(MARKET_EXCERPT);
+    if (marketMatch) {
+      const closeValue = Number(marketMatch[1]);
       claims.push({
         kind: 'MARKET',
         symbol: item.symbol || null,
         excerpt,
+        // Additive: the parsed close, alongside the excerpt every existing
+        // consumer (answerRenderer.js's renderMarket) already reads —
+        // never removes or reformats the excerpt itself.
+        value: Number.isFinite(closeValue) ? closeValue : null,
         citation,
         asOf: item.publishedAt || null,
         sourceUrl: item.sourceUrl || null,
       });
+      return;
+    }
+
+    const priceHistoryMatch = excerpt.match(PRICE_HISTORY_EXCERPT);
+    if (priceHistoryMatch) {
+      const [, , currency, provider, adjustmentStatus, rangeStart, rangeEnd] = priceHistoryMatch;
+      const series = Array.isArray(item.chartSeries) ? item.chartSeries : [];
+      if (series.length) {
+        claims.push({
+          kind: 'PRICE_HISTORY',
+          symbol: item.symbol || null,
+          excerpt,
+          series,
+          currency: currency || 'INR',
+          provider: provider || null,
+          adjustmentStatus: adjustmentStatus || null,
+          rangeStart: rangeStart || null,
+          rangeEnd: rangeEnd || null,
+          requestedRangeDays: Number.isInteger(item.requestedRangeDays) ? item.requestedRangeDays : null,
+          citation,
+          asOf: item.publishedAt || null,
+          sourceUrl: item.sourceUrl || null,
+        });
+      }
+      return;
+    }
+
+    const liveMatch = excerpt.match(LIVE_PRICE_EXCERPT);
+    if (liveMatch) {
+      const [, rawValue, rawChange, timestamp] = liveMatch;
+      const value = Number(rawValue);
+      const changePercent = Number(rawChange);
+      if (Number.isFinite(value)) {
+        claims.push({
+          kind: 'LIVE_PRICE',
+          symbol: item.symbol || null,
+          value,
+          changePercent: Number.isFinite(changePercent) ? changePercent : null,
+          timestamp: timestamp.trim(),
+          citation,
+          sourceUrl: item.sourceUrl || null,
+          asOf: item.publishedAt || null,
+        });
+      }
     }
   });
   return claims;
@@ -152,10 +229,15 @@ const periodRank = (period) => {
  * still shows the figures but marks the row mismatched so the renderer can
  * label it explicitly rather than implying a like-for-like gap.
  */
-export const buildClaimPlan = ({ evidence = [], symbols = [], sectorKindBySymbol = {}, missingEvidence = [] } = {}) => {
+export const buildClaimPlan = ({
+  evidence = [], symbols = [], sectorKindBySymbol = {}, missingEvidence = [],
+  requestedPeriods = [], valuationBySymbol = {},
+} = {}) => {
   const claims = extractClaims(evidence);
   const metricClaims = claims.filter((c) => c.kind === 'METRIC');
   const marketClaims = claims.filter((c) => c.kind === 'MARKET');
+  const livePriceClaims = claims.filter((c) => c.kind === 'LIVE_PRICE');
+  const priceHistoryClaims = claims.filter((c) => c.kind === 'PRICE_HISTORY');
 
   const resolvedSymbols = symbols.length
     ? symbols.map((s) => String(s).toUpperCase())
@@ -213,15 +295,47 @@ export const buildClaimPlan = ({ evidence = [], symbols = [], sectorKindBySymbol
   const market = {};
   for (const claim of marketClaims) if (claim.symbol) market[claim.symbol] = claim;
 
+  // UI Phase 1C.1: one live quote per symbol, kept in its OWN field —
+  // never merged into `market` (that would blur a live quote and a
+  // historical close, exactly what evidence.js's LIVE_PRICE/MARKET_HISTORY
+  // split exists to prevent). When more than one live-quote evidence item
+  // exists for a symbol (should not normally happen — getLiveQuote is
+  // cached per turn), the LAST one wins, matching `market`'s own
+  // last-write-wins convention above.
+  const livePrice = {};
+  for (const claim of livePriceClaims) if (claim.symbol) livePrice[claim.symbol] = claim;
+
+  // UI Phase 1C.3: one bounded price-history series per symbol, kept in
+  // its own field for the exact same reason livePrice is kept separate
+  // from market — a chart's full series is a materially different claim
+  // from either a single live quote or a single aggregate close, and
+  // blurring any of the three together would mislabel one as another.
+  const priceHistory = {};
+  for (const claim of priceHistoryClaims) if (claim.symbol) priceHistory[claim.symbol] = claim;
+
   return {
     symbols: resolvedSymbols,
     isComparison: resolvedSymbols.length > 1,
     primarySector,
     rows,
     market,
+    livePrice,
+    priceHistory,
     missing: missingEvidence || [],
+    // Phase 6B: periods the QUESTION asked for, and whether the evidence
+    // actually covers them. Answering "BEL revenue for FY2015" with a
+    // Q4 FY2024 figure and no caveat is answering a different question.
+    requestedPeriods: (requestedPeriods || []).map((p) => String(p).toUpperCase()),
+    unmatchedRequestedPeriods: (requestedPeriods || [])
+      .map((p) => String(p).toUpperCase())
+      .filter((wanted) => !rows.some((row) => Object.values(row.values)
+        .some((claim) => String(claim.period || '').toUpperCase().includes(wanted)))),
+    // Phase 6B valuation, per company: the multiples actually held, and the
+    // named reason for each one that is not. Carried on the plan so the
+    // renderer states the real gap rather than a blanket "no multiples".
+    valuation: valuationBySymbol || {},
     notMeaningful: primarySector === SECTOR_KINDS.BANKING ? SECTOR_METRICS.BANKING.notMeaningful : [],
-    hasAnything: rows.length > 0 || Object.keys(market).length > 0,
+    hasAnything: rows.length > 0 || Object.keys(market).length > 0 || Object.keys(priceHistory).length > 0,
   };
 };
 

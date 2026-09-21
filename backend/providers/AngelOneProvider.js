@@ -4,6 +4,7 @@ import { logger } from '../utils/logger.js';
 import { createProviderError } from '../utils/errorHandler.js';
 import { getIstMarketStatus } from '../utils/marketStatus.js';
 import { DEFAULT_INTERVAL_BY_RANGE, HISTORY_INTERVALS } from '../utils/constants.js';
+import { readiness } from '../services/providers/providerResilience.js';
 
 const BASE_URL = 'https://apiconnect.angelone.in';
 const LOGIN_PATH = '/rest/auth/angelbroking/user/v1/loginByPassword';
@@ -213,25 +214,56 @@ export class AngelOneProvider extends BaseProvider {
     return resolved;
   }
 
+  /**
+   * Phase 6B: the scrip master is a 151,599-row download that takes ~22.8s
+   * cold (measured) and ~0ms once loaded. Paying that inside a user's
+   * request blew the 10s tool timeout on EVERY early call, which opened the
+   * circuit breaker and left live prices unavailable for the rest of the
+   * process - a cold start misdiagnosed as a dead provider.
+   *
+   * Readiness is now published: while the download is in flight the
+   * provider reports WARMING, and the tool layer fails over to stored
+   * market history in milliseconds instead of waiting out the timeout.
+   * `warmUp()` lets the server start that download at boot, off the
+   * request path entirely.
+   */
   async loadScripMaster() {
     if (this.scripMasterPromise) {
       return this.scripMasterPromise;
     }
 
+    readiness.markWarming('angel-one');
     this.scripMasterPromise = this.client.get(SCRIP_MASTER_URL, { timeout: 30000 })
       .then((response) => {
         if (!Array.isArray(response.data)) {
+          readiness.markFailed('angel-one', new Error('invalid scrip master response'));
           throw new Error('Angel One scrip master returned an invalid response');
         }
         logger.info(`Angel One scrip master loaded: ${response.data.length} instruments`);
+        readiness.markReady('angel-one');
         return response.data;
       })
       .catch((error) => {
         this.scripMasterPromise = null;
+        readiness.markFailed('angel-one', error);
         throw error;
       });
 
     return this.scripMasterPromise;
+  }
+
+  /**
+   * warmUp - starts the scrip-master download without blocking anything.
+   * Safe to call more than once (loadScripMaster memoizes) and never
+   * rejects, so a failed warm-up cannot take the server down with it.
+   */
+  warmUp() {
+    return this.loadScripMaster()
+      .then(() => true)
+      .catch((error) => {
+        logger.warn(`Angel One warm-up failed (live quotes will retry on demand): ${error.message}`);
+        return false;
+      });
   }
 
   async getQuotesForResolved(resolvedStocks, jwtToken) {

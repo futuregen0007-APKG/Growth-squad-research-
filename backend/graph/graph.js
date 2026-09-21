@@ -14,6 +14,7 @@ import { composeAnswer } from './nodes/composeAnswer.js';
 import { validateFinalAnswer } from './nodes/validateFinalAnswer.js';
 import { repairAnswer } from './nodes/repairAnswer.js';
 import { publishFinalAnswer } from './nodes/publishFinalAnswer.js';
+import { buildResponseBlocks } from './nodes/buildResponseBlocks.js';
 import { buildSafeFallback } from './nodes/buildSafeFallback.js';
 import { logDiagnostics } from './nodes/logDiagnostics.js';
 import { saveMemory } from './nodes/saveMemory.js';
@@ -34,7 +35,7 @@ import { withNodeTiming } from './timing.js';
  *     → (needsReplan) ──► replanMissingEvidence → executeTools (cycle back)
  *     → (else) ─────────────────────────────────────────────────► composeAnswer
  *     → validateFinalAnswer
- *         → (PASSED / SKIPPED_GENERAL_EDUCATION) ──────────────► publishFinalAnswer
+ *         → (PASSED / SKIPPED_GENERAL_EDUCATION) ──────────────► publishFinalAnswer → buildResponseBlocks
  *         → (REPAIR_REQUIRED, repairCount < 1) ────────────────► repairAnswer → validateFinalAnswer (cycle back)
  *         → (else: FAILED_SAFE, or REPAIR_REQUIRED exhausted) ─► buildSafeFallback
  *     → logDiagnostics → saveMemory → END
@@ -82,6 +83,11 @@ builder.addNode('composeAnswer', withNodeTiming('composeAnswer', composeAnswer))
 builder.addNode('validateFinalAnswer', withNodeTiming('validateFinalAnswer', validateFinalAnswer));
 builder.addNode('repairAnswer', withNodeTiming('repairAnswer', repairAnswer));
 builder.addNode('publishFinalAnswer', withNodeTiming('publishFinalAnswer', publishFinalAnswer));
+// UI Phase 1B: runs ONLY after a validated answer has actually been
+// published (see the edge below) — never on the buildSafeFallback path,
+// and never able to change answer/citations/claims itself (see its own
+// module note).
+builder.addNode('buildResponseBlocks', withNodeTiming('buildResponseBlocks', buildResponseBlocks));
 builder.addNode('buildSafeFallback', withNodeTiming('buildSafeFallback', buildSafeFallback));
 builder.addNode('logDiagnostics', withNodeTiming('logDiagnostics', logDiagnostics));
 builder.addNode('saveMemory', withNodeTiming('saveMemory', saveMemory));
@@ -117,7 +123,8 @@ export const routeAfterValidation = (state) => {
 builder.addConditionalEdges('validateFinalAnswer', routeAfterValidation);
 builder.addEdge('repairAnswer', 'validateFinalAnswer');
 
-builder.addEdge('publishFinalAnswer', 'logDiagnostics');
+builder.addEdge('publishFinalAnswer', 'buildResponseBlocks');
+builder.addEdge('buildResponseBlocks', 'logDiagnostics');
 builder.addEdge('buildSafeFallback', 'logDiagnostics');
 builder.addEdge('logDiagnostics', 'saveMemory');
 builder.addEdge('saveMemory', END);

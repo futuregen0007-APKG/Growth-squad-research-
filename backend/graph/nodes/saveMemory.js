@@ -52,6 +52,11 @@ export const saveMemory = async (state) => {
       content: state.answer,
       status: state.errors.length ? 'ERROR' : 'COMPLETE',
       citations: state.citations,
+      // UI Phase 1B: [] on every turn that never reached buildResponseBlocks
+      // (e.g. buildSafeFallback) or that found nothing valid to report —
+      // never undefined, so appendAssistantMessage's own default is never
+      // relied on to paper over a missing field.
+      responseBlocks: state.responseBlocks || [],
       toolSummary: state.toolResults.map((t) => ({ tool: t.tool, status: t.status, warning: t.warning })),
       intent: state.intent,
       model: LLM_CONFIG.synthesisModel, // the model that actually composed this answer, not the routing model classifyIntent/planTools used
