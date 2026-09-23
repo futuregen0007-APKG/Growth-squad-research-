@@ -290,7 +290,7 @@ const handleUnexpectedError = (error) => {
  */
 const register = async (req, res) => {
   try {
-    console.log('Register request received', req.body);
+    // Never log req.body here: it contains the user's password and confirmation.
     const { email, username, password, confirmPassword } = req.body;
 
     /**
