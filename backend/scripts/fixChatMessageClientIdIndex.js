@@ -53,14 +53,20 @@ if (staleIndex) {
   console.log('No stale sparse-only {threadId, clientMessageId} index found -- nothing to drop.');
 }
 
-console.log('Syncing indexes from the current schema...');
-await ChatMessage.syncIndexes();
+// Create only this index. syncIndexes() can drop unrelated indexes that are
+// present in production but not declared in this model.
+await collection.createIndex(
+  { threadId: 1, clientMessageId: 1 },
+  { unique: true, partialFilterExpression: { clientMessageId: { $type: 'string' } }, name: 'unique_client_message_id_per_thread' },
+);
 
 const after = await collection.indexes();
 console.log('Indexes AFTER:', JSON.stringify(after, null, 2));
 
-const fixed = after.find((ix) => ix.name === 'unique_client_message_id_per_thread');
-console.log('\nRESULT:', fixed ? 'Corrected partial index is now in place.' : 'FAILED -- corrected index not found after sync.');
+const fixed = after.find((ix) => ix.name === 'unique_client_message_id_per_thread'
+  && ix.unique === true
+  && ix.partialFilterExpression?.clientMessageId?.$type === 'string');
+console.log('\nRESULT:', fixed ? 'Corrected partial index is now in place.' : 'FAILED -- corrected index not found after migration.');
 
 await mongoose.disconnect();
 process.exit(fixed ? 0 : 1);
