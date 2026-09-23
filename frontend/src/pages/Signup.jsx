@@ -91,6 +91,7 @@ const Signup = () => {
     setIsSubmitting(true);
     setLoading(true);
 
+    let registrationCompleted = false;
     try {
       await registerUser({
         email: formData.email.toLowerCase(),
@@ -98,6 +99,7 @@ const Signup = () => {
         password: formData.password,
         confirmPassword: formData.confirmPassword
       });
+      registrationCompleted = true;
 
       const signinData = await signinUser({
         email: formData.email.toLowerCase(),
@@ -114,9 +116,11 @@ const Signup = () => {
       setFormData({ email: '', username: '', password: '', confirmPassword: '' });
       navigate(returnTo, { replace: true });
     } catch (error) {
-      const message = error?.statusCode === 409
-        ? 'An account with these details already exists.'
-        : 'Unable to create your account right now. Please check your details and try again.';
+      const message = registrationCompleted
+        ? 'Your account was created, but automatic sign-in failed. Please use the Sign In page.'
+        : error?.statusCode === 409
+          ? (error.message || 'This email or username is already in use.')
+          : 'Unable to create your account right now. Please check your details and try again.';
       setApiError(message);
     } finally {
       setIsSubmitting(false);
