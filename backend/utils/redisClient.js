@@ -30,6 +30,67 @@ let redisClient = null;
 // How many times a DROPPED connection is retried before giving up for good.
 const MAX_RECONNECT_ATTEMPTS = 10;
 
+// Used for both the socket's own connect timeout and the startup wait below.
+const CONNECT_TIMEOUT_MS = 2000;
+
+/**
+ * redisReconnectStrategy - bounded backoff: 200ms, 400ms, 600ms ... capped at
+ * 3s, and after MAX_RECONNECT_ATTEMPTS the client gives up for good and every
+ * caller falls back to running without a cache.
+ */
+export const redisReconnectStrategy = (retries) => {
+  if (retries >= MAX_RECONNECT_ATTEMPTS) return new Error('Redis reconnect attempts exhausted');
+  return Math.min((retries + 1) * 200, 3000);
+};
+
+/**
+ * buildRedisClientOptions - pure (no I/O) construction of the node-redis v4
+ * `createClient` options. Precedence:
+ *
+ *   1. REDIS_URL (redis:// or rediss://) -- what hosted Redis/Key Value
+ *      services hand out. The URL supplies host, port, TLS (rediss://),
+ *      username, password and database; the socket options below
+ *      (timeout, bounded reconnect) are kept alongside it.
+ *   2. REDIS_HOST / REDIS_PORT / REDIS_PASSWORD / REDIS_DB.
+ *   3. localhost:6379, no password, database 0 (a local Docker Redis).
+ *
+ * node-redis v4 only honors host/port under `socket` and the database under
+ * `database`. The previous top-level `host`/`port`/`db` were silently
+ * ignored, so every deployment connected to localhost:6379 whatever was
+ * configured.
+ *
+ * An invalid REDIS_URL throws an error that never echoes the value, since
+ * it may contain credentials.
+ */
+export const buildRedisClientOptions = (env = process.env) => {
+  const socket = { connectTimeout: CONNECT_TIMEOUT_MS, reconnectStrategy: redisReconnectStrategy };
+
+  const url = String(env.REDIS_URL || '').trim();
+  if (url) {
+    let protocol = null;
+    try { protocol = new URL(url).protocol; } catch { /* reported below without the value */ }
+    if (protocol !== 'redis:' && protocol !== 'rediss:') {
+      throw new Error('REDIS_URL is not a valid redis:// or rediss:// URL');
+    }
+    return { url, socket };
+  }
+
+  const options = { socket: { ...socket, host: env.REDIS_HOST || 'localhost', port: Number(env.REDIS_PORT) || 6379 } };
+  if (env.REDIS_PASSWORD) options.password = env.REDIS_PASSWORD;
+  const database = Number.parseInt(env.REDIS_DB, 10);
+  if (database > 0) options.database = database;
+  return options;
+};
+
+/** describeRedisTarget - "redis://host:port" or "rediss://host:port" for logs. Never includes credentials. */
+export const describeRedisTarget = (options) => {
+  if (options.url) {
+    const { protocol, hostname, port } = new URL(options.url);
+    return `${protocol}//${hostname}${port ? `:${port}` : ''}`;
+  }
+  return `redis://${options.socket.host}:${options.socket.port}`;
+};
+
 // Simple wrapper exports for convenience (backwards compatible)
 const redisWrapper = {
   get: async (k) => {
@@ -61,41 +122,21 @@ const redisWrapper = {
  * This ensures the app works even if Redis isn't available
  */
 export const initializeRedis = async () => {
+  let lastSocketError = null;
+  let startupTimer = null;
   try {
-    redisClient = createClient({
-      host: process.env.REDIS_HOST || 'localhost',
-      port: process.env.REDIS_PORT || 6379,
-      password: process.env.REDIS_PASSWORD || undefined,
-      db: parseInt(process.env.REDIS_DB || 0),
-      socket: {
-        connectTimeout: 2000,
-        /**
-         * Phase 5B: bounded reconnect, replacing `reconnectStrategy: false`.
-         *
-         * WHY THIS CHANGED. With reconnect disabled, a connection that
-         * dropped NEVER came back — verified live against a real Redis
-         * container: stop it, start it again, and the same client stays
-         * `isOpen: false` until the process restarts. That silently turned
-         * a momentary blip into "no cache, and shared metrics stuck in
-         * degraded, until the next deploy."
-         *
-         * BOUNDED, so this cannot become the failure mode the old setting
-         * was avoiding: attempts back off 200ms, 400ms, 600ms ... capped at
-         * 3s, and after MAX_RECONNECT_ATTEMPTS the client gives up for good
-         * and every caller falls back exactly as it does today. This only
-         * ever applies to a connection that was ALREADY established — the
-         * initial connect still has its own 2s timeout, and a Redis that was
-         * never reachable still ends with a null client and no retry loop.
-         */
-        reconnectStrategy: (retries) => {
-          if (retries >= MAX_RECONNECT_ATTEMPTS) return new Error('Redis reconnect attempts exhausted');
-          return Math.min((retries + 1) * 200, 3000);
-        },
-      },
-    });
+    // Phase 5B: bounded reconnect (redisReconnectStrategy) replaced
+    // `reconnectStrategy: false`, under which a dropped connection never came
+    // back until the next deploy. The initial connect keeps its own short
+    // timeout below, and a Redis that was never reachable still ends with a
+    // null client and no retry loop.
+    const options = buildRedisClientOptions(process.env);
+    logger.info(`Redis: connecting to ${describeRedisTarget(options)}`);
+    redisClient = createClient(options);
 
     // Handle connection events
     redisClient.on('error', (err) => {
+      lastSocketError = err.message;
       logger.warn(`Redis error: ${err.message}`);
     });
 
@@ -111,7 +152,7 @@ export const initializeRedis = async () => {
     await Promise.race([
       redisClient.connect(),
       new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Redis connection timed out')), 2000);
+        startupTimer = setTimeout(() => reject(new Error('Redis connection timed out')), CONNECT_TIMEOUT_MS);
       })
     ]);
     logger.info('✓ Redis initialized and connected');
@@ -119,9 +160,10 @@ export const initializeRedis = async () => {
     return redisClient;
   } catch (error) {
     // GRACEFUL FALLBACK: Log warning but don't crash
-    logger.warn(`⚠️  Redis not available: ${error.message}`);
+    const cause = lastSocketError && lastSocketError !== error.message ? ` (last socket error: ${lastSocketError})` : '';
+    logger.warn(`⚠️  Redis not available: ${error.message}${cause}`);
     logger.info('   → App will work without caching (slower API responses)');
-    logger.info('   → To enable caching: run "redis-server" in another terminal');
+    logger.info('   → To enable caching: set REDIS_URL (or REDIS_HOST/REDIS_PORT), or run redis locally');
     if (redisClient) {
       try {
         await redisClient.disconnect();
@@ -131,6 +173,8 @@ export const initializeRedis = async () => {
     }
     redisClient = null; // Ensure client is null, not undefined
     return null; // Return null to indicate Redis failed
+  } finally {
+    clearTimeout(startupTimer);
   }
 };
 
