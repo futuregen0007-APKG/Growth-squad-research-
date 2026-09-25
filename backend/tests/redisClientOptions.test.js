@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createClient } from 'redis';
-import {
+
+// The logger reads LOG_LEVEL once, at import, and two tests below assert on
+// what gets logged, so pin it before the module loads (a static import would
+// be hoisted above this line).
+process.env.LOG_LEVEL = 'DEBUG';
+const {
   buildRedisClientOptions,
   describeRedisTarget,
   redisReconnectStrategy,
@@ -10,7 +15,7 @@ import {
   getCache,
   setCache,
   closeRedis,
-} from '../utils/redisClient.js';
+} = await import('../utils/redisClient.js');
 
 /**
  * redisClientOptions.test.js

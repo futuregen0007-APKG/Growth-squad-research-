@@ -135,3 +135,6 @@ backend/eval.json
 backend/stability.json
 backend/baseline.json
 backend/provider-resilience.json
+
+# Point-in-time snapshots written by `npm run earnings:audit`.
+backend/reports/

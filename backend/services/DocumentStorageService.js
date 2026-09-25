@@ -67,9 +67,18 @@ export const hashBuffer = (buffer) => crypto.createHash('sha256').update(buffer)
  * by documentHash so re-saving the same bytes for a different URL (BSE
  * sometimes re-publishes the identical PDF under two announcement ids) never
  * duplicates storage. Returns { storageKey, storageBackend, documentHash }.
+ *
+ * EARNINGS_PERSIST_PDFS=false skips the copy entirely (storageKey and
+ * storageBackend come back null; the hash is still returned). Callers already
+ * treat a missing durable copy as "re-fetch from the exchange later". It
+ * exists for bulk runs where GridFS would fill the database (a filing PDF is
+ * roughly 0.9 MB); the default is unchanged.
  */
+export const isPdfPersistenceEnabled = () => String(process.env.EARNINGS_PERSIST_PDFS ?? 'true').trim().toLowerCase() !== 'false';
+
 export const saveDocument = async (buffer, { symbol, url } = {}) => {
   const documentHash = hashBuffer(buffer);
+  if (!isPdfPersistenceEnabled()) return { storageKey: null, storageBackend: null, documentHash };
 
   const s3 = await getS3Client();
   if (s3) {

@@ -23,6 +23,7 @@ import axios from 'axios';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import { CompanyDocumentRegistry } from '../models/CompanyDocumentRegistry.js';
+import { CompanyResearchProfile } from '../models/CompanyResearchProfile.js';
 import { Semaphore } from '../utils/semaphore.js';
 import { logger } from '../utils/logger.js';
 import { saveDocument, loadDocument } from '../services/DocumentStorageService.js';
@@ -227,11 +228,31 @@ export const fiscalYearToDateRange = (fiscalYear) => {
 };
 
 /** Real BSE search: resolves a scrip code, queries the fiscal year's window (chunked), classifies each real announcement, and returns only recognized document types with their real, constructible PDF URL. */
-export const searchExchangeFilings = async (symbol, fiscalYear, { documentTypes = DOCUMENT_TYPES } = {}) => {
+const defaultFindProfile = (symbol) => CompanyResearchProfile.findOne({ symbol, researchEnabled: true }).select('bseScripCode').lean();
+
+/**
+ * resolveBseScripCode - the verified static map wins; otherwise the scrip
+ * code CompanyResearchProfileSync resolved from the real BSE scrip master and
+ * stored on the company's profile. Never guessed: an unmapped symbol with no
+ * enabled profile (or a lookup failure) yields null and discovery is skipped.
+ */
+export const resolveBseScripCode = async (symbol, { findProfile = defaultFindProfile } = {}) => {
   const normalized = String(symbol || '').toUpperCase();
-  const scripCode = BSE_SCRIP_CODES[normalized];
+  if (BSE_SCRIP_CODES[normalized]) return BSE_SCRIP_CODES[normalized];
+  try {
+    const profile = await findProfile(normalized);
+    return profile?.bseScripCode || null;
+  } catch (error) {
+    logger.warn(`[ExchangeFilingDocumentProvider] Profile lookup failed for ${normalized}: ${error.message}`);
+    return null;
+  }
+};
+
+export const searchExchangeFilings = async (symbol, fiscalYear, { documentTypes = DOCUMENT_TYPES, resolveScrip = resolveBseScripCode } = {}) => {
+  const normalized = String(symbol || '').toUpperCase();
+  const scripCode = await resolveScrip(normalized);
   if (!scripCode) {
-    logger.warn(`[ExchangeFilingDocumentProvider] No known BSE scrip code for ${normalized} -- cannot search.`);
+    logger.warn(`[ExchangeFilingDocumentProvider] No BSE scrip code for ${normalized} (not in the verified map, and no enabled synced profile) -- cannot search.`);
     return [];
   }
 

@@ -48,6 +48,7 @@ import { pathToFileURL } from 'node:url';
 import { SUPPORTED_STOCKS } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
 import { BootstrapRunLog } from '../models/BootstrapRunLog.js';
+import { assertMongoTarget } from '../utils/mongoTarget.js';
 import { collectProductionStatus, explainSymptoms } from './productionStatus.js';
 
 import { syncCompanyResearchProfiles } from '../services/CompanyResearchProfileSync.js';
@@ -245,6 +246,7 @@ const parseArgs = (argv) => {
     batchSize: Number(get('--batch-size')) || 10,
     resume: argv.includes('--resume'),
     maxRuntimeMin: Number(get('--max-runtime')) || DEFAULT_MAX_RUNTIME_MIN,
+    expectTarget: get('--expect-target'),
   };
 };
 
@@ -341,9 +343,15 @@ const isMainModule = process.argv[1] && import.meta.url === pathToFileURL(proces
 if (isMainModule) {
   (async () => {
     const mongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/stock_market_ai';
-    if (mongoose.connection.readyState === 0) await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 10000 });
-
     const args = parseArgs(process.argv.slice(2));
+
+    // Printed on every run, and enforced before anything connects when
+    // --expect-target=<host>/<database> is given (a URI with no database name
+    // writes into the driver default, "test").
+    const target = assertMongoTarget(mongoUri, args.expectTarget);
+    console.log(`Target database: ${target.label}${target.implicitDatabase ? '  (URI names no database -> driver default "test")' : ''}`);
+
+    if (mongoose.connection.readyState === 0) await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 10000 });
     await runBootstrap(args);
 
     await mongoose.disconnect();

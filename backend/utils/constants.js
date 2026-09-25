@@ -254,6 +254,12 @@ export const SUPPORTED_STOCKS = {
 // Featured symbols for Earnings Intelligence
 export const FEATURED_SYMBOLS = ['TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'BHEL', 'NEWGEN'];
 
+// A fiscal year counts as covered only when a REAL_RESEARCH fact carries one
+// of these validated financial metrics with a numeric value (a news/OTHER-only
+// fact never counts). Shared by the universe backfill and the coverage audit
+// so what "covered" means cannot drift between them.
+export const EARNINGS_COVERAGE_METRICS = ['REVENUE', 'EBITDA', 'EBITDA_MARGIN', 'OPERATING_MARGIN', 'PAT', 'EPS', 'ORDER_BOOK', 'ROE', 'ROCE', 'DEBT'];
+
 export const INDEX_SYMBOLS = {
   'NIFTYIT': 'NIFTYIT',
   'SENSEX': 'SENSEX',

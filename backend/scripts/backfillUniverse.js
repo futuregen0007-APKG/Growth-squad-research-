@@ -27,6 +27,7 @@ import dotenv from 'dotenv';
 import { pathToFileURL } from 'node:url';
 import { ResearchJob, ACTIVE_STATUSES } from '../models/ResearchJob.js';
 import { CompanyResearchProfile } from '../models/CompanyResearchProfile.js';
+import { EARNINGS_COVERAGE_METRICS } from '../utils/constants.js';
 import CompanyDocumentRegistry from '../models/CompanyDocumentRegistry.js';
 import CompanyHistoricalFact from '../models/CompanyHistoricalFact.js';
 import { syncCompanyResearchProfiles } from '../services/CompanyResearchProfileSync.js';
@@ -39,7 +40,7 @@ dotenv.config();
 
 export const FEATURED_SYMBOLS = ['TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'BHEL', 'NEWGEN'];
 const MAX_RETRYABLE_ATTEMPTS = 3; // a job crosses FAILED_RETRYABLE -> FAILED_PERMANENT after this many attempts with zero years covered
-const VALID_METRICS_FOR_COVERAGE = ['REVENUE', 'EBITDA', 'EBITDA_MARGIN', 'OPERATING_MARGIN', 'PAT', 'EPS', 'ORDER_BOOK', 'ROE', 'ROCE', 'DEBT'];
+const VALID_METRICS_FOR_COVERAGE = EARNINGS_COVERAGE_METRICS;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -118,6 +119,17 @@ const claimJob = async (symbol, fromYear, toYear, force) => {
   return { skip: false, job };
 };
 
+/**
+ * deriveJobLastError - the reason recorded on a ResearchJob after a run, so a
+ * later reader can tell "BSE has nothing for this company" apart from "never
+ * attempted" (both otherwise look like zero coverage).
+ */
+export const deriveJobLastError = (summary) => {
+  if (summary.some((y) => y.status === 'DISCOVERY_FAILED')) return 'One or more fiscal years had a discovery failure';
+  if (summary.length > 0 && summary.every((y) => y.status === 'NO_FILINGS_FOUND')) return 'No exchange filings found for any fiscal year in the range';
+  return null;
+};
+
 const runOneSymbol = async (symbol, { fromYear, toYear, resume, force }) => {
   const claim = await claimJob(symbol, fromYear, toYear, force);
   if (claim.skip) return { symbol, status: 'SKIPPED', reason: claim.reason };
@@ -125,7 +137,6 @@ const runOneSymbol = async (symbol, { fromYear, toYear, resume, force }) => {
   try {
     const summary = await runAutomatedBackfillForSymbol(symbol, { fromYear, toYear, resume });
     const coverage = await evaluateYearCoverage(symbol, fromYear, toYear);
-    const anyDiscoveryFailed = summary.some((y) => y.status === 'DISCOVERY_FAILED');
     const factsExtracted = summary.reduce((sum, y) => sum + (y.documents || []).reduce((s, d) => s + (d.factsExtracted || 0), 0), 0);
 
     let status;
@@ -135,7 +146,7 @@ const runOneSymbol = async (symbol, { fromYear, toYear, resume, force }) => {
 
     await ResearchJob.updateOne(
       { _id: claim.job._id },
-      { $set: { status, completedAt: new Date(), processedDocuments: factsExtracted, cursor: { lastCompletedYear: coverage.coveredYears.at(-1) || null }, lastError: anyDiscoveryFailed ? 'One or more fiscal years had a discovery failure' : null } },
+      { $set: { status, completedAt: new Date(), processedDocuments: factsExtracted, cursor: { lastCompletedYear: coverage.coveredYears.at(-1) || null }, lastError: deriveJobLastError(summary) } },
     );
     return { symbol, status, coverage, factsExtracted };
   } catch (error) {
