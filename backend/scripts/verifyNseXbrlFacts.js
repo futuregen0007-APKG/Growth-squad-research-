@@ -28,7 +28,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertMongoTarget } from '../utils/mongoTarget.js';
 import {
-  TAG_MAP, RUPEES_PER_CRORE, NSE_REQUEST_HEADERS, periodRange, parseXbrlContexts, findTagForPeriod,
+  TAG_MAP, RUPEES_PER_CRORE, NSE_REQUEST_HEADERS, periodRange, parseXbrlContexts, findTagForPeriod, findTagByStatedPeriod,
 } from '../services/NseXbrlService.js';
 
 const BACKEND_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -46,13 +46,17 @@ export const expectedStoredValue = (mapping, rawValue) => (
 
 /**
  * verifyFactAgainstXml - pure. Returns { status, detail } where status is one
- * of MATCH, SOURCE_NOT_EXCHANGE, UNSUPPORTED_METRIC, PERIOD_UNREADABLE,
- * NO_CONTEXT_FOR_PERIOD, VALUE_MISMATCH, EXCERPT_MISMATCH.
+ * of MATCH, SOURCE_NOT_EXCHANGE, UNSUPPORTED_METRIC, UNSUPPORTED_TAG,
+ * PERIOD_UNREADABLE, NO_CONTEXT_FOR_PERIOD, VALUE_MISMATCH, EXCERPT_MISMATCH.
  */
 export const verifyFactAgainstXml = (fact, xml, contexts = parseXbrlContexts(xml)) => {
   if (!isExchangeHost(fact?.source?.url)) return { status: 'SOURCE_NOT_EXCHANGE', detail: fact?.source?.url || null };
-  const mapping = TAG_MAP.find((m) => m.metric === fact.metrics?.metric);
-  if (!mapping) return { status: 'UNSUPPORTED_METRIC', detail: fact.metrics?.metric || null };
+  const candidates = TAG_MAP.filter((m) => m.metric === fact.metrics?.metric);
+  if (!candidates.length) return { status: 'UNSUPPORTED_METRIC', detail: fact.metrics?.metric || null };
+  // The tag the fact was read from is recorded in its excerpt; it must be one this metric may come from.
+  const excerptTag = String(fact.source?.excerpt || '').match(/XBRL tag ([A-Za-z]+)/)?.[1] || null;
+  const mapping = excerptTag ? candidates.find((m) => m.tag === excerptTag) : candidates[0];
+  if (!mapping) return { status: 'UNSUPPORTED_TAG', detail: `${excerptTag} is not a tag for ${fact.metrics?.metric}` };
   const range = periodRange(fact.period);
   if (!range) return { status: 'PERIOD_UNREADABLE', detail: fact.period };
 
@@ -144,19 +148,23 @@ export const verifySymbol = async (db, symbol, { sample, delayMs, xmlCache }) =>
     const metric = fact.metrics?.metric;
     const basis = basisOf(fact);
     const q = String(fact.period).match(/^Q([1-4]) FY(\d{4})$/);
-    if (!SUM_METRICS.includes(metric) || !basis || !q) continue;
-    const key = `${basis}|${metric}|${q[2]}`;
+    // Quarters only add up when every one was read from the same tag, so the tag is part of the key.
+    const tag = String(fact.source?.excerpt || '').match(/XBRL tag ([A-Za-z]+)/)?.[1];
+    if (!SUM_METRICS.includes(metric) || !basis || !q || !tag) continue;
+    const key = `${basis}|${metric}|${q[2]}|${tag}`;
     if (!groups.has(key)) groups.set(key, {});
     groups.get(key)[`Q${q[1]}`] = fact;
   }
   for (const [key, quarters] of groups) {
     if (!['Q1', 'Q2', 'Q3', 'Q4'].every((q) => quarters[q])) continue;
-    const [basis, metric, fy] = key.split('|');
-    const mapping = TAG_MAP.find((m) => m.metric === metric);
+    const [basis, metric, fy, tag] = key.split('|');
+    const mapping = TAG_MAP.find((m) => m.tag === tag && m.metric === metric);
+    if (!mapping) continue;
     // eslint-disable-next-line no-await-in-loop
     const { xml, error } = await getXml(quarters.Q4.source.url);
     if (error) { noteFetchFailure(quarters.Q4.source.url, error); continue; }
-    const full = findTagForPeriod(xml, mapping.tag, periodRange(`FY${fy}`));
+    // Some filings declare the full-year context with the quarter's dates while stating the true period; the sum below corroborates whichever is used.
+    const full = findTagForPeriod(xml, mapping.tag, periodRange(`FY${fy}`)) || findTagByStatedPeriod(xml, mapping.tag, periodRange(`FY${fy}`));
     if (!full) { result.sums.mismatches.push({ basis, metric, fy, status: 'NO_FULL_YEAR_CONTEXT' }); result.sums.checked += 1; continue; }
     const check = checkQuarterSums(['Q1', 'Q2', 'Q3', 'Q4'].map((q) => quarters[q].metrics.actualValue), expectedStoredValue(mapping, full.value));
     result.sums.checked += 1;

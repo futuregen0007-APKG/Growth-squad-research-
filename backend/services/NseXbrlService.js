@@ -6,17 +6,21 @@
  * scripts/collectNseXbrlFundamentals.js so they are testable without a
  * database, a network, or that script's top-level side effects.
  *
- * WHY CONTEXT-AWARE. A results filing repeats each tag once per reporting
+ * WHY PERIOD-AWARE. A results filing repeats each tag once per reporting
  * period it carries. A Q4 filing, for example, holds the March quarter AND the
  * full year for revenue. Each occurrence names a `contextRef`, and that
- * context declares the period it covers. The figure for a filing's own period
- * is the occurrence whose context spans exactly that period, with no segment
+ * context stands for a period. The figure for a filing's own period is the
+ * occurrence whose context spans exactly that period, with no segment
  * dimension attached. Anything else (a year-to-date column, a prior-year
  * comparative, a per-segment breakdown) is a different number and is never
  * substituted. If no context matches, there is no fact: nothing is guessed.
  *
+ * A context's period comes from its declaration, or, for older filings that
+ * reference "OneD"/"FourD" without declaring them, from the period the filing
+ * itself states for that context (see parseXbrlContexts).
+ *
  * Verified against real NSE filings: for HINDUNILVR FY2022 the four quarterly
- * revenue figures summed to exactly the Q4 filing's own full-year context.
+ * revenue figures summed exactly to the Q4 filing's own full-year figure.
  */
 
 /** Rupees -> crore. A restatement of the same figure, recorded in provenance. */
@@ -42,7 +46,21 @@ export const TAG_MAP = Object.freeze([
   { tag: 'BasicEarningsLossPerShare', metric: 'EPS', scale: 'PER_SHARE', label: 'Basic earnings per share' },
   { tag: 'OtherIncome', metric: 'OTHER_INCOME', scale: 'RUPEES', label: 'Other income' },
   { tag: 'EmployeeBenefitExpense', metric: 'EMPLOYEE_COST', scale: 'RUPEES', label: 'Employee benefit expense' },
+
+  // Fallbacks: the same concept under the vocabulary other filing formats use
+  // (checked live: banks file `Income` / `ProfitLossForThePeriod`; corporates
+  // and NBFCs file EPS under the "...FromContinuingAndDiscontinuedOperations"
+  // tag). Each is used ONLY for a metric the primary tag did not produce for
+  // that filing, so a metric is never reported twice, and the tag actually
+  // read is named in the fact's label and provenance.
+  { tag: 'Income', metric: 'REVENUE', scale: 'RUPEES', label: 'Total income', fallback: true },
+  { tag: 'ProfitLossForThePeriod', metric: 'PAT', scale: 'RUPEES', label: 'Profit for the period', fallback: true },
+  { tag: 'BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations', metric: 'EPS', scale: 'PER_SHARE', label: 'Basic earnings per share', fallback: true },
+  { tag: 'BasicEarningsPerShareAfterExtraordinaryItems', metric: 'EPS', scale: 'PER_SHARE', label: 'Basic earnings per share', fallback: true },
 ]);
+
+/** Every tag a stored fact of this metric may legitimately have been read from. */
+export const tagsForMetric = (metric) => TAG_MAP.filter((m) => m.metric === metric).map((m) => m.tag);
 
 const MONTHS = Object.freeze({ jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 });
 
@@ -108,32 +126,89 @@ export const periodRange = (period) => {
   }[Number(quarter[1])];
 };
 
-/** Every context the document declares: id -> { start, end, dimensioned }. Instant contexts have start=end=null. */
+/**
+ * The period each context stands for according to the filing's OWN statements
+ * (DateOfStartOfReportingPeriod / DateOfEndOfReportingPeriod facts), whatever
+ * the context declarations say: contextRef -> { start, end }.
+ */
+export const parseStatedPeriods = (xml) => {
+  const stated = new Map();
+  for (const [field, key] of [['DateOfStartOfReportingPeriod', 'start'], ['DateOfEndOfReportingPeriod', 'end']]) {
+    const pattern = new RegExp(`<[^>]*\\b${field}\\b[^>]*\\bcontextRef="([^"]+)"[^>]*>\\s*(\\d{4}-\\d{2}-\\d{2})\\s*<`, 'g');
+    for (const match of String(xml).matchAll(pattern)) {
+      stated.set(match[1], { ...(stated.get(match[1]) || {}), [key]: match[2] });
+    }
+  }
+  return new Map([...stated].filter(([, period]) => period.start && period.end));
+};
+
+/**
+ * findTagByStatedPeriod - like findTagForPeriod, but trusts only what the
+ * filing states about each context's period, ignoring declarations that
+ * disagree with it. Used solely by the verifier to corroborate a full-year
+ * figure (where the quarters must then sum to it), never to store a fact.
+ */
+export const findTagByStatedPeriod = (xml, tag, { start, end }) => {
+  const stated = parseStatedPeriods(xml);
+  for (const match of String(xml).matchAll(new RegExp(`<[^>]*\\b${tag}\\b[^>]*>([^<]+)<`, 'gi'))) {
+    const contextRef = match[0].match(/\bcontextRef="([^"]+)"/)?.[1];
+    const period = contextRef ? stated.get(contextRef) : null;
+    if (!period || period.start !== start || period.end !== end) continue;
+    const value = Number(String(match[1]).trim());
+    if (Number.isFinite(value)) return { value, contextRef, source: 'STATED' };
+  }
+  return null;
+};
+
+/**
+ * The reporting period each context stands for: id -> { start, end,
+ * dimensioned, source, conflict? }.
+ *
+ * Declared `<xbrli:context>` elements are authoritative. Older exchange
+ * filings reference their main contexts ("OneD", "FourD") without declaring
+ * them, but every filing STATES its own periods as facts
+ * (DateOfStartOfReportingPeriod / DateOfEndOfReportingPeriod, one pair per
+ * context). Where a context is not declared, that stated period is used
+ * (source 'STATED'). If both exist and disagree, the context is marked
+ * `conflict` and is never used. A context with neither is unknown and yields
+ * no figure.
+ */
 export const parseXbrlContexts = (xml) => {
+  const document = String(xml);
   const contexts = new Map();
-  for (const match of String(xml).matchAll(/<(?:xbrli:)?context\b[^>]*\bid="([^"]+)"[^>]*>([\s\S]*?)<\/(?:xbrli:)?context>/g)) {
+  for (const match of document.matchAll(/<(?:xbrli:)?context\b[^>]*\bid="([^"]+)"[^>]*>([\s\S]*?)<\/(?:xbrli:)?context>/g)) {
     const body = match[2];
     contexts.set(match[1], {
       start: body.match(/<(?:xbrli:)?startDate>\s*([^<\s]+)\s*</)?.[1] || null,
       end: body.match(/<(?:xbrli:)?endDate>\s*([^<\s]+)\s*</)?.[1] || null,
       dimensioned: /dimension="|<xbrldi:/.test(body),
+      source: 'DECLARED',
     });
+  }
+
+  const stated = parseStatedPeriods(document);
+  for (const [id, period] of stated) {
+    if (!period.start || !period.end) continue;
+    const declared = contexts.get(id);
+    if (!declared) contexts.set(id, { start: period.start, end: period.end, dimensioned: false, source: 'STATED' });
+    else if (declared.start !== period.start || declared.end !== period.end) declared.conflict = true;
   }
   return contexts;
 };
 
 /**
  * findTagForPeriod - the occurrence of `tag` whose context spans exactly
- * [start, end] and carries no dimension. Returns { value, contextRef } or null.
+ * [start, end] and carries no dimension. Returns { value, contextRef, source }
+ * or null.
  */
 export const findTagForPeriod = (xml, tag, { start, end }, contexts = parseXbrlContexts(xml)) => {
   if (!start || !end) return null;
   for (const match of String(xml).matchAll(new RegExp(`<[^>]*\\b${tag}\\b[^>]*>([^<]+)<`, 'gi'))) {
     const contextRef = match[0].match(/\bcontextRef="([^"]+)"/)?.[1];
     const context = contextRef ? contexts.get(contextRef) : null;
-    if (!context || context.dimensioned || context.start !== start || context.end !== end) continue;
+    if (!context || context.dimensioned || context.conflict || context.start !== start || context.end !== end) continue;
     const value = Number(String(match[1]).trim());
-    if (Number.isFinite(value)) return { value, contextRef };
+    if (Number.isFinite(value)) return { value, contextRef, source: context.source };
   }
   return null;
 };
@@ -152,6 +227,7 @@ export const extractFactsFromFiling = (xml, record) => {
   const facts = [];
 
   for (const mapping of TAG_MAP) {
+    if (mapping.fallback && facts.some((f) => f.metric === mapping.metric)) continue;
     const found = findTagForPeriod(xml, mapping.tag, { start, end }, contexts);
     if (!found) continue;
 
@@ -176,6 +252,7 @@ export const extractFactsFromFiling = (xml, record) => {
         method: 'NSE_XBRL_TAG',
         tag: mapping.tag,
         contextRef: found.contextRef,
+        contextSource: found.source,
         periodStart: start,
         periodEnd: end,
         originalValue: found.value,
@@ -191,16 +268,19 @@ export const extractFactsFromFiling = (xml, record) => {
 /**
  * selectFilings - which filings from an NSE results index to read.
  *
- * One filing per period and basis, newest filing winning (a restated result
- * supersedes the original). With preferConsolidated, a period keeps its
- * consolidated filing and only falls back to standalone when there is no
- * consolidated one, so a period is never reported twice. Newest periods come
- * first; periods before `fromYear` are dropped; at most `maxFilings` are kept.
+ * Only non-cumulative (single-period) filings are read: a cumulative filing
+ * reports a year-to-date span whose dates would not match the quarter it is
+ * labelled with. One filing per period and basis, newest filing winning (a
+ * restated result supersedes the original). With preferConsolidated, a period
+ * keeps its consolidated filing and only falls back to standalone when there
+ * is no consolidated one, so a period is never reported twice. Newest periods
+ * come first; periods before `fromYear` are dropped; at most `maxFilings` are
+ * kept.
  */
 export const selectFilings = (index, { symbol = null, fromYear = null, maxFilings = 12, preferConsolidated = false } = {}) => {
   const time = (value) => parseNseDate(value)?.getTime() || 0;
   const newestFirst = (index || [])
-    .filter((r) => r.xbrl && (!symbol || r.symbol === symbol))
+    .filter((r) => r.xbrl && (!symbol || r.symbol === symbol) && !/^cumulative$/i.test(String(r.cumulative || '')))
     .sort((a, b) => time(b.filingDate) - time(a.filingDate));
 
   const byKey = new Map();
@@ -226,6 +306,28 @@ export const selectFilings = (index, { symbol = null, fromYear = null, maxFiling
     .sort((a, b) => time(b.filing.toDate) - time(a.filing.toDate))
     .slice(0, maxFilings)
     .map((entry) => entry.filing);
+};
+
+/**
+ * deriveJobOutcome - the ResearchJob status and reason to record after one
+ * company's XBRL run, so an interrupted batch can resume from the database
+ * alone and a later reader can tell "nothing exists" from "not tried yet".
+ */
+export const deriveJobOutcome = ({
+  indexError = null, filings = 0, factsStored = 0, coveredYears = 0, expectedYears, latestPeriod = null, attempt = 1, maxAttempts = 3,
+}) => {
+  if (indexError) {
+    return { status: attempt >= maxAttempts ? 'FAILED_PERMANENT' : 'FAILED_RETRYABLE', lastError: `NSE results index unavailable: ${indexError}` };
+  }
+  if (filings === 0) return { status: 'FAILED_PERMANENT', lastError: 'NSE results index has no XBRL filings for this symbol in the requested fiscal years' };
+  if (coveredYears >= expectedYears) return { status: 'COMPLETED', lastError: null };
+  if (coveredYears > 0) {
+    return { status: 'PARTIAL', lastError: `Covered ${coveredYears}/${expectedYears} fiscal years from NSE XBRL${latestPeriod ? `; the newest filing available is ${latestPeriod}` : ''}` };
+  }
+  return {
+    status: attempt >= maxAttempts ? 'FAILED_PERMANENT' : 'FAILED_RETRYABLE',
+    lastError: factsStored === 0 ? 'No filing carried a mapped figure for its own reporting period' : 'Facts stored but none in the requested fiscal years',
+  };
 };
 
 /** The document shape stored for one extracted fact (dataOrigin REAL_RESEARCH, exchange-hosted source URL). */

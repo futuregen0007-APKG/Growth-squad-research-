@@ -132,3 +132,40 @@ test('sampling checks fewer filings but never invents results for the ones it sk
   assert.equal(result.urlsChecked, 2);
   assert.equal(result.factsChecked, 2);
 });
+
+test('a fact read from a fallback tag is verified against that tag, and a tag foreign to its metric is refused', () => {
+  const bankXml = `<xbrli:xbrl xmlns:xbrli="x"><xbrli:context id="OneD"><xbrli:period><xbrli:startDate>2024-10-01</xbrli:startDate><xbrli:endDate>2024-12-31</xbrli:endDate></xbrli:period></xbrli:context><in-bse-fin:Income contextRef="OneD" unitRef="INR">1678535700000.00</in-bse-fin:Income></xbrli:xbrl>`;
+  const record = { ...RECORD, symbol: 'BANKX', fromDate: '01-Oct-2024', toDate: '31-Dec-2024', relatingTo: 'Third Quarter' };
+  const fact = toFactDocument(extractFactsFromFiling(bankXml, record).find((f) => f.metric === 'REVENUE'));
+  assert.equal(verifyFactAgainstXml(fact, bankXml).status, 'MATCH');
+  const foreign = { ...fact, source: { ...fact.source, excerpt: fact.source.excerpt.replace('XBRL tag Income', 'XBRL tag ProfitLossForPeriod') } };
+  assert.equal(verifyFactAgainstXml(foreign, bankXml).status, 'UNSUPPORTED_TAG');
+});
+
+test('the quarter-sum check still corroborates a year whose full-year context is declared with the wrong dates', async () => {
+  const { db, xmlCache } = buildYear([11000, 12500, 13000, 15946], 52446);
+  const q4Url = 'https://nsearchives.nseindia.com/corporate/xbrl/Q4.xml';
+  // Same Q4 filing, but FourD is declared as the quarter while the filing states the real full-year period.
+  const conflicted = doc(
+    ctx('OneD', '2022-01-01', '2022-03-31'), ctx('FourD', '2022-01-01', '2022-03-31'),
+    '<in-bse-fin:DateOfStartOfReportingPeriod contextRef="OneD">2022-01-01</in-bse-fin:DateOfStartOfReportingPeriod><in-bse-fin:DateOfEndOfReportingPeriod contextRef="OneD">2022-03-31</in-bse-fin:DateOfEndOfReportingPeriod>',
+    '<in-bse-fin:DateOfStartOfReportingPeriod contextRef="FourD">2021-04-01</in-bse-fin:DateOfStartOfReportingPeriod><in-bse-fin:DateOfEndOfReportingPeriod contextRef="FourD">2022-03-31</in-bse-fin:DateOfEndOfReportingPeriod>',
+    rev('OneD', cr(15946)), rev('FourD', cr(52446)),
+  );
+  xmlCache.set(q4Url, { xml: conflicted });
+  const result = await verifySymbol(db, 'AAA', { sample: null, delayMs: 0, xmlCache });
+  assert.deepEqual([result.sums.checked, result.sums.ok, result.sums.mismatches.length], [1, 1, 0]);
+});
+
+test('and it still catches quarters that do not sum to that corroborated full year', async () => {
+  const { db, xmlCache } = buildYear([11000, 12500, 13000, 13767], 52446);
+  const q4Url = 'https://nsearchives.nseindia.com/corporate/xbrl/Q4.xml';
+  xmlCache.set(q4Url, { xml: doc(
+    ctx('OneD', '2022-01-01', '2022-03-31'), ctx('FourD', '2022-01-01', '2022-03-31'),
+    '<in-bse-fin:DateOfStartOfReportingPeriod contextRef="FourD">2021-04-01</in-bse-fin:DateOfStartOfReportingPeriod><in-bse-fin:DateOfEndOfReportingPeriod contextRef="FourD">2022-03-31</in-bse-fin:DateOfEndOfReportingPeriod>',
+    rev('OneD', cr(13767)), rev('FourD', cr(52446)),
+  ) });
+  const result = await verifySymbol(db, 'AAA', { sample: null, delayMs: 0, xmlCache });
+  assert.equal(result.sums.ok, 0);
+  assert.equal(result.sums.mismatches[0].status, 'SUM_MISMATCH');
+});

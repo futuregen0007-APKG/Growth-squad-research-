@@ -38,6 +38,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { SUPPORTED_STOCKS, FEATURED_SYMBOLS, EARNINGS_COVERAGE_METRICS } from '../utils/constants.js';
 import { PUBLIC_SAFE_EVIDENCE_STATUSES } from '../utils/earningsIntelligenceValidation.js';
 import { describeMongoTarget, assertMongoTarget } from '../utils/mongoTarget.js';
+import { getFiscalWindow } from '../utils/fiscalWindow.js';
 
 const BACKEND_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -47,11 +48,7 @@ const ACTIVE_JOB_STATUSES = ['QUEUED', 'DISCOVERING', 'DOWNLOADING', 'EXTRACTING
 
 export { describeMongoTarget };
 
-/** The 5 most recent COMPLETED Indian fiscal years (FY ends 31 March) -- the same window getCompanyReport uses. */
-export const getFiscalWindow = (now = new Date()) => {
-  const latest = now.getUTCMonth() >= 3 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
-  return { fromYear: latest - 4, toYear: latest, expectedYears: 5 };
-};
+export { getFiscalWindow };
 
 /** Same rule as backfillUniverse.evaluateYearCoverage: the first 4-digit number in the period. */
 export const fiscalYearOf = (period) => {

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   readTag, parseNseDate, toReportingPeriod, fiscalYearOfPeriod, periodRange, parseXbrlContexts, findTagForPeriod, readTagForPeriod,
-  extractFactsFromFiling, selectFilings, toFactDocument, TAG_MAP, RUPEES_PER_CRORE,
+  extractFactsFromFiling, selectFilings, toFactDocument, deriveJobOutcome, tagsForMetric, parseStatedPeriods, findTagByStatedPeriod, TAG_MAP, RUPEES_PER_CRORE,
 } from '../services/NseXbrlService.js';
 
 /**
@@ -40,10 +40,54 @@ const RECORD = {
 
 test('contexts are parsed with their dates, and segment-dimensioned ones are flagged', () => {
   const contexts = parseXbrlContexts(XBRL);
-  assert.deepEqual(contexts.get('OneD'), { start: '2022-01-01', end: '2022-03-31', dimensioned: false });
-  assert.deepEqual(contexts.get('FourD'), { start: '2021-04-01', end: '2022-03-31', dimensioned: false });
+  assert.deepEqual(contexts.get('OneD'), { start: '2022-01-01', end: '2022-03-31', dimensioned: false, source: 'DECLARED' });
+  assert.deepEqual(contexts.get('FourD'), { start: '2021-04-01', end: '2022-03-31', dimensioned: false, source: 'DECLARED' });
   assert.equal(contexts.get('OneReportableSegmentRevenue01D').dimensioned, true);
-  assert.deepEqual(contexts.get('Instant'), { start: null, end: null, dimensioned: false });
+  assert.deepEqual(contexts.get('Instant'), { start: null, end: null, dimensioned: false, source: 'DECLARED' });
+});
+
+/**
+ * Older exchange filings (checked live: HINDUNILVR Q1-Q4 FY2022) reference
+ * contexts "OneD" and "FourD" but never declare them. The filing itself states
+ * the period each stands for, as facts.
+ */
+const UNDECLARED = `<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:in-bse-fin="x">
+  <in-bse-fin:DateOfStartOfReportingPeriod contextRef="OneD">2022-01-01</in-bse-fin:DateOfStartOfReportingPeriod>
+  <in-bse-fin:DateOfEndOfReportingPeriod contextRef="OneD">2022-03-31</in-bse-fin:DateOfEndOfReportingPeriod>
+  <in-bse-fin:DateOfStartOfReportingPeriod contextRef="FourD">2021-04-01</in-bse-fin:DateOfStartOfReportingPeriod>
+  <in-bse-fin:DateOfEndOfReportingPeriod contextRef="FourD">2022-03-31</in-bse-fin:DateOfEndOfReportingPeriod>
+  <in-bse-fin:RevenueFromOperations contextRef="FourD" unitRef="INR" decimals="-7">524460000000.00</in-bse-fin:RevenueFromOperations>
+  <in-bse-fin:RevenueFromOperations contextRef="OneD" unitRef="INR" decimals="-7">137670000000.00</in-bse-fin:RevenueFromOperations>
+  <in-bse-fin:RevenueFromOperations contextRef="Mystery" unitRef="INR" decimals="-7">1.00</in-bse-fin:RevenueFromOperations>
+</xbrli:xbrl>`;
+
+test('an undeclared context takes its period from what the filing states about itself', () => {
+  const contexts = parseXbrlContexts(UNDECLARED);
+  assert.deepEqual(contexts.get('OneD'), { start: '2022-01-01', end: '2022-03-31', dimensioned: false, source: 'STATED' });
+  assert.deepEqual(contexts.get('FourD'), { start: '2021-04-01', end: '2022-03-31', dimensioned: false, source: 'STATED' });
+  assert.equal(readTagForPeriod(UNDECLARED, 'RevenueFromOperations', Q4), 137670000000);
+  assert.equal(readTagForPeriod(UNDECLARED, 'RevenueFromOperations', { start: '2021-04-01', end: '2022-03-31' }), 524460000000);
+});
+
+test('a context that is neither declared nor stated is unknown, so its figure is never used', () => {
+  assert.equal(parseXbrlContexts(UNDECLARED).has('Mystery'), false);
+  const onlyUnknown = '<xbrli:xbrl xmlns:xbrli="x"><in-bse-fin:RevenueFromOperations contextRef="Mystery" unitRef="INR">1.00</in-bse-fin:RevenueFromOperations></xbrli:xbrl>';
+  assert.equal(readTagForPeriod(onlyUnknown, 'RevenueFromOperations', Q4), null);
+});
+
+test('a declared context whose dates disagree with the stated period is refused, not preferred', () => {
+  const conflicting = XBRL.replace('</xbrli:xbrl>', `
+    <in-bse-fin:DateOfStartOfReportingPeriod contextRef="OneD">2022-01-01</in-bse-fin:DateOfStartOfReportingPeriod>
+    <in-bse-fin:DateOfEndOfReportingPeriod contextRef="OneD">2022-02-28</in-bse-fin:DateOfEndOfReportingPeriod></xbrli:xbrl>`);
+  assert.equal(parseXbrlContexts(conflicting).get('OneD').conflict, true);
+  assert.equal(readTagForPeriod(conflicting, 'RevenueFromOperations', Q4), null);
+});
+
+test('facts read from a stated period carry that in their provenance', () => {
+  const [revenue] = extractFactsFromFiling(UNDECLARED, RECORD).filter((f) => f.metric === 'REVENUE');
+  assert.equal(revenue.value, 13767);
+  assert.equal(revenue.extraction.contextSource, 'STATED');
+  assert.equal(extractFactsFromFiling(XBRL, RECORD).find((f) => f.metric === 'REVENUE').extraction.contextSource, 'DECLARED');
 });
 
 test('the old first-occurrence read returns the wrong number here, which is why it is no longer used for facts', () => {
@@ -51,7 +95,7 @@ test('the old first-occurrence read returns the wrong number here, which is why 
 });
 
 test('the quarter figure is found by its context, regardless of where it sits in the document', () => {
-  assert.deepEqual(findTagForPeriod(XBRL, 'RevenueFromOperations', Q4), { value: 137670000000, contextRef: 'OneD' });
+  assert.deepEqual(findTagForPeriod(XBRL, 'RevenueFromOperations', Q4), { value: 137670000000, contextRef: 'OneD', source: 'DECLARED' });
   assert.equal(readTagForPeriod(XBRL, 'RevenueFromOperations', { start: '2021-04-01', end: '2022-03-31' }), 524460000000, 'the full-year context is a different, equally exact lookup');
 });
 
@@ -171,8 +215,105 @@ test('preferConsolidated reports each period once, falling back to standalone on
   ]);
 });
 
+test('cumulative (year-to-date) filings are never selected: their span would not match the quarter they are labelled with', () => {
+  const index = [
+    { ...filing('31-Dec-2023', '01-Oct-2023', 'Third Quarter', 'Consolidated', '05-Feb-2024'), cumulative: 'Non-cumulative' },
+    { ...filing('31-Dec-2023', '01-Apr-2023', 'Third Quarter', 'Consolidated', '06-Feb-2024', 'https://nsearchives.nseindia.com/x/ytd.xml'), cumulative: 'Cumulative' },
+  ];
+  const selected = selectFilings(index, { symbol: 'AAA' });
+  assert.equal(selected.length, 1);
+  assert.notEqual(selected[0].xbrl, 'https://nsearchives.nseindia.com/x/ytd.xml');
+});
+
+test('the recorded job outcome says why a company is complete, partial, retryable or permanently empty', () => {
+  const base = { expectedYears: 5, attempt: 1 };
+  assert.deepEqual(deriveJobOutcome({ ...base, filings: 20, factsStored: 90, coveredYears: 5 }), { status: 'COMPLETED', lastError: null });
+  const partial = deriveJobOutcome({ ...base, filings: 15, factsStored: 50, coveredYears: 4, latestPeriod: 'Q3 FY2025' });
+  assert.equal(partial.status, 'PARTIAL');
+  assert.match(partial.lastError, /Covered 4\/5 fiscal years.*Q3 FY2025/);
+  assert.equal(deriveJobOutcome({ ...base, indexError: 'HTTP 403' }).status, 'FAILED_RETRYABLE');
+  assert.equal(deriveJobOutcome({ ...base, attempt: 3, indexError: 'HTTP 403' }).status, 'FAILED_PERMANENT');
+  const none = deriveJobOutcome({ ...base, filings: 0 });
+  assert.equal(none.status, 'FAILED_PERMANENT', 'an index that lists nothing is not going to list something on a retry');
+  assert.match(none.lastError, /no XBRL filings/);
+  assert.equal(deriveJobOutcome({ ...base, filings: 8, factsStored: 0, coveredYears: 0 }).status, 'FAILED_RETRYABLE');
+  assert.equal(deriveJobOutcome({ ...base, attempt: 3, filings: 8, factsStored: 0, coveredYears: 0 }).status, 'FAILED_PERMANENT');
+});
+
 test('fromYear drops earlier fiscal years and maxFilings caps the newest ones', () => {
   assert.deepEqual(selectFilings(INDEX, { symbol: 'AAA', fromYear: 2022, preferConsolidated: true }).map(toReportingPeriod), ['Q3 FY2025', 'Q2 FY2025', 'Q4 FY2022']);
   assert.deepEqual(selectFilings(INDEX, { symbol: 'AAA', maxFilings: 2 }).map(toReportingPeriod), ['Q3 FY2025', 'Q3 FY2025']);
   assert.deepEqual(selectFilings(null), []);
+});
+
+/** A bank-format filing: total income, `ProfitLossForThePeriod` and the post-extraordinary EPS tag; no RevenueFromOperations. */
+const BANK = `<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:in-bse-fin="x">
+  ${['OneD'].map((id) => `<xbrli:context id="${id}"><xbrli:entity><xbrli:identifier scheme="x">1</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2024-10-01</xbrli:startDate><xbrli:endDate>2024-12-31</xbrli:endDate></xbrli:period></xbrli:context>`).join('')}
+  <in-bse-fin:Income contextRef="OneD" unitRef="INR" decimals="-5">1678535700000.00</in-bse-fin:Income>
+  <in-bse-fin:OtherIncome contextRef="OneD" unitRef="INR" decimals="-5">431999100000.00</in-bse-fin:OtherIncome>
+  <in-bse-fin:ProfitLossForThePeriod contextRef="OneD" unitRef="INR" decimals="-5">191753500000.00</in-bse-fin:ProfitLossForThePeriod>
+  <in-bse-fin:BasicEarningsPerShareAfterExtraordinaryItems contextRef="OneD" unitRef="INRPerShare" decimals="2">21.12</in-bse-fin:BasicEarningsPerShareAfterExtraordinaryItems>
+</xbrli:xbrl>`;
+const BANK_RECORD = { ...RECORD, symbol: 'BANKX', fromDate: '01-Oct-2024', toDate: '31-Dec-2024', relatingTo: 'Third Quarter', xbrl: 'https://nsearchives.nseindia.com/corporate/xbrl/bank.xml' };
+
+test('a bank-format filing yields revenue, profit and EPS from the fallback tags, each labelled with what it is', () => {
+  const by = Object.fromEntries(extractFactsFromFiling(BANK, BANK_RECORD).map((f) => [f.metric, f]));
+  assert.equal(by.REVENUE.label, 'Total income');
+  assert.equal(by.REVENUE.value, 167853.57);
+  assert.equal(by.REVENUE.extraction.tag, 'Income');
+  assert.equal(by.PAT.value, 19175.35);
+  assert.equal(by.PAT.extraction.tag, 'ProfitLossForThePeriod');
+  assert.equal(by.EPS.value, 21.12);
+  assert.equal(by.EPS.extraction.tag, 'BasicEarningsPerShareAfterExtraordinaryItems');
+  assert.equal(toFactDocument(by.REVENUE).title, 'Q3 FY2025 Total income');
+});
+
+test('a fallback tag is never used when the primary tag produced that metric, so a metric is not reported twice', () => {
+  const both = XBRL.replace('</xbrli:xbrl>', '<in-bse-fin:Income contextRef="OneD" unitRef="INR" decimals="-7">999999999999.00</in-bse-fin:Income><in-bse-fin:ProfitLossForThePeriod contextRef="OneD" unitRef="INR">1.00</in-bse-fin:ProfitLossForThePeriod></xbrli:xbrl>');
+  const facts = extractFactsFromFiling(both, RECORD);
+  assert.equal(facts.filter((f) => f.metric === 'REVENUE').length, 1);
+  assert.equal(facts.find((f) => f.metric === 'REVENUE').extraction.tag, 'RevenueFromOperations');
+  assert.equal(facts.filter((f) => f.metric === 'PAT').length, 1);
+  assert.equal(facts.find((f) => f.metric === 'PAT').extraction.tag, 'ProfitLossForPeriod');
+});
+
+test('the corporate EPS variant is used only when the plain EPS tag is absent', () => {
+  const corporate = XBRL.replace(/BasicEarningsLossPerShare/g, 'BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations');
+  const eps = extractFactsFromFiling(corporate, RECORD).filter((f) => f.metric === 'EPS');
+  assert.equal(eps.length, 1);
+  assert.equal(eps[0].extraction.tag, 'BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations');
+  assert.equal(eps[0].value, 9.82);
+});
+
+test('tagsForMetric lists every tag a metric may be read from', () => {
+  assert.deepEqual(tagsForMetric('REVENUE'), ['RevenueFromOperations', 'Income']);
+  assert.deepEqual(tagsForMetric('NOPE'), []);
+});
+
+/** Real quirk (HINDUNILVR Q4 FY2023/FY2024): FourD is DECLARED with the quarter's dates but STATED as the full year, and its value is the annual figure. */
+const CONFLICTED = `<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:in-bse-fin="x">
+  <xbrli:context id="OneD"><xbrli:period><xbrli:startDate>2023-01-01</xbrli:startDate><xbrli:endDate>2023-03-31</xbrli:endDate></xbrli:period></xbrli:context>
+  <xbrli:context id="FourD"><xbrli:period><xbrli:startDate>2023-01-01</xbrli:startDate><xbrli:endDate>2023-03-31</xbrli:endDate></xbrli:period></xbrli:context>
+  <in-bse-fin:DateOfStartOfReportingPeriod contextRef="OneD">2023-01-01</in-bse-fin:DateOfStartOfReportingPeriod>
+  <in-bse-fin:DateOfEndOfReportingPeriod contextRef="OneD">2023-03-31</in-bse-fin:DateOfEndOfReportingPeriod>
+  <in-bse-fin:DateOfStartOfReportingPeriod contextRef="FourD">2022-04-01</in-bse-fin:DateOfStartOfReportingPeriod>
+  <in-bse-fin:DateOfEndOfReportingPeriod contextRef="FourD">2023-03-31</in-bse-fin:DateOfEndOfReportingPeriod>
+  <in-bse-fin:RevenueFromOperations contextRef="OneD" unitRef="INR">152150000000.00</in-bse-fin:RevenueFromOperations>
+  <in-bse-fin:RevenueFromOperations contextRef="FourD" unitRef="INR">605800000000.00</in-bse-fin:RevenueFromOperations>
+</xbrli:xbrl>`;
+
+test('a context whose declaration contradicts the filing\'s own statement is refused for facts', () => {
+  assert.equal(parseXbrlContexts(CONFLICTED).get('FourD').conflict, true);
+  assert.equal(parseXbrlContexts(CONFLICTED).get('OneD').conflict, undefined);
+  assert.equal(readTagForPeriod(CONFLICTED, 'RevenueFromOperations', { start: '2022-04-01', end: '2023-03-31' }), null);
+  assert.equal(readTagForPeriod(CONFLICTED, 'RevenueFromOperations', { start: '2023-01-01', end: '2023-03-31' }), 152150000000, 'the unconflicted quarter context is still read');
+  const facts = extractFactsFromFiling(CONFLICTED, { ...RECORD, fromDate: '01-Jan-2023', toDate: '31-Mar-2023' });
+  assert.equal(facts.find((f) => f.metric === 'REVENUE').value, 15215, 'a fact takes the quarter, never the conflicted full-year context');
+});
+
+test('the stated-period lookup, used only for corroboration, finds the full-year figure that the declaration hides', () => {
+  assert.deepEqual(parseStatedPeriods(CONFLICTED).get('FourD'), { start: '2022-04-01', end: '2023-03-31' });
+  assert.deepEqual(findTagByStatedPeriod(CONFLICTED, 'RevenueFromOperations', { start: '2022-04-01', end: '2023-03-31' }), { value: 605800000000, contextRef: 'FourD', source: 'STATED' });
+  assert.equal(findTagByStatedPeriod(CONFLICTED, 'RevenueFromOperations', { start: '2021-04-01', end: '2022-03-31' }), null);
+  assert.equal(parseStatedPeriods('<a/>').size, 0);
 });

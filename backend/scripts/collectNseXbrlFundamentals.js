@@ -41,12 +41,14 @@ import mongoose from 'mongoose';
 import { pathToFileURL } from 'node:url';
 import { assertMongoTarget } from '../utils/mongoTarget.js';
 import {
-  readTag, parseNseDate, toReportingPeriod, extractFactsFromFiling, selectFilings, toFactDocument, fiscalYearOfPeriod, NSE_REQUEST_HEADERS,
+  readTag, parseNseDate, toReportingPeriod, extractFactsFromFiling, selectFilings, toFactDocument, fiscalYearOfPeriod, deriveJobOutcome, NSE_REQUEST_HEADERS,
 } from '../services/NseXbrlService.js';
+import { getFiscalWindow } from '../utils/fiscalWindow.js';
 
 dotenv.config();
 
 const CompanyHistoricalFact = (await import('../models/CompanyHistoricalFact.js')).default;
+const { ResearchJob } = await import('../models/ResearchJob.js');
 const { screenFact, FACT_VERDICTS } = await import('../services/factQuarantine.js');
 
 // Kept exported for existing callers; the implementations live in the service.
@@ -145,7 +147,48 @@ const collectSymbol = async (symbol, { dryRun, fromYear, maxFilings, preferConso
   const fiscalYears = [...new Set(sortedPeriods.map(fiscalYearOfPeriod).filter((y) => y != null))].sort();
   return {
     symbol, filings: selected.length, facts: factCount, stored, quarantined, unavailable, noMatchingContext, periods: sortedPeriods, fiscalYears,
+    latestPeriod: selected.length ? toReportingPeriod(selected[0]) : null,
+    requests: 1 + selected.length, // the results index plus one XBRL download per selected filing
   };
+};
+
+/**
+ * recordJob - one ResearchJob per (symbol, fiscal-year range), so an
+ * interrupted run resumes from the database alone and the coverage audit can
+ * say why a company is partial or blocked. A job another route already
+ * finished (COMPLETED) is never downgraded.
+ */
+const recordJob = async (result, { fromYear, toYear }) => {
+  const key = { symbol: result.symbol, jobType: 'HISTORICAL_FACTS_BACKFILL', fromYear, toYear };
+  const existing = await ResearchJob.findOne(key).lean();
+  if (existing?.status === 'COMPLETED') return existing.status;
+
+  const coveredYears = (result.fiscalYears || []).filter((y) => y >= fromYear && y <= toYear);
+  const outcome = deriveJobOutcome({
+    indexError: result.error || null,
+    filings: result.filings,
+    factsStored: result.stored,
+    coveredYears: coveredYears.length,
+    expectedYears: toYear - fromYear + 1,
+    latestPeriod: result.latestPeriod,
+    attempt: (existing?.attempt || 0) + 1,
+  });
+  await ResearchJob.findOneAndUpdate(
+    key,
+    {
+      $set: {
+        status: outcome.status,
+        lastError: outcome.lastError,
+        processedDocuments: result.filings,
+        startedAt: existing?.startedAt || new Date(),
+        completedAt: new Date(),
+        cursor: { lastCompletedYear: coveredYears.length ? Math.max(...coveredYears) : null },
+      },
+      $inc: { attempt: 1 },
+    },
+    { upsert: true },
+  );
+  return outcome.status;
 };
 
 const main = async () => {
@@ -169,7 +212,12 @@ const main = async () => {
     // eslint-disable-next-line no-await-in-loop
     const result = await collectSymbol(symbol, options);
     results.push(result);
-    console.log(`  ${symbol}: ${result.filings} filing(s) -> ${result.facts} fact(s), ${result.stored} stored, ${result.quarantined} quarantined${result.unavailable ? `, ${result.unavailable} unavailable` : ''}${result.noMatchingContext ? `, ${result.noMatchingContext} with no matching period context` : ''}`);
+    if (!dryRun) {
+      const window = getFiscalWindow();
+      // eslint-disable-next-line no-await-in-loop
+      result.jobStatus = await recordJob(result, { fromYear: options.fromYear ?? window.fromYear, toYear: window.toYear });
+    }
+    console.log(`  ${symbol}: ${result.filings} filing(s) -> ${result.facts} fact(s), ${result.stored} stored, ${result.quarantined} quarantined${result.unavailable ? `, ${result.unavailable} unavailable` : ''}${result.noMatchingContext ? `, ${result.noMatchingContext} with no matching period context` : ''}${result.jobStatus ? ` | job ${result.jobStatus}` : ''}`);
     if (result.fiscalYears?.length) console.log(`     fiscal years: ${result.fiscalYears.map((y) => `FY${y}`).join(', ')}`);
   }
 
@@ -177,6 +225,8 @@ const main = async () => {
   console.log(JSON.stringify(results));
   if (!dryRun) await mongoose.disconnect();
 };
+
+export { collectSymbol, recordJob };
 
 const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isDirectRun) {
