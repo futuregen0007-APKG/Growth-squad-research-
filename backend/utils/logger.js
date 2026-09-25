@@ -28,7 +28,17 @@ const LOG_LEVELS = {
 // Current log level - adjust in .env or here
 // In production: usually 'INFO' or 'WARN'
 // In development: usually 'DEBUG'
-const CURRENT_LOG_LEVEL = process.env.LOG_LEVEL || 'DEBUG';
+//
+// Case-insensitive ("info" and "INFO" are the same). This used to be an exact
+// match, so LOG_LEVEL=info matched no level and silently turned OFF every log
+// line, errors included. An unrecognised value now falls back to INFO rather
+// than to silence.
+const resolveLogLevel = (raw) => {
+  if (raw == null || String(raw).trim() === '') return LOG_LEVELS.DEBUG;
+  const normalized = String(raw).trim().toUpperCase();
+  return Object.values(LOG_LEVELS).includes(normalized) ? normalized : LOG_LEVELS.INFO;
+};
+const CURRENT_LOG_LEVEL = resolveLogLevel(process.env.LOG_LEVEL);
 
 /**
  * shouldLog - Determines if message should be logged based on level

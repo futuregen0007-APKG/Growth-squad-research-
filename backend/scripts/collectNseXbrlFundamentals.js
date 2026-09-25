@@ -2,204 +2,88 @@
  * collectNseXbrlFundamentals.js
  * ================================
  * Phase 6B: collects REAL, attributable fundamentals for companies the
- * corpus has no filing data for (BEL, HAL) from the exchange's own
- * published XBRL filings.
+ * corpus has no filing data for from the exchange's own published XBRL
+ * filings.
  *
  * SOURCE AND METHOD. NSE publishes a corporate-results index at
  * `/api/corporates-financial-results`, where each entry carries the filing's
  * period, filing timestamp, audit status, consolidated/standalone flag, and
  * a link to the XBRL document the company itself filed. This script reads
  * that index, downloads the linked XBRL, and extracts only tags the filing
- * actually contains. Every figure keeps its source URL, filing date,
- * reporting period and the exact XBRL tag it came from.
+ * actually contains, taking each figure from the context that spans exactly
+ * the filing's own period (see services/NseXbrlService.js). Every figure
+ * keeps its source URL, filing date, reporting period and the exact XBRL tag
+ * and context it came from.
  *
  * WHAT IT WILL NOT DO:
- *   - No site whose access is blocked is worked around. BEL's own investor
- *     relations host did not resolve during this phase; that is reported as
- *     an unresolved gap, not routed around.
+ *   - No site whose access is blocked is worked around. A refused request
+ *     stays refused and is reported as such.
  *   - No figure is invented, inferred, or back-filled. A tag that is absent
- *     from a filing simply yields no fact.
+ *     from a filing, or present only for another period, yields no fact.
  *   - Values are stored in the project's standard unit (INR crore). XBRL
  *     reports absolute rupees, so the conversion is recorded explicitly in
- *     the extraction provenance alongside the original value - it is a
- *     restatement of the same number, never a derivation.
+ *     the extraction provenance alongside the original value.
  *   - Suspicious output is screened by services/factQuarantine.js before
  *     storage, on the same terms as any other fact.
  *
+ * KNOWN LIMIT. NSE's results index (as observed Sep 2026) holds nothing filed
+ * after the quarter ending 31 Dec 2024, whatever date range is requested.
+ * Fiscal years from FY2026 (and the last quarter of FY2025) are therefore not
+ * obtainable from this source.
+ *
  *   node scripts/collectNseXbrlFundamentals.js --symbols BEL,HAL
  *   node scripts/collectNseXbrlFundamentals.js --symbols BEL --dry-run
+ *   node scripts/collectNseXbrlFundamentals.js --symbols SBIN,TITAN --from-year 2022 --max-filings 24 \
+ *        --prefer-consolidated --delay-ms 1000 --expect-target cluster.example.net/mydb
  */
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { pathToFileURL } from 'node:url';
+import { assertMongoTarget } from '../utils/mongoTarget.js';
+import {
+  readTag, parseNseDate, toReportingPeriod, extractFactsFromFiling, selectFilings, toFactDocument, fiscalYearOfPeriod, NSE_REQUEST_HEADERS,
+} from '../services/NseXbrlService.js';
 
 dotenv.config();
 
 const CompanyHistoricalFact = (await import('../models/CompanyHistoricalFact.js')).default;
 const { screenFact, FACT_VERDICTS } = await import('../services/factQuarantine.js');
 
+// Kept exported for existing callers; the implementations live in the service.
+export { readTag, parseNseDate, toReportingPeriod, extractFactsFromFiling };
+
 const NSE_RESULTS_API = 'https://www.nseindia.com/api/corporates-financial-results';
 
-// A browser-shaped User-Agent is required by NSE's public API for any
-// client; this is the documented way to call it, not a circumvention of an
-// access control. A request that is refused stays refused.
-const REQUEST_HEADERS = Object.freeze({
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
-  Accept: 'application/json, text/plain, */*',
-  Referer: 'https://www.nseindia.com/',
-});
-
-/** Rupees -> crore. A restatement of the same figure, recorded in provenance. */
-const RUPEES_PER_CRORE = 10_000_000;
-
-/**
- * The XBRL tags this script reads, and the metric each maps to. Only these
- * are extracted: an unmapped tag is ignored rather than guessed at.
- */
-const TAG_MAP = Object.freeze([
-  { tag: 'RevenueFromOperations', metric: 'REVENUE', scale: 'RUPEES', label: 'Revenue from operations' },
-  { tag: 'ProfitLossForPeriod', metric: 'PAT', scale: 'RUPEES', label: 'Profit for the period' },
-  { tag: 'ProfitBeforeTax', metric: 'PROFIT_BEFORE_TAX', scale: 'RUPEES', label: 'Profit before tax' },
-  { tag: 'BasicEarningsLossPerShare', metric: 'EPS', scale: 'PER_SHARE', label: 'Basic earnings per share' },
-  { tag: 'OtherIncome', metric: 'OTHER_INCOME', scale: 'RUPEES', label: 'Other income' },
-  { tag: 'EmployeeBenefitExpense', metric: 'EMPLOYEE_COST', scale: 'RUPEES', label: 'Employee benefit expense' },
-]);
+const REQUEST_HEADERS = NSE_REQUEST_HEADERS;
 
 const arg = (name, fallback = null) => {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? process.argv[i + 1] : fallback;
 };
 const hasFlag = (name) => process.argv.includes(`--${name}`);
+const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
-const fetchJson = async (url) => {
-  const response = await fetch(url, { headers: REQUEST_HEADERS, signal: AbortSignal.timeout(30000) });
-  if (!response.ok) throw new Error(`HTTP ${response.status} from ${url}`);
-  return response.json();
-};
-
-const fetchText = async (url) => {
-  const response = await fetch(url, { headers: REQUEST_HEADERS, signal: AbortSignal.timeout(30000) });
-  if (!response.ok) throw new Error(`HTTP ${response.status} from ${url}`);
-  return response.text();
-};
-
-/**
- * Reads one tag's value. XBRL repeats a tag per context (current quarter,
- * prior quarter, year to date); the FIRST occurrence is the one the filing
- * presents for the stated period, and that is the only one taken — no
- * summing, no picking the largest.
- */
-export const readTag = (xml, tag) => {
-  const match = xml.match(new RegExp(`<[^>]*\\b${tag}\\b[^>]*>([^<]+)<`, 'i'));
-  if (!match) return null;
-  const value = Number(String(match[1]).trim());
-  return Number.isFinite(value) ? value : null;
-};
-
-const MONTHS = Object.freeze({ jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 });
-
-/**
- * parseNseDate - NSE publishes "30-Jan-2025 15:37:17", which Date cannot
- * parse natively (it yields Invalid Date and then fails schema casting).
- * Parsed explicitly rather than coerced, so a filing date is either right
- * or absent - never silently "now".
- */
-export const parseNseDate = (value) => {
-  const match = String(value || '').match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
-  if (!match) return null;
-  const [, day, monthName, year, hour = '0', minute = '0', second = '0'] = match;
-  const month = MONTHS[monthName.toLowerCase()];
-  if (month === undefined) return null;
-  const date = new Date(Date.UTC(Number(year), month, Number(day), Number(hour), Number(minute), Number(second)));
-  return Number.isNaN(date.getTime()) ? null : date;
-};
-
-/** "01-Oct-2024".."31-Dec-2024" + "Third Quarter" -> "Q3 FY2025" (Indian FY ends 31 Mar). */
-export const toReportingPeriod = ({ fromDate, toDate, relatingTo }) => {
-  const end = new Date(toDate);
-  if (Number.isNaN(end.getTime())) return null;
-  const month = end.getMonth(); // 0-11
-  const fiscalYear = month >= 3 ? end.getFullYear() + 1 : end.getFullYear();
-  const quarterByName = { 'First Quarter': 1, 'Second Quarter': 2, 'Third Quarter': 3, 'Fourth Quarter': 4 };
-  const quarter = quarterByName[relatingTo] || Math.floor(((month + 9) % 12) / 3) + 1;
-  const spansYear = fromDate && (end - new Date(fromDate)) > 300 * 86_400_000;
-  return spansYear ? `FY${fiscalYear}` : `Q${quarter} FY${fiscalYear}`;
-};
-
-/** Builds the facts one filing yields. Returns [] when the filing has none of our tags. */
-export const extractFactsFromFiling = (xml, record) => {
-  const period = toReportingPeriod(record);
-  if (!period) return [];
-
-  const filedAt = parseNseDate(record.filingDate) || parseNseDate(record.broadCastDate) || new Date(record.toDate) || new Date();
-  const facts = [];
-
-  for (const mapping of TAG_MAP) {
-    const raw = readTag(xml, mapping.tag);
-    if (raw === null) continue;
-
-    const isPerShare = mapping.scale === 'PER_SHARE';
-    const value = isPerShare ? raw : Number((raw / RUPEES_PER_CRORE).toFixed(2));
-    const unit = isPerShare ? 'INR' : 'INR_CRORE';
-
-    facts.push({
-      symbol: record.symbol,
-      companyName: record.companyName,
-      period,
-      metric: mapping.metric,
-      value,
-      unit,
-      filedAt,
-      consolidated: record.consolidated,
-      audited: record.audited,
-      sourceUrl: record.xbrl,
-      label: mapping.label,
-      // Exactly how this number was obtained, for audit.
-      extraction: {
-        method: 'NSE_XBRL_TAG',
-        tag: mapping.tag,
-        originalValue: raw,
-        originalUnit: isPerShare ? 'INR_PER_SHARE' : 'INR',
-        conversion: isPerShare ? 'none' : `INR / ${RUPEES_PER_CRORE} = INR_CRORE`,
-        retrievedAt: new Date().toISOString(),
-      },
-    });
+/** One polite retry for a transient failure (network error, 429, 5xx); a 4xx refusal is final. */
+const fetchWithRetry = async (url, parse) => {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const response = await fetch(url, { headers: REQUEST_HEADERS, signal: AbortSignal.timeout(30000) });
+      if (response.ok) return await parse(response);
+      const transient = response.status === 429 || response.status >= 500;
+      if (!transient || attempt === 2) throw new Error(`HTTP ${response.status} from ${url}`);
+    } catch (error) {
+      if (attempt === 2 || /^HTTP 4\d\d/.test(error.message)) throw error;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(3000);
   }
-  return facts;
+  return null;
 };
+const fetchJson = (url) => fetchWithRetry(url, (r) => r.json());
+const fetchText = (url) => fetchWithRetry(url, (r) => r.text());
 
-const toFactDocument = (fact) => ({
-  symbol: fact.symbol,
-  companyName: fact.companyName,
-  date: fact.filedAt,
-  period: fact.period,
-  category: 'FINANCIAL_PERFORMANCE',
-  title: `${fact.period} ${fact.label}`,
-  fact: `${fact.companyName} reported ${fact.label} of ${fact.value} ${fact.unit} for ${fact.period} (${fact.consolidated}, ${fact.audited}).`,
-  metrics: {
-    metric: fact.metric,
-    actualValue: fact.value,
-    previousValue: null,
-    unit: fact.unit,
-    changePercent: null,
-    currency: 'INR',
-  },
-  source: {
-    type: 'QUARTERLY_REPORT',
-    title: `${fact.symbol} ${fact.period} results (NSE XBRL filing)`,
-    url: fact.sourceUrl,
-    publishedAt: fact.filedAt,
-    pageNumber: null,
-    excerpt: `${fact.label}: ${fact.extraction.originalValue} ${fact.extraction.originalUnit} (XBRL tag ${fact.extraction.tag})`,
-  },
-  confidence: 0.99, // read directly from the company's own filed XBRL
-  verified: true,
-  dataOrigin: 'REAL_RESEARCH',
-  isNegative: false,
-  summary: `Extracted from ${fact.extraction.tag} in the NSE-published XBRL; ${fact.extraction.conversion}.`,
-});
-
-const collectSymbol = async (symbol, { dryRun }) => {
+const collectSymbol = async (symbol, { dryRun, fromYear, maxFilings, preferConsolidated, delayMs }) => {
   const url = `${NSE_RESULTS_API}?index=equities&symbol=${encodeURIComponent(symbol)}&period=Quarterly`;
   let index;
   try {
@@ -208,25 +92,15 @@ const collectSymbol = async (symbol, { dryRun }) => {
     console.log(`  ${symbol}: results index unavailable — ${error.message}`);
     return { symbol, filings: 0, facts: 0, stored: 0, quarantined: 0, error: error.message };
   }
+  await sleep(delayMs);
 
-  // Consolidated results where the company filed XBRL, newest first.
-  const filings = index
-    .filter((r) => r.xbrl && r.symbol === symbol)
-    .sort((a, b) => new Date(b.filingDate || 0) - new Date(a.filingDate || 0));
-
-  const seenPeriods = new Set();
-  const selected = [];
-  for (const filing of filings) {
-    const key = `${toReportingPeriod(filing)}|${filing.consolidated}`;
-    if (seenPeriods.has(key)) continue; // one filing per period+basis, newest wins
-    seenPeriods.add(key);
-    selected.push(filing);
-    if (selected.length >= 12) break; // three years of quarters is plenty
-  }
+  const selected = selectFilings(index, { symbol, fromYear, maxFilings, preferConsolidated });
 
   let factCount = 0;
   let stored = 0;
   let quarantined = 0;
+  let noMatchingContext = 0;
+  let unavailable = 0;
   const periods = new Set();
 
   for (const filing of selected) {
@@ -235,11 +109,17 @@ const collectSymbol = async (symbol, { dryRun }) => {
       // eslint-disable-next-line no-await-in-loop
       xml = await fetchText(filing.xbrl);
     } catch (error) {
+      unavailable += 1;
       console.log(`  ${symbol} ${toReportingPeriod(filing)}: XBRL unavailable — ${error.message}`);
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(delayMs);
       continue;
     }
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(delayMs);
 
     const facts = extractFactsFromFiling(xml, filing);
+    if (!facts.length) noMatchingContext += 1;
     factCount += facts.length;
 
     for (const fact of facts) {
@@ -261,34 +141,47 @@ const collectSymbol = async (symbol, { dryRun }) => {
     }
   }
 
-  return { symbol, filings: selected.length, facts: factCount, stored, quarantined, periods: [...periods].sort() };
+  const sortedPeriods = [...periods].sort();
+  const fiscalYears = [...new Set(sortedPeriods.map(fiscalYearOfPeriod).filter((y) => y != null))].sort();
+  return {
+    symbol, filings: selected.length, facts: factCount, stored, quarantined, unavailable, noMatchingContext, periods: sortedPeriods, fiscalYears,
+  };
 };
 
 const main = async () => {
   const symbols = (arg('symbols', 'BEL,HAL') || '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
   const dryRun = hasFlag('dry-run');
+  const options = {
+    dryRun,
+    fromYear: arg('from-year') ? Number(arg('from-year')) : null,
+    maxFilings: arg('max-filings') ? Number(arg('max-filings')) : 12,
+    preferConsolidated: hasFlag('prefer-consolidated'),
+    delayMs: arg('delay-ms') ? Number(arg('delay-ms')) : 1000,
+  };
 
+  const target = assertMongoTarget(process.env.MONGODB_URI, arg('expect-target'));
+  console.log(dryRun ? 'Dry run: no database connection.' : `Target database: ${target.label}${target.implicitDatabase ? '  (URI names no database -> driver default "test")' : ''}`);
   if (!dryRun) await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 8000 });
-  console.log(`Collecting NSE XBRL fundamentals for ${symbols.join(', ')}${dryRun ? ' (dry run)' : ''}\n`);
+  console.log(`Collecting NSE XBRL fundamentals for ${symbols.length} symbol(s)${dryRun ? ' (dry run)' : ''}: from-year=${options.fromYear ?? 'any'} max-filings=${options.maxFilings} prefer-consolidated=${options.preferConsolidated} delay=${options.delayMs}ms\n`);
 
   const results = [];
   for (const symbol of symbols) {
     // eslint-disable-next-line no-await-in-loop
-    const result = await collectSymbol(symbol, { dryRun });
+    const result = await collectSymbol(symbol, options);
     results.push(result);
-    console.log(`  ${symbol}: ${result.filings} filing(s) -> ${result.facts} fact(s), ${result.stored} stored, ${result.quarantined} quarantined`);
-    if (result.periods?.length) console.log(`     periods: ${result.periods.join(', ')}`);
+    console.log(`  ${symbol}: ${result.filings} filing(s) -> ${result.facts} fact(s), ${result.stored} stored, ${result.quarantined} quarantined${result.unavailable ? `, ${result.unavailable} unavailable` : ''}${result.noMatchingContext ? `, ${result.noMatchingContext} with no matching period context` : ''}`);
+    if (result.fiscalYears?.length) console.log(`     fiscal years: ${result.fiscalYears.map((y) => `FY${y}`).join(', ')}`);
   }
 
   console.log('\n--- summary ---');
-  console.log(JSON.stringify(results, null, 2));
+  console.log(JSON.stringify(results));
   if (!dryRun) await mongoose.disconnect();
 };
 
 const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isDirectRun) {
   main().catch(async (error) => {
-    console.error(error);
+    console.error(error.message);
     await mongoose.disconnect().catch(() => {});
     process.exit(1);
   });
