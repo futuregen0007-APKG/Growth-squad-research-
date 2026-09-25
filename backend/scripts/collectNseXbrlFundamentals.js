@@ -41,7 +41,7 @@ import mongoose from 'mongoose';
 import { pathToFileURL } from 'node:url';
 import { assertMongoTarget } from '../utils/mongoTarget.js';
 import {
-  readTag, parseNseDate, toReportingPeriod, extractFactsFromFiling, selectFilings, toFactDocument, fiscalYearOfPeriod, deriveJobOutcome, NSE_REQUEST_HEADERS,
+  readTag, parseNseDate, toReportingPeriod, extractFactsFromFiling, selectFilings, toFactDocument, fiscalYearOfPeriod, deriveJobOutcome, nseSymbolFor, NSE_REQUEST_HEADERS,
 } from '../services/NseXbrlService.js';
 import { getFiscalWindow } from '../utils/fiscalWindow.js';
 
@@ -86,7 +86,8 @@ const fetchJson = (url) => fetchWithRetry(url, (r) => r.json());
 const fetchText = (url) => fetchWithRetry(url, (r) => r.text());
 
 const collectSymbol = async (symbol, { dryRun, fromYear, maxFilings, preferConsolidated, delayMs }) => {
-  const url = `${NSE_RESULTS_API}?index=equities&symbol=${encodeURIComponent(symbol)}&period=Quarterly`;
+  const nseSymbol = nseSymbolFor(symbol);
+  const url = `${NSE_RESULTS_API}?index=equities&symbol=${encodeURIComponent(nseSymbol)}&period=Quarterly`;
   let index;
   try {
     index = await fetchJson(url);
@@ -96,7 +97,7 @@ const collectSymbol = async (symbol, { dryRun, fromYear, maxFilings, preferConso
   }
   await sleep(delayMs);
 
-  const selected = selectFilings(index, { symbol, fromYear, maxFilings, preferConsolidated });
+  const selected = selectFilings(index, { symbol: nseSymbol, fromYear, maxFilings, preferConsolidated });
 
   let factCount = 0;
   let stored = 0;
@@ -120,7 +121,8 @@ const collectSymbol = async (symbol, { dryRun, fromYear, maxFilings, preferConso
     // eslint-disable-next-line no-await-in-loop
     await sleep(delayMs);
 
-    const facts = extractFactsFromFiling(xml, filing);
+    // Facts are stored under the supported symbol even when NSE lists the company under a renamed one.
+    const facts = extractFactsFromFiling(xml, { ...filing, symbol });
     if (!facts.length) noMatchingContext += 1;
     factCount += facts.length;
 

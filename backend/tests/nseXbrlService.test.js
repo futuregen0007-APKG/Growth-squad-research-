@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   readTag, parseNseDate, toReportingPeriod, fiscalYearOfPeriod, periodRange, parseXbrlContexts, findTagForPeriod, readTagForPeriod,
-  extractFactsFromFiling, selectFilings, toFactDocument, deriveJobOutcome, tagsForMetric, parseStatedPeriods, findTagByStatedPeriod, TAG_MAP, RUPEES_PER_CRORE,
+  extractFactsFromFiling, selectFilings, toFactDocument, deriveJobOutcome, tagsForMetric, parseStatedPeriods, findTagByStatedPeriod, nseSymbolFor, NSE_SYMBOL_ALIASES, TAG_MAP, RUPEES_PER_CRORE,
 } from '../services/NseXbrlService.js';
 
 /**
@@ -316,4 +316,24 @@ test('the stated-period lookup, used only for corroboration, finds the full-year
   assert.deepEqual(findTagByStatedPeriod(CONFLICTED, 'RevenueFromOperations', { start: '2022-04-01', end: '2023-03-31' }), { value: 605800000000, contextRef: 'FourD', source: 'STATED' });
   assert.equal(findTagByStatedPeriod(CONFLICTED, 'RevenueFromOperations', { start: '2021-04-01', end: '2022-03-31' }), null);
   assert.equal(parseStatedPeriods('<a/>').size, 0);
+});
+
+test('a renamed company is looked up on NSE by its current symbol, and other companies by their own', () => {
+  assert.equal(nseSymbolFor('ZOMATO'), 'ETERNAL');
+  assert.equal(nseSymbolFor('UNO MINDA'), 'UNOMINDA');
+  assert.equal(nseSymbolFor('TCS'), 'TCS');
+  assert.equal(nseSymbolFor('TATAMOTORS'), 'TATAMOTORS', 'a demerged company is not guessed at');
+});
+
+// The supported list carries Max Financial Services twice (MAXFIN and MFSL); MAXFIN is aliased so it is not left empty beside MFSL.
+const KNOWN_DUPLICATE_ALIAS_KEYS = new Set(['MAXFIN']);
+
+test('every alias key is a supported symbol, and no alias collides with another supported symbol except the one known duplicate', async () => {
+  const { SUPPORTED_STOCKS } = await import('../utils/constants.js');
+  for (const [supported, nse] of Object.entries(NSE_SYMBOL_ALIASES)) {
+    assert.ok(SUPPORTED_STOCKS[supported], `${supported} must be a supported symbol`);
+    assert.notEqual(nse, supported);
+    if (!KNOWN_DUPLICATE_ALIAS_KEYS.has(supported)) assert.ok(!SUPPORTED_STOCKS[nse], `${nse} is itself a supported symbol, so the alias would collide`);
+  }
+  assert.equal(SUPPORTED_STOCKS.MFSL.name, SUPPORTED_STOCKS.MAXFIN.name, 'the exception is only valid while both entries are the same company');
 });

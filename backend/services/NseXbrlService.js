@@ -62,6 +62,30 @@ export const TAG_MAP = Object.freeze([
 /** Every tag a stored fact of this metric may legitimately have been read from. */
 export const tagsForMetric = (metric) => TAG_MAP.filter((m) => m.metric === metric).map((m) => m.tag);
 
+/**
+ * Supported symbols whose NSE trading symbol differs (renames). Each pair was
+ * confirmed against NSE's own company name for that symbol (Sep 2026). TATAMOTORS
+ * is deliberately absent: it demerged, TMCV has no results filings yet and TMPV
+ * holds the old entity's history, so mapping it would be a guess.
+ */
+export const NSE_SYMBOL_ALIASES = Object.freeze({
+  ZOMATO: 'ETERNAL',
+  REC: 'RECLTD',
+  MAXFIN: 'MFSL',
+  AMARAJABAT: 'ARE&M',
+  'UNO MINDA': 'UNOMINDA',
+  CEAT: 'CEATLTD',
+  HPCL: 'HINDPETRO',
+  KALPATPOWR: 'KPIL',
+  SUMITOMOIND: 'SUMICHEM',
+  PBFINTECH: 'POLICYBZR',
+  INFOEDGE: 'NAUKRI',
+  GMRINFRA: 'GMRAIRPORT',
+});
+
+/** The symbol NSE knows a supported company by. */
+export const nseSymbolFor = (symbol) => NSE_SYMBOL_ALIASES[symbol] || symbol;
+
 const MONTHS = Object.freeze({ jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 });
 
 /**
