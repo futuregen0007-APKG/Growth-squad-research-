@@ -26,10 +26,14 @@
  *   - Suspicious output is screened by services/factQuarantine.js before
  *     storage, on the same terms as any other fact.
  *
- * KNOWN LIMIT. NSE's results index (as observed Sep 2026) holds nothing filed
- * after the quarter ending 31 Dec 2024, whatever date range is requested.
- * Fiscal years from FY2026 (and the last quarter of FY2025) are therefore not
- * obtainable from this source.
+ * TWO FEEDS. NSE's legacy results index (`corporates-financial-results`, as
+ * observed Sep 2026) holds nothing filed after the quarter ending 31 Dec 2024,
+ * whatever date range is requested. Its Integrated Filing (Financials) feed
+ * (`integrated-filing-results`) starts at the quarter ending 31 Mar 2025 and is
+ * current. Both are read, merged, and reduced to one filing per period and
+ * basis (newest wins, so a revision supersedes its original), which together
+ * give the quarterly series FY2022..FY2026. Companies missing from the legacy
+ * index (e.g. insurers) only get what the integrated feed holds.
  *
  *   node scripts/collectNseXbrlFundamentals.js --symbols BEL,HAL
  *   node scripts/collectNseXbrlFundamentals.js --symbols BEL --dry-run
@@ -41,7 +45,8 @@ import mongoose from 'mongoose';
 import { pathToFileURL } from 'node:url';
 import { assertMongoTarget } from '../utils/mongoTarget.js';
 import {
-  readTag, parseNseDate, toReportingPeriod, extractFactsFromFiling, selectFilings, toFactDocument, fiscalYearOfPeriod, deriveJobOutcome, nseSymbolFor, NSE_REQUEST_HEADERS,
+  readTag, parseNseDate, toReportingPeriod, extractFactsFromFiling, selectFilings, olderVersionsOf, integratedRowToRecord, toFactDocument, fiscalYearOfPeriod, deriveJobOutcome, nseSymbolFor, NSE_REQUEST_HEADERS,
+  corroborateStatedFullYear, ADDITIVE_METRICS, STATED_OVER_DECLARED, factBasisFilter,
 } from '../services/NseXbrlService.js';
 import { getFiscalWindow } from '../utils/fiscalWindow.js';
 
@@ -54,7 +59,17 @@ const { screenFact, FACT_VERDICTS } = await import('../services/factQuarantine.j
 // Kept exported for existing callers; the implementations live in the service.
 export { readTag, parseNseDate, toReportingPeriod, extractFactsFromFiling };
 
+// Two exchange feeds, each covering a different span. The legacy results index
+// ends at the quarter ended 2024-12-31; the Integrated Filing (Financials)
+// feed starts at the quarter ended 2025-03-31 and is current. Together they
+// carry a company's whole FY2022..FY2026 quarterly series.
 const NSE_RESULTS_API = 'https://www.nseindia.com/api/corporates-financial-results';
+const NSE_INTEGRATED_API = 'https://www.nseindia.com/api/integrated-filing-results';
+const INTEGRATED_TYPE = 'Integrated Filing- Financials';
+
+// Facts read from an NSE-published XBRL file; a later filing for the same
+// company, period and metric supersedes the stored one in place.
+const NSE_XBRL_URL_PREFIX = /^https:\/\/nsearchives\.nseindia\.com\/corporate\/xbrl\//;
 
 const REQUEST_HEADERS = NSE_REQUEST_HEADERS;
 
@@ -85,64 +100,153 @@ const fetchWithRetry = async (url, parse) => {
 const fetchJson = (url) => fetchWithRetry(url, (r) => r.json());
 const fetchText = (url) => fetchWithRetry(url, (r) => r.text());
 
-const collectSymbol = async (symbol, { dryRun, fromYear, maxFilings, preferConsolidated, delayMs }) => {
-  const nseSymbol = nseSymbolFor(symbol);
-  const url = `${NSE_RESULTS_API}?index=equities&symbol=${encodeURIComponent(nseSymbol)}&period=Quarterly`;
-  let index;
+/**
+ * loadFilingIndex - both feeds for one NSE symbol, as one list of records.
+ * A feed that fails is reported, not fatal: the other may still carry years.
+ * Only when BOTH fail is the company's index unavailable.
+ */
+const loadFilingIndex = async (nseSymbol, delayMs) => {
+  const feedErrors = [];
+  let legacy = [];
+  let integrated = [];
+  let integratedTruncated = false;
+
   try {
-    index = await fetchJson(url);
+    const body = await fetchJson(`${NSE_RESULTS_API}?index=equities&symbol=${encodeURIComponent(nseSymbol)}&period=Quarterly`);
+    legacy = Array.isArray(body) ? body : [];
   } catch (error) {
-    console.log(`  ${symbol}: results index unavailable — ${error.message}`);
-    return { symbol, filings: 0, facts: 0, stored: 0, quarantined: 0, error: error.message };
+    feedErrors.push(`legacy results index: ${error.message}`);
   }
   await sleep(delayMs);
 
-  const selected = selectFilings(index, { symbol: nseSymbol, fromYear, maxFilings, preferConsolidated });
+  try {
+    const body = await fetchJson(`${NSE_INTEGRATED_API}?index=equities&symbol=${encodeURIComponent(nseSymbol)}&type=${encodeURIComponent(INTEGRATED_TYPE)}`);
+    const rows = Array.isArray(body?.data) ? body.data : [];
+    integratedTruncated = Number(body?.totalCount) > rows.length;
+    integrated = rows.map(integratedRowToRecord).filter(Boolean);
+  } catch (error) {
+    feedErrors.push(`integrated filing feed: ${error.message}`);
+  }
+  await sleep(delayMs);
+
+  return {
+    index: [...legacy, ...integrated], feedErrors, integratedTruncated, legacyRows: legacy.length, integratedRows: integrated.length,
+  };
+};
+
+/** The additive quarter facts already stored for a company (from NSE XBRL), in the shape corroborateStatedFullYear reads. */
+const loadStoredQuarters = async (symbol) => {
+  const docs = await CompanyHistoricalFact.find({
+    symbol, dataOrigin: 'REAL_RESEARCH', period: /^Q[1-4] FY\d{4}$/, 'metrics.metric': { $in: [...ADDITIVE_METRICS] }, 'source.url': NSE_XBRL_URL_PREFIX,
+  }).select('period metrics fact source.excerpt').lean();
+  return docs.map((d) => ({
+    period: d.period,
+    metric: d.metrics?.metric,
+    value: d.metrics?.actualValue,
+    consolidated: String(d.fact || '').match(/\((Consolidated|Non-Consolidated|Standalone),/)?.[1] || null,
+    tag: String(d.source?.excerpt || '').match(/XBRL tag ([A-Za-z]+)/)?.[1] || null,
+  }));
+};
+
+const collectSymbol = async (symbol, {
+  dryRun, fromYear, toYear = null, maxFilings, preferConsolidated, delayMs, fullYearOnly = false,
+}) => {
+  const nseSymbol = nseSymbolFor(symbol);
+  const {
+    index, feedErrors, integratedTruncated, legacyRows, integratedRows,
+  } = await loadFilingIndex(nseSymbol, delayMs);
+  if (feedErrors.length >= 2) {
+    const message = feedErrors.join('; ');
+    console.log(`  ${symbol}: filing index unavailable — ${message}`);
+    return { symbol, filings: 0, facts: 0, stored: 0, quarantined: 0, error: message };
+  }
+  if (integratedTruncated) console.log(`  ${symbol}: integrated feed reported more rows than it returned; older periods may be missing`);
+
+  let selected = selectFilings(index, {
+    symbol: nseSymbol, fromYear, toYear, maxFilings, preferConsolidated,
+  });
+  // A full-year pass reads only the March-quarter filings, each of which carries the year.
+  if (fullYearOnly) selected = selected.filter((filing) => /^Q4 FY/.test(toReportingPeriod(filing) || ''));
 
   let factCount = 0;
   let stored = 0;
   let quarantined = 0;
   let noMatchingContext = 0;
   let unavailable = 0;
+  let requests = 2; // one request per feed
+  let usedFallbackVersion = 0;
   const periods = new Set();
 
-  for (const filing of selected) {
+  /** Downloads one filing and returns its facts, or null when the file could not be fetched. */
+  const readFiling = async (filing) => {
     let xml;
     try {
-      // eslint-disable-next-line no-await-in-loop
       xml = await fetchText(filing.xbrl);
     } catch (error) {
-      unavailable += 1;
       console.log(`  ${symbol} ${toReportingPeriod(filing)}: XBRL unavailable — ${error.message}`);
-      // eslint-disable-next-line no-await-in-loop
+      return null;
+    } finally {
+      requests += 1;
       await sleep(delayMs);
+    }
+    // Facts are stored under the supported symbol even when NSE lists the company under a renamed one.
+    const extracted = extractFactsFromFiling(xml, { ...filing, symbol }, { allowStatedFullYear: true });
+    return fullYearOnly ? extracted.filter((fact) => /^FY\d{4}$/.test(fact.period)) : extracted;
+  };
+
+  // Phase 1: read every selected filing (falling back to an older version when the newest carries nothing).
+  const extractedFacts = [];
+  for (const filing of selected) {
+    // eslint-disable-next-line no-await-in-loop
+    let facts = await readFiling(filing);
+    if (facts === null) { unavailable += 1; }
+    if (!facts?.length) {
+      // The newest file may be a revision that carries no statements; try the earlier version(s) of the same period and basis.
+      for (const older of olderVersionsOf(index, filing)) {
+        // eslint-disable-next-line no-await-in-loop
+        const olderFacts = await readFiling(older);
+        if (olderFacts?.length) { facts = olderFacts; usedFallbackVersion += 1; break; }
+      }
+    }
+    if (!facts?.length) { if (facts !== null) noMatchingContext += 1; continue; }
+    factCount += facts.length;
+    extractedFacts.push(...facts);
+  }
+
+  // Phase 2: a full-year figure read through a filing's STATED period is kept only if the four quarters sum to it.
+  let toStore = extractedFacts;
+  let withheldYears = [];
+  if (extractedFacts.some((f) => f.extraction?.contextSource === STATED_OVER_DECLARED && /^FY\d{4}$/.test(f.period))) {
+    const storedQuarters = dryRun ? [] : await loadStoredQuarters(symbol);
+    const corroborated = corroborateStatedFullYear(extractedFacts, storedQuarters);
+    toStore = corroborated.facts;
+    withheldYears = corroborated.rejected;
+    for (const rejection of withheldYears) console.log(`  ${symbol} ${rejection.fiscalYear} ${rejection.metric}: stated full-year figure withheld — ${rejection.reason}`);
+  }
+
+  // Phase 3: screen and store.
+  for (const fact of toStore) {
+    const screen = screenFact({ metric: fact.metric, value: fact.value, unit: fact.unit, title: fact.label });
+    if (screen.verdict !== FACT_VERDICTS.USABLE) {
+      quarantined += 1;
+      console.log(`  ${symbol} ${fact.period} ${fact.metric}=${fact.value} ${fact.unit} -> ${screen.verdict} (${screen.reason})`);
       continue;
     }
+    periods.add(fact.period);
+    if (dryRun) { stored += 1; continue; }
+    // Keyed on company + period + metric + BASIS (not the URL), restricted to facts read from NSE XBRL: a
+    // restated or re-filed result for the SAME basis replaces the earlier figure in place instead of leaving
+    // two, while a Consolidated and a Standalone figure for the same period are always two distinct documents
+    // -- never overwriting each other (see factBasisFilter).
     // eslint-disable-next-line no-await-in-loop
-    await sleep(delayMs);
-
-    // Facts are stored under the supported symbol even when NSE lists the company under a renamed one.
-    const facts = extractFactsFromFiling(xml, { ...filing, symbol });
-    if (!facts.length) noMatchingContext += 1;
-    factCount += facts.length;
-
-    for (const fact of facts) {
-      const screen = screenFact({ metric: fact.metric, value: fact.value, unit: fact.unit, title: fact.label });
-      if (screen.verdict !== FACT_VERDICTS.USABLE) {
-        quarantined += 1;
-        console.log(`  ${symbol} ${fact.period} ${fact.metric}=${fact.value} ${fact.unit} -> ${screen.verdict} (${screen.reason})`);
-        continue;
-      }
-      periods.add(fact.period);
-      if (dryRun) { stored += 1; continue; }
-      // eslint-disable-next-line no-await-in-loop
-      await CompanyHistoricalFact.updateOne(
-        { symbol: fact.symbol, period: fact.period, 'metrics.metric': fact.metric, 'source.url': fact.sourceUrl },
-        { $set: toFactDocument(fact) },
-        { upsert: true },
-      );
-      stored += 1;
-    }
+    await CompanyHistoricalFact.updateOne(
+      {
+        symbol: fact.symbol, period: fact.period, 'metrics.metric': fact.metric, dataOrigin: 'REAL_RESEARCH', 'source.type': 'QUARTERLY_REPORT', 'source.url': NSE_XBRL_URL_PREFIX, ...factBasisFilter(fact.consolidated),
+      },
+      { $set: toFactDocument(fact) },
+      { upsert: true },
+    );
+    stored += 1;
   }
 
   const sortedPeriods = [...periods].sort();
@@ -150,7 +254,11 @@ const collectSymbol = async (symbol, { dryRun, fromYear, maxFilings, preferConso
   return {
     symbol, filings: selected.length, facts: factCount, stored, quarantined, unavailable, noMatchingContext, periods: sortedPeriods, fiscalYears,
     latestPeriod: selected.length ? toReportingPeriod(selected[0]) : null,
-    requests: 1 + selected.length, // the results index plus one XBRL download per selected filing
+    requests,
+    feeds: { legacyRows, integratedRows },
+    feedErrors: feedErrors.length ? feedErrors : undefined,
+    usedFallbackVersion: usedFallbackVersion || undefined,
+    withheldYears: withheldYears.length ? withheldYears.map((w) => `${w.fiscalYear}: ${w.reason}`) : undefined,
   };
 };
 
@@ -199,7 +307,8 @@ const main = async () => {
   const options = {
     dryRun,
     fromYear: arg('from-year') ? Number(arg('from-year')) : null,
-    maxFilings: arg('max-filings') ? Number(arg('max-filings')) : 12,
+    toYear: getFiscalWindow().toYear,
+    maxFilings: arg('max-filings') ? Number(arg('max-filings')) : 24,
     preferConsolidated: hasFlag('prefer-consolidated'),
     delayMs: arg('delay-ms') ? Number(arg('delay-ms')) : 1000,
   };

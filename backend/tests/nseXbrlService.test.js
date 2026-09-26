@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   readTag, parseNseDate, toReportingPeriod, fiscalYearOfPeriod, periodRange, parseXbrlContexts, findTagForPeriod, readTagForPeriod,
-  extractFactsFromFiling, selectFilings, toFactDocument, deriveJobOutcome, tagsForMetric, parseStatedPeriods, findTagByStatedPeriod, nseSymbolFor, NSE_SYMBOL_ALIASES, TAG_MAP, RUPEES_PER_CRORE,
+  extractFactsFromFiling, selectFilings, toFactDocument, deriveJobOutcome, tagsForMetric, corroborateStatedFullYear, factBasisFilter, parseStatedPeriods, findTagByStatedPeriod, nseSymbolFor, NSE_SYMBOL_ALIASES, TAG_MAP, RUPEES_PER_CRORE,
 } from '../services/NseXbrlService.js';
 
 /**
@@ -115,7 +115,7 @@ test('a tag name that merely starts with a mapped tag is not confused with it', 
 });
 
 test('extractFactsFromFiling reads each mapped metric for the filing\'s own period, with provenance', () => {
-  const facts = extractFactsFromFiling(XBRL, RECORD);
+  const facts = extractFactsFromFiling(XBRL, RECORD, { includeFullYear: false });
   const by = Object.fromEntries(facts.map((f) => [f.metric, f]));
   assert.deepEqual(Object.keys(by).sort(), ['EPS', 'PAT', 'REVENUE']);
   assert.equal(by.REVENUE.value, 13767);
@@ -158,6 +158,19 @@ test('reporting periods follow the Indian fiscal year (ends 31 March)', () => {
   assert.equal(toReportingPeriod({ fromDate: '01-Apr-2021', toDate: '31-Mar-2022' }), 'FY2022');
   assert.equal(toReportingPeriod({ fromDate: '01-Jul-2023', toDate: '30-Sep-2023' }), 'Q2 FY2024', 'a missing label falls back to the end month');
   assert.equal(toReportingPeriod({ toDate: 'nope' }), null);
+});
+
+test('a filing whose own relatingTo disagrees with the standard April-March quarter is refused, never mislabeled', () => {
+  // Real case: ABB India's legacy filing for 01-Jan-2022..31-Mar-2022 carries relatingTo "First Quarter"
+  // (ABB's own fiscal year ran January-December at the time), which under the April-March grid this whole
+  // system uses is actually Q4 FY2022 -- the two disagree, so the filing is refused rather than labelled
+  // "Q1 FY2022" (a real quarter this pipeline once stored under that wrong label).
+  assert.equal(toReportingPeriod({ fromDate: '01-Jan-2022', toDate: '31-Mar-2022', relatingTo: 'First Quarter' }), null);
+  // Siemens India's legacy October-September fiscal year: a Jan-Mar filing (their Q2) is refused the same way.
+  assert.equal(toReportingPeriod({ fromDate: '01-Jan-2023', toDate: '31-Mar-2023', relatingTo: 'Second Quarter' }), null);
+  // Once a company's relatingTo agrees with the calendar quarter (as ABB's own Integrated Filings do from
+  // FY2025, after moving to the standard year), the filing is read normally.
+  assert.equal(toReportingPeriod({ fromDate: '01-Jan-2026', toDate: '31-Mar-2026', relatingTo: 'Fourth Quarter' }), 'Q4 FY2026');
 });
 
 test('periodRange maps a period label back to its calendar dates', () => {
@@ -270,7 +283,7 @@ test('a bank-format filing yields revenue, profit and EPS from the fallback tags
 
 test('a fallback tag is never used when the primary tag produced that metric, so a metric is not reported twice', () => {
   const both = XBRL.replace('</xbrli:xbrl>', '<in-bse-fin:Income contextRef="OneD" unitRef="INR" decimals="-7">999999999999.00</in-bse-fin:Income><in-bse-fin:ProfitLossForThePeriod contextRef="OneD" unitRef="INR">1.00</in-bse-fin:ProfitLossForThePeriod></xbrli:xbrl>');
-  const facts = extractFactsFromFiling(both, RECORD);
+  const facts = extractFactsFromFiling(both, RECORD, { includeFullYear: false });
   assert.equal(facts.filter((f) => f.metric === 'REVENUE').length, 1);
   assert.equal(facts.find((f) => f.metric === 'REVENUE').extraction.tag, 'RevenueFromOperations');
   assert.equal(facts.filter((f) => f.metric === 'PAT').length, 1);
@@ -279,7 +292,7 @@ test('a fallback tag is never used when the primary tag produced that metric, so
 
 test('the corporate EPS variant is used only when the plain EPS tag is absent', () => {
   const corporate = XBRL.replace(/BasicEarningsLossPerShare/g, 'BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations');
-  const eps = extractFactsFromFiling(corporate, RECORD).filter((f) => f.metric === 'EPS');
+  const eps = extractFactsFromFiling(corporate, RECORD, { includeFullYear: false }).filter((f) => f.metric === 'EPS');
   assert.equal(eps.length, 1);
   assert.equal(eps[0].extraction.tag, 'BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations');
   assert.equal(eps[0].value, 9.82);
@@ -336,4 +349,168 @@ test('every alias key is a supported symbol, and no alias collides with another 
     if (!KNOWN_DUPLICATE_ALIAS_KEYS.has(supported)) assert.ok(!SUPPORTED_STOCKS[nse], `${nse} is itself a supported symbol, so the alias would collide`);
   }
   assert.equal(SUPPORTED_STOCKS.MFSL.name, SUPPORTED_STOCKS.MAXFIN.name, 'the exception is only valid while both entries are the same company');
+});
+
+test('a March-quarter filing also yields the full fiscal year, read from the year context and labelled FY', () => {
+  const facts = extractFactsFromFiling(XBRL, RECORD);
+  const year = Object.fromEntries(facts.filter((f) => f.period === 'FY2022').map((f) => [f.metric, f]));
+  assert.deepEqual(Object.keys(year).sort(), ['EPS', 'PAT', 'REVENUE']);
+  assert.equal(year.REVENUE.value, 52446, 'INR 524,460,000,000 = 52,446 crore (the year), not the 13,767 crore quarter');
+  assert.equal(year.PAT.value, 8892);
+  assert.equal(year.EPS.value, 37.84);
+  assert.deepEqual([year.REVENUE.extraction.contextRef, year.REVENUE.extraction.periodStart, year.REVENUE.extraction.periodEnd], ['FourD', '2021-04-01', '2022-03-31']);
+  assert.equal(toFactDocument(year.REVENUE).title, 'FY2022 Revenue from operations');
+  // The quarter is still there, and the two are never confused.
+  assert.equal(facts.find((f) => f.period === 'Q4 FY2022' && f.metric === 'REVENUE').value, 13767);
+});
+
+test('only a March-quarter filing yields a full year; other quarters and the opt-out do not', () => {
+  const q3Xml = XBRL.replace(/2022-01-01/g, '2021-10-01').replace(/2022-03-31/g, '2021-12-31');
+  const q3 = extractFactsFromFiling(q3Xml, { ...RECORD, fromDate: '01-Oct-2021', toDate: '31-Dec-2021', relatingTo: 'Third Quarter' });
+  assert.ok(q3.length > 0);
+  assert.ok(q3.every((f) => f.period === 'Q3 FY2022'), 'no annual fact from a December-quarter filing');
+  assert.ok(extractFactsFromFiling(XBRL, RECORD, { includeFullYear: false }).every((f) => f.period === 'Q4 FY2022'));
+});
+
+test('a year context that contradicts what the filing states is not read as the year', () => {
+  const facts = extractFactsFromFiling(CONFLICTED, { ...RECORD, fromDate: '01-Jan-2023', toDate: '31-Mar-2023' });
+  assert.ok(facts.length > 0);
+  assert.ok(facts.every((f) => f.period === 'Q4 FY2023'), 'quarter facts only; the mislabelled year context yields no FY fact');
+});
+
+// ---------------------------------------------------------------------------
+// Full-year figures read through a filing's STATED period
+// ---------------------------------------------------------------------------
+
+const CONFLICTED_RECORD = { ...RECORD, fromDate: '01-Jan-2023', toDate: '31-Mar-2023' };
+const quarter = (q, value, over = {}) => ({
+  period: `Q${q} FY2023`, metric: 'REVENUE', value, consolidated: 'Consolidated', tag: 'RevenueFromOperations', ...over,
+});
+
+test('a year whose context is mislabelled is read through its stated period only when asked, and is marked as such', () => {
+  assert.ok(extractFactsFromFiling(CONFLICTED, CONFLICTED_RECORD).every((f) => f.period === 'Q4 FY2023'), 'by default a contradicted year is left out');
+
+  const facts = extractFactsFromFiling(CONFLICTED, CONFLICTED_RECORD, { allowStatedFullYear: true });
+  const year = facts.find((f) => f.period === 'FY2023' && f.metric === 'REVENUE');
+  assert.equal(year.value, 60580, 'INR 605,800,000,000 = 60,580 crore');
+  assert.equal(year.extraction.contextSource, 'STATED_OVER_DECLARED');
+  assert.equal(facts.find((f) => f.period === 'Q4 FY2023' && f.metric === 'REVENUE').value, 15215, 'the quarter is still the quarter');
+  assert.equal(facts.find((f) => f.period === 'Q4 FY2023').extraction.contextSource, 'DECLARED');
+});
+
+test('a stated year is kept only when the four quarters sum to it, and its provenance says so', () => {
+  const facts = extractFactsFromFiling(CONFLICTED, CONFLICTED_RECORD, { allowStatedFullYear: true });
+  const stored = [quarter(1, 14000), quarter(2, 15000), quarter(3, 16365)]; // + the run's own Q4 15,215 = 60,580
+  const { facts: result, rejected } = corroborateStatedFullYear(facts, stored);
+  assert.deepEqual(rejected, []);
+  const year = result.find((f) => f.period === 'FY2023');
+  assert.equal(year.extraction.corroboration.method, 'QUARTER_SUM');
+  assert.equal(year.extraction.corroboration.evidence[0].status, 'SUM_MATCH');
+  const document = toFactDocument(year);
+  assert.match(document.source.excerpt, /Period stated by the filing/);
+  assert.equal(document.confidence, 0.95, 'slightly below a figure read from a declared context');
+  assert.equal(toFactDocument(result.find((f) => f.period === 'Q4 FY2023')).confidence, 0.99);
+});
+
+test('a stated year is withheld when the quarters do not sum to it, or a quarter is missing, or the basis differs', () => {
+  const facts = extractFactsFromFiling(CONFLICTED, CONFLICTED_RECORD, { allowStatedFullYear: true });
+  const yearsOf = (result) => result.facts.filter((f) => f.period === 'FY2023');
+
+  const off = corroborateStatedFullYear(facts, [quarter(1, 14000), quarter(2, 15000), quarter(3, 17000)]);
+  assert.equal(yearsOf(off).length, 0);
+  assert.match(off.rejected[0].reason, /do not sum/);
+  assert.equal(off.rejected[0].failures[0].difference, 635);
+
+  const missing = corroborateStatedFullYear(facts, [quarter(1, 14000), quarter(2, 15000)]);
+  assert.equal(yearsOf(missing).length, 0);
+  assert.match(missing.rejected[0].reason, /no complete quarter set/);
+
+  const otherBasis = corroborateStatedFullYear(facts, [quarter(1, 14000, { consolidated: 'Standalone' }), quarter(2, 15000, { consolidated: 'Standalone' }), quarter(3, 16365, { consolidated: 'Standalone' })]);
+  assert.equal(yearsOf(otherBasis).length, 0, 'standalone quarters cannot corroborate a consolidated year');
+
+  const otherTag = corroborateStatedFullYear(facts, [quarter(1, 14000, { tag: 'Income' }), quarter(2, 15000, { tag: 'Income' }), quarter(3, 16365, { tag: 'Income' })]);
+  assert.equal(yearsOf(otherTag).length, 0, 'quarters read from a different tag cannot corroborate it');
+
+  // The quarters themselves are never withheld.
+  assert.ok(off.facts.some((f) => f.period === 'Q4 FY2023'));
+});
+
+test('Standalone and Non-Consolidated are treated as one basis, and a declared full year passes through untouched', () => {
+  const facts = extractFactsFromFiling(CONFLICTED, { ...CONFLICTED_RECORD, consolidated: 'Standalone' }, { allowStatedFullYear: true });
+  const stored = [14000, 15000, 16365].map((v, i) => quarter(i + 1, v, { consolidated: 'Non-Consolidated' }));
+  assert.equal(corroborateStatedFullYear(facts, stored).facts.filter((f) => f.period === 'FY2023').length, 1);
+
+  const declared = extractFactsFromFiling(XBRL, RECORD); // year context declared correctly: no corroboration needed
+  const passed = corroborateStatedFullYear(declared, []);
+  assert.deepEqual(passed.facts, declared);
+  assert.deepEqual(passed.rejected, []);
+});
+
+test('a revenue match never validates EPS, PAT, or any other metric read from the same conflicted context -- each metric is corroborated on its own', () => {
+  // Same conflicted-year mechanism as CONFLICTED, but the filing also carries EPS and PAT
+  // under the identical mislabelled FourD context -- exactly the shape that (before this was
+  // fixed) let a passing REVENUE quarter-sum silently vouch for an unrelated, unverifiable EPS figure.
+  const withEps = CONFLICTED.replace('</xbrli:xbrl>', `
+    <in-bse-fin:BasicEarningsLossPerShare contextRef="OneD" unitRef="INRPerShare" decimals="2">5.00</in-bse-fin:BasicEarningsLossPerShare>
+    <in-bse-fin:BasicEarningsLossPerShare contextRef="FourD" unitRef="INRPerShare" decimals="2">20.00</in-bse-fin:BasicEarningsLossPerShare>
+  </xbrli:xbrl>`);
+  const facts = extractFactsFromFiling(withEps, CONFLICTED_RECORD, { allowStatedFullYear: true });
+  assert.ok(facts.some((f) => f.period === 'FY2023' && f.metric === 'EPS'), 'EPS is read through the stated period, same as revenue');
+
+  // Quarters that make REVENUE corroborate cleanly (60,580); no quarter data exists for EPS at all (nor could it -- EPS is never additive).
+  const stored = [quarter(1, 14000), quarter(2, 15000), quarter(3, 16365)];
+  const { facts: result, rejected } = corroborateStatedFullYear(facts, stored);
+
+  const year = result.filter((f) => f.period === 'FY2023');
+  assert.deepEqual(year.map((f) => f.metric), ['REVENUE'], 'only the additive metric that was actually checked is kept');
+  assert.ok(!year.some((f) => f.metric === 'EPS'), 'EPS must never ride along on an unrelated REVENUE corroboration');
+
+  const epsRejection = rejected.find((r) => r.metric === 'EPS');
+  assert.ok(epsRejection, 'EPS is explicitly reported as withheld, not silently dropped');
+  assert.match(epsRejection.reason, /cannot be corroborated by quarter-sum/);
+  assert.equal(rejected.filter((r) => r.metric === 'REVENUE' || r.metric === 'PAT').length, 0, 'the metrics that did corroborate are not also reported as rejected');
+});
+
+test('when one metric corroborates and another does not, each is judged on its own: partial acceptance, not all-or-nothing', () => {
+  const withPat = CONFLICTED.replace('</xbrli:xbrl>', `
+    <in-bse-fin:ProfitLossForPeriod contextRef="OneD" unitRef="INR" decimals="-7">1521500000.00</in-bse-fin:ProfitLossForPeriod>
+    <in-bse-fin:ProfitLossForPeriod contextRef="FourD" unitRef="INR" decimals="-7">6058000000.00</in-bse-fin:ProfitLossForPeriod>
+  </xbrli:xbrl>`);
+  const facts = extractFactsFromFiling(withPat, CONFLICTED_RECORD, { allowStatedFullYear: true });
+  // REVENUE quarters sum correctly (60,580); PAT quarters do not (deliberately wrong).
+  const stored = [
+    quarter(1, 14000), quarter(2, 15000), quarter(3, 16365),
+    quarter(1, 1000, { metric: 'PAT', tag: 'ProfitLossForPeriod' }), quarter(2, 1000, { metric: 'PAT', tag: 'ProfitLossForPeriod' }), quarter(3, 1000, { metric: 'PAT', tag: 'ProfitLossForPeriod' }),
+  ];
+  const { facts: result, rejected } = corroborateStatedFullYear(facts, stored);
+  assert.ok(result.some((f) => f.period === 'FY2023' && f.metric === 'REVENUE'), 'REVENUE corroborates and is kept');
+  assert.ok(!result.some((f) => f.period === 'FY2023' && f.metric === 'PAT'), 'PAT does not corroborate and is withheld, despite REVENUE in the same filing passing');
+  assert.ok(rejected.find((r) => r.metric === 'PAT' && /do not sum/.test(r.reason)));
+});
+
+test('an undeclared context whose period the filing states is an ordinary source: no corroboration is needed, and it is not withheld', () => {
+  const facts = extractFactsFromFiling(UNDECLARED, RECORD, { allowStatedFullYear: true });
+  const year = facts.find((f) => f.period === 'FY2022' && f.metric === 'REVENUE');
+  assert.equal(year.value, 52446);
+  assert.equal(year.extraction.contextSource, 'STATED', 'undeclared but stated: as before');
+  const result = corroborateStatedFullYear(facts, []);
+  assert.deepEqual(result.rejected, []);
+  assert.ok(result.facts.some((f) => f.period === 'FY2022' && f.metric === 'REVENUE'), 'kept even with no quarters to compare');
+});
+
+test('factBasisFilter matches only the same basis, so a Consolidated and a Standalone figure for one period never collide', () => {
+  const consolidated = factBasisFilter('Consolidated');
+  const standalone = factBasisFilter('Standalone');
+  const nonConsolidated = factBasisFilter('Non-Consolidated');
+
+  const consolidatedFactText = 'Acme Ltd reported Revenue from operations of 1000 INR_CRORE for FY2026 (Consolidated, Audited).';
+  const standaloneFactText = 'Acme Ltd reported Revenue from operations of 900 INR_CRORE for FY2026 (Standalone, Audited).';
+  const nonConsolidatedFactText = 'Acme Ltd reported Revenue from operations of 900 INR_CRORE for FY2026 (Non-Consolidated, Audited).';
+
+  assert.ok(consolidated.fact.test(consolidatedFactText));
+  assert.ok(!consolidated.fact.test(standaloneFactText), 'a Consolidated filter must not match a Standalone fact');
+  assert.ok(!consolidated.fact.test(nonConsolidatedFactText));
+  assert.ok(standalone.fact.test(standaloneFactText));
+  assert.ok(!standalone.fact.test(consolidatedFactText));
+  assert.ok(nonConsolidatedFactText.match(nonConsolidated.fact));
 });

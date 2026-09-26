@@ -5,6 +5,7 @@ import {
   calculateYoY,
   getExecutionRatingLabel,
   buildFinancialSnapshot,
+  isSubYearPeriod,
   calculateFinancialDeliveryScore,
   calculateGuidanceAccuracyScore,
   calculateStrategicExecutionScore,
@@ -171,4 +172,41 @@ test('deduplicateFacts removes duplicate entries across identical period and tit
   assert.equal(unique.length, 2);
   assert.equal(unique[0].period, 'FY2025');
   assert.equal(unique[1].period, 'FY2024');
+});
+
+test('a quarterly fact never becomes the fiscal year in the annual series', () => {
+  const facts = [
+    // Real shape from an exchange filing set: four quarters plus the full year, all labelled with the same fiscal year.
+    { period: 'Q1 FY2026', metrics: { metric: 'REVENUE', actualValue: 1000 } },
+    { period: 'Q2 FY2026', metrics: { metric: 'REVENUE', actualValue: 1100 } },
+    { period: 'Q3 FY2026', metrics: { metric: 'REVENUE', actualValue: 1200 } },
+    { period: 'Q4 FY2026', metrics: { metric: 'REVENUE', actualValue: 1300 } },
+    { period: 'FY2026', metrics: { metric: 'REVENUE', actualValue: 4600 } },
+    { period: 'Q4 FY2025', metrics: { metric: 'REVENUE', actualValue: 999 } },
+    { period: 'FY2022', metrics: { metric: 'REVENUE', actualValue: 2300 } },
+  ];
+  const snapshot = buildFinancialSnapshot(facts);
+  const byYear = Object.fromEntries(snapshot.annualSeries.map((row) => [row.year, row.revenue]));
+  assert.equal(byYear[2026], 4600, 'the year is the full-year figure, whatever order the facts arrive in');
+  assert.equal(byYear[2025], undefined, 'a year that has only a quarter has no annual value, rather than that quarter shown as the year');
+  assert.deepEqual(snapshot.coveredYears, ['FY2022', 'FY2026']);
+  assert.equal(snapshot.revenueCagr, calculateCagr(2300, 4600, 4), 'growth is measured between full years');
+
+  const reversed = buildFinancialSnapshot([...facts].reverse());
+  assert.equal(reversed.annualSeries.find((row) => row.year === 2026).revenue, 4600, 'order does not matter');
+});
+
+test('sub-year period labels are recognised, and full-year labels are not mistaken for them', () => {
+  for (const label of ['Q1 FY2026', 'Q4FY25', 'q3 fy2024', 'H1 FY2025', '9M FY2025', 'FY2026 Q2']) assert.equal(isSubYearPeriod(label), true, label);
+  for (const label of ['FY2026', 'FY25', 'FY2026 (12M)', '2025', 'FY2024-25', '', null, undefined]) assert.equal(isSubYearPeriod(label), false, String(label));
+});
+
+test('a company with only quarterly facts has no annual series, so no growth rate or score is invented from them', () => {
+  const quarterly = ['Q1', 'Q2', 'Q3', 'Q4'].flatMap((q) => [2024, 2025, 2026].map((y) => ({ period: `${q} FY${y}`, category: 'FINANCIAL_PERFORMANCE', metrics: { metric: 'REVENUE', actualValue: 100 + y } })));
+  const snapshot = buildFinancialSnapshot(quarterly);
+  assert.equal(snapshot.annualSeries.length, 0);
+  assert.equal(snapshot.revenueCagr, null);
+  const result = calculateCompanyExecutionScore({ facts: quarterly, promises: [], profile: {} });
+  assert.equal(result.executionScore, null);
+  assert.equal(result.isInsufficient, true);
 });

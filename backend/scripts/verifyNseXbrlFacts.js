@@ -28,14 +28,14 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertMongoTarget } from '../utils/mongoTarget.js';
 import {
-  TAG_MAP, RUPEES_PER_CRORE, NSE_REQUEST_HEADERS, periodRange, parseXbrlContexts, findTagForPeriod, findTagByStatedPeriod,
+  TAG_MAP, RUPEES_PER_CRORE, NSE_REQUEST_HEADERS, periodRange, parseXbrlContexts, findTagForPeriod, findTagByStatedPeriod, checkQuarterSums,
 } from '../services/NseXbrlService.js';
 
 const BACKEND_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SUM_METRICS = ['REVENUE', 'PAT']; // additive across quarters; EPS and margins are not
 
-/** "Consolidated" / "Non-Consolidated" as recorded in the stored fact text, or null. */
-export const basisOf = (fact) => String(fact?.fact || '').match(/\((Consolidated|Non-Consolidated),/)?.[1] || null;
+/** The basis as recorded in the stored fact text ("Consolidated" / "Non-Consolidated" from the legacy feed, "Standalone" from the integrated one), or null. */
+export const basisOf = (fact) => String(fact?.fact || '').match(/\((Consolidated|Non-Consolidated|Standalone),/)?.[1] || null;
 
 const isExchangeHost = (url) => { try { const h = new URL(url).hostname.toLowerCase(); return h === 'nseindia.com' || h.endsWith('.nseindia.com'); } catch { return false; } };
 
@@ -60,7 +60,10 @@ export const verifyFactAgainstXml = (fact, xml, contexts = parseXbrlContexts(xml
   const range = periodRange(fact.period);
   if (!range) return { status: 'PERIOD_UNREADABLE', detail: fact.period };
 
-  const found = findTagForPeriod(xml, mapping.tag, range, contexts);
+  // A full-year figure stored through the period the filing STATES (its declared context dates differ) says so in its
+  // provenance; only such a fact may be re-read that way, so an ordinary fact is never checked through the looser path.
+  const statedYear = /^FY\d{4}$/.test(String(fact.period)) && /Period stated by the filing/.test(String(fact.source?.excerpt || ''));
+  const found = findTagForPeriod(xml, mapping.tag, range, contexts) || (statedYear ? findTagByStatedPeriod(xml, mapping.tag, range) : null);
   if (!found) return { status: 'NO_CONTEXT_FOR_PERIOD', detail: `${mapping.tag} has no non-dimensioned value for ${range.start}..${range.end}` };
 
   const expected = expectedStoredValue(mapping, found.value);
@@ -74,12 +77,8 @@ export const verifyFactAgainstXml = (fact, xml, contexts = parseXbrlContexts(xml
   return { status: 'MATCH', detail: `${mapping.tag} ${found.contextRef}` };
 };
 
-/** checkQuarterSums - pure. Four quarterly figures must add up to the full-year figure (crore), within rounding. */
-export const checkQuarterSums = (quarterValues, fullYearValue) => {
-  const sum = Number(quarterValues.reduce((s, v) => s + v, 0).toFixed(2));
-  const tolerance = Math.max(0.5, Math.abs(fullYearValue) * 0.001);
-  return { status: Math.abs(sum - fullYearValue) <= tolerance ? 'SUM_MATCH' : 'SUM_MISMATCH', sum, fullYear: fullYearValue, difference: Number((sum - fullYearValue).toFixed(2)) };
-};
+// Kept exported here for existing callers; the check itself lives in the service, where the collector also uses it.
+export { checkQuarterSums };
 
 const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 const fetchXml = async (url) => {

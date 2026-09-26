@@ -169,3 +169,21 @@ test('and it still catches quarters that do not sum to that corroborated full ye
   assert.equal(result.sums.ok, 0);
   assert.equal(result.sums.mismatches[0].status, 'SUM_MISMATCH');
 });
+
+test('a stated-period full year is verified through the stated period, and only when its provenance says it was read that way', () => {
+  const conflicted = doc(
+    ctx('OneD', '2023-01-01', '2023-03-31'), ctx('FourD', '2023-01-01', '2023-03-31'),
+    '<in-bse-fin:DateOfStartOfReportingPeriod contextRef="OneD">2023-01-01</in-bse-fin:DateOfStartOfReportingPeriod><in-bse-fin:DateOfEndOfReportingPeriod contextRef="OneD">2023-03-31</in-bse-fin:DateOfEndOfReportingPeriod>',
+    '<in-bse-fin:DateOfStartOfReportingPeriod contextRef="FourD">2022-04-01</in-bse-fin:DateOfStartOfReportingPeriod><in-bse-fin:DateOfEndOfReportingPeriod contextRef="FourD">2023-03-31</in-bse-fin:DateOfEndOfReportingPeriod>',
+    rev('OneD', cr(15215)), rev('FourD', cr(60580)),
+  );
+  const record = { ...RECORD, fromDate: '01-Jan-2023', toDate: '31-Mar-2023' };
+  const facts = extractFactsFromFiling(conflicted, record, { allowStatedFullYear: true });
+  const year = facts.find((f) => f.period === 'FY2023' && f.metric === 'REVENUE');
+  year.extraction.corroboration = { method: 'QUARTER_SUM', evidence: [] };
+  const stored = toFactDocument(year);
+  assert.equal(verifyFactAgainstXml(stored, conflicted).status, 'MATCH');
+
+  const withoutMarker = { ...stored, source: { ...stored.source, excerpt: stored.source.excerpt.replace(/ \[Period stated.*$/, '') } };
+  assert.equal(verifyFactAgainstXml(withoutMarker, conflicted).status, 'NO_CONTEXT_FOR_PERIOD', 'an ordinary fact is never re-read through the looser path');
+});

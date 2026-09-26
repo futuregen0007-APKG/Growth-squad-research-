@@ -54,7 +54,7 @@ const NO_KEEPALIVE_AGENT = new https.Agent({ keepAlive: false });
 const RETRYABLE_HTTP_STATUS = new Set([429, 502, 503, 504]);
 
 /** Bounded retry for transient network/HTTP-parse errors and 429/502/503/504 only (BSE's own servers occasionally send a malformed header, confirmed live) -- never for a real 4xx rejection like 404/400. */
-const withRetry = async (fn, { retries = 4, baseDelayMs = 800 } = {}) => {
+export const withRetry = async (fn, { retries = 4, baseDelayMs = 800 } = {}) => {
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
       // eslint-disable-next-line no-await-in-loop
@@ -283,9 +283,19 @@ export const searchExchangeFilings = async (symbol, fiscalYear, { documentTypes 
   return results;
 };
 
+/** The Referer an exchange's own site would send for one of its documents. */
+export const refererForDocument = (url) => {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === 'nseindia.com' || host.endsWith('.nseindia.com') ? 'https://www.nseindia.com/' : 'https://www.bseindia.com/';
+  } catch {
+    return 'https://www.bseindia.com/';
+  }
+};
+
 const downloadPdf = async (url) => {
   const response = await downloadSemaphore.run(() => withRetry(() => axios.get(url, {
-    headers: { 'User-Agent': BROWSER_UA, Referer: 'https://www.bseindia.com/' },
+    headers: { 'User-Agent': BROWSER_UA, Referer: refererForDocument(url) },
     responseType: 'arraybuffer',
     httpsAgent: NO_KEEPALIVE_AGENT,
     timeout: 30000,
@@ -397,6 +407,7 @@ export const downloadAndRegisterFiling = async (filing) => {
     try {
       buffer = await downloadPdf(filing.url);
     } catch (primaryError) {
+      if (!filing.fallbackUrl) throw primaryError; // an NSE filing has one location only
       buffer = await downloadPdf(filing.fallbackUrl); // AttachLive vs AttachHis -- try the historical path if the live one 404s
     }
     const pdfHash = hashDocumentContent(buffer);

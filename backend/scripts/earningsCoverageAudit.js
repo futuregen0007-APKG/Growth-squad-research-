@@ -68,16 +68,37 @@ const emptyRow = (symbol) => ({
   companyName: SUPPORTED_STOCKS[symbol]?.name || symbol,
   featured: FEATURED_SYMBOLS.includes(symbol),
   profile: { present: false, researchEnabled: null, bseScripCode: null, marketCapCr: null },
-  facts: { real: 0, financial: 0, nonReal: 0, uniqueSourceDocs: 0, exchangeSourceDocs: 0, coveredYears: [], missingYears: [], byYear: {} },
-  promises: { real: 0, publicSafe: 0, curatedFile: 0, candidates: { pending: 0, accepted: 0, rejected: 0 } },
+  facts: {
+    real: 0, financial: 0, nonReal: 0, uniqueSourceDocs: 0, exchangeSourceDocs: 0, coveredYears: [], missingYears: [], byYear: {}, fullYearFacts: [], quarterlyFacts: 0, missingQuarters: [],
+  },
+  promises: {
+    real: 0, publicSafe: 0, curatedFile: 0, candidates: { pending: 0, accepted: 0, rejected: 0 }, outcomes: {}, acceptedOutcomes: {},
+  },
   registry: { total: 0, extracted: 0, failed: 0, inFlight: 0, eligible: 0, promiseExtracted: 0, promiseFailed: 0, promisePending: 0, topErrors: [] },
   job: null,
   run: null,
 });
 
+// promiseStage values that a site visitor can actually see something for: ACCEPTED_PRESENT means the timeline API
+// serves real accepted promises; EXTRACTED_NONE_FOUND means every eligible document was read and none carried
+// qualifying guidance, which is itself a definite, deliverable answer. CANDIDATES_PENDING_REVIEW and NOT_RUN are
+// NOT deliverable -- a visitor hitting the timeline API for either still gets dataMode RESEARCH_PENDING, whatever
+// the financial-facts side shows (confirmed live for RELIANCE/HDFCBANK/HINDUNILVR: each had 5/5 financial years
+// and only PENDING_REVIEW candidates, and the timeline API reported dataMode:'RESEARCH_PENDING', not curated data).
+const DELIVERABLE_PROMISE_STAGES = ['ACCEPTED_PRESENT', 'EXTRACTED_NONE_FOUND'];
+
 /**
  * classifyCoverage - pure. Takes an assembled row and returns the category
  * and the human-readable reasons. See the header for what each means.
+ *
+ * Four things are tracked and reported SEPARATELY, and COMPLETE requires all
+ * four to be genuinely finished -- never inferred from one alone:
+ *   1. financial coverage   -- years/expectedYears, from real, sourced facts
+ *   2. promise extraction   -- has the stage run at all (promiseStage)
+ *   3. accepted promises    -- promises a visitor can actually see (never PENDING_REVIEW)
+ *   4. outcome verification -- of the accepted promises, how many have a resolved outcome
+ * A company with 5/5 financial years but only PENDING_REVIEW candidates is
+ * PARTIAL, not COMPLETE: its promise/outcome side is not yet deliverable.
  */
 export const classifyCoverage = (row, { expectedYears }) => {
   const { facts, promises, registry: reg, job, profile } = row;
@@ -89,6 +110,7 @@ export const classifyCoverage = (row, { expectedYears }) => {
     : promises.candidates.pending > 0 ? 'CANDIDATES_PENDING_REVIEW'
       : (reg.eligible > 0 && reg.promisePending === 0 && reg.promiseFailed === 0) ? 'EXTRACTED_NONE_FOUND'
         : 'NOT_RUN';
+  const promiseDeliverable = DELIVERABLE_PROMISE_STAGES.includes(promiseStage);
 
   if (profile.present && profile.researchEnabled === false) {
     return { category: 'BLOCKED', promiseStage, reasons: ['No resolvable BSE scrip code (profile researchEnabled=false)'] };
@@ -104,13 +126,19 @@ export const classifyCoverage = (row, { expectedYears }) => {
   if (years < expectedYears) reasons.push(`Financial coverage ${years}/${expectedYears} years (missing ${facts.missingYears.map((y) => `FY${y}`).join(', ') || 'none'})`);
   if (years > 0 && facts.exchangeSourceDocs === 0) reasons.push('No exchange-hosted source document behind the covered years');
   if (promiseStage === 'NOT_RUN') reasons.push('Promise extraction has not run (or is unprovable: no document registry rows)');
+  if (promiseStage === 'CANDIDATES_PENDING_REVIEW') reasons.push(`${promises.candidates.pending} promise candidate(s) await human review (npm run earnings:review) -- the timeline API still reports RESEARCH_PENDING until then`);
+  if (promiseStage === 'ACCEPTED_PRESENT') {
+    const acceptedOutcomes = promises.acceptedOutcomes || {};
+    const unresolved = (acceptedOutcomes.PENDING || 0) + (acceptedOutcomes.INSUFFICIENT_EVIDENCE || 0) + (acceptedOutcomes.UNKNOWN || 0);
+    if (unresolved > 0) reasons.push(`${unresolved} of ${acceptedPromises} accepted promise(s) have no resolved outcome yet`);
+  }
   if (reg.inFlight > 0) reasons.push(`${reg.inFlight} registry document(s) still FETCHED/PENDING`);
   if (reg.failed > 0) reasons.push(`${reg.failed} registry document(s) FAILED`);
   if (job && ACTIVE_JOB_STATUSES.includes(job.status)) reasons.push(`Job still ${job.status}`);
 
   const financialComplete = years === expectedYears && facts.exchangeSourceDocs >= 1;
   const settled = reg.inFlight === 0 && !(job && ACTIVE_JOB_STATUSES.includes(job.status));
-  if (financialComplete && promiseStage !== 'NOT_RUN' && settled) {
+  if (financialComplete && promiseDeliverable && settled) {
     return { category: 'COMPLETE', promiseStage, reasons: reasons.length ? reasons : ['All checks passed'] };
   }
 
@@ -158,7 +186,7 @@ export const collectCoverageRows = async (db, { symbols = null, now = new Date()
     col('companyhistoricalfacts').find({ dataOrigin: 'REAL_RESEARCH' }, { projection: { symbol: 1, period: 1, 'metrics.metric': 1, 'metrics.actualValue': 1, 'source.url': 1 } }).toArray(),
     col('companyhistoricalfacts').aggregate([{ $match: { dataOrigin: { $ne: 'REAL_RESEARCH' } } }, { $group: { _id: '$symbol', n: { $sum: 1 } } }]).toArray(),
     col('managementpromises').find({ dataOrigin: 'REAL_RESEARCH' }, { projection: { symbol: 1, 'evidenceIntegrity.status': 1, 'evidence.promiseSource.sourceUrl': 1 } }).toArray(),
-    col('promisecandidates').aggregate([{ $group: { _id: { symbol: '$symbol', status: '$reviewStatus' }, n: { $sum: 1 } } }]).toArray(),
+    col('promisecandidates').aggregate([{ $group: { _id: { symbol: '$symbol', status: '$reviewStatus', outcome: '$outcome.status' }, n: { $sum: 1 } } }]).toArray(),
     col('companydocumentregistries').find({}, { projection: { symbol: 1, sourceType: 1, extractionStatus: 1, promiseExtractionStatus: 1, error: 1 } }).toArray(),
     col('researchjobs').find({}).toArray(),
     col('researchruns').find({ dataOrigin: 'REAL_RESEARCH' }).toArray(),
@@ -171,6 +199,8 @@ export const collectCoverageRows = async (db, { symbols = null, now = new Date()
 
   const urlSets = new Map();
   const yearSets = new Map();
+  const quarterSets = new Map(); // symbol -> Set of "2026Q3"
+  const fullYearSets = new Map(); // symbol -> Set of 2026 (a fact labelled FY2026 itself)
   for (const fact of realFacts) {
     const row = rowFor(fact.symbol);
     if (!row) continue;
@@ -184,6 +214,14 @@ export const collectCoverageRows = async (db, { symbols = null, now = new Date()
         if (!yearSets.has(row.symbol)) yearSets.set(row.symbol, new Set());
         yearSets.get(row.symbol).add(year);
         row.facts.byYear[year] = (row.facts.byYear[year] || 0) + 1;
+        const quarter = String(fact.period).match(/^Q([1-4]) FY(\d{4})$/);
+        if (quarter) {
+          if (!quarterSets.has(row.symbol)) quarterSets.set(row.symbol, new Set());
+          quarterSets.get(row.symbol).add(`${quarter[2]}Q${quarter[1]}`);
+        } else if (/^FY\d{4}$/.test(String(fact.period))) {
+          if (!fullYearSets.has(row.symbol)) fullYearSets.set(row.symbol, new Set());
+          fullYearSets.get(row.symbol).add(year);
+        }
       }
     }
     if (isHttpUrl(url)) {
@@ -210,6 +248,11 @@ export const collectCoverageRows = async (db, { symbols = null, now = new Date()
     if (!row) continue;
     const key = { PENDING_REVIEW: 'pending', ACCEPTED: 'accepted', REJECTED: 'rejected' }[item._id.status];
     if (key) row.promises.candidates[key] += item.n;
+    const outcome = item._id.outcome || 'UNKNOWN';
+    row.promises.outcomes[outcome] = (row.promises.outcomes[outcome] || 0) + item.n;
+    // Only an ACCEPTED candidate is ever shown to a visitor (PENDING_REVIEW never reaches the timeline API), so
+    // outcome verification is reported for this subset specifically -- never blended with unreviewed candidates.
+    if (item._id.status === 'ACCEPTED') row.promises.acceptedOutcomes[outcome] = (row.promises.acceptedOutcomes[outcome] || 0) + item.n;
   }
 
   const errorCounts = new Map();
@@ -254,6 +297,15 @@ export const collectCoverageRows = async (db, { symbols = null, now = new Date()
     const years = [...(yearSets.get(row.symbol) || [])].sort();
     row.facts.coveredYears = years;
     row.facts.missingYears = Array.from({ length: window.expectedYears }, (_, i) => window.fromYear + i).filter((y) => !years.includes(y));
+    // Quarter-level detail. Only meaningful for a company that has quarterly facts at all (exchange XBRL); a
+    // company known only from fiscal-year documents would otherwise list every quarter as missing.
+    const quarters = quarterSets.get(row.symbol) || new Set();
+    row.facts.quarterlyFacts = quarters.size;
+    row.facts.fullYearFacts = [...(fullYearSets.get(row.symbol) || [])].sort();
+    row.facts.missingQuarters = quarters.size
+      ? Array.from({ length: window.expectedYears }, (_, i) => window.fromYear + i)
+        .flatMap((y) => [1, 2, 3, 4].filter((q) => !quarters.has(`${y}Q${q}`)).map((q) => `FY${y} Q${q}`))
+      : [];
     const urls = [...(urlSets.get(row.symbol) || [])];
     row.facts.uniqueSourceDocs = urls.length;
     row.facts.exchangeSourceDocs = urls.filter(isExchangeHosted).length;
@@ -362,6 +414,17 @@ export const renderMarkdown = ({ label, target, window, rows, summary, api }) =>
     '| Symbol | Category | FY covered | Real facts | Src docs (exchange) | Promises acc/pend | Registry ok/fail | Job | Reason |', '|---|---|---|---|---|---|---|---|---|');
   for (const r of rows) {
     lines.push(`| ${r.symbol} | ${r.category} | ${yearsCell(r, window)} | ${r.facts.real} | ${r.facts.uniqueSourceDocs} (${r.facts.exchangeSourceDocs}) | ${r.promises.publicSafe + r.promises.curatedFile + r.promises.candidates.accepted}/${r.promises.candidates.pending} | ${r.registry.extracted}/${r.registry.failed} | ${r.job?.status || '-'} | ${r.reasons.join('; ').replace(/\|/g, '/')} |`);
+  }
+  const incomplete = rows.filter((r) => r.category !== 'COMPLETE');
+  if (incomplete.length) {
+    lines.push('', '## Exact gaps of incomplete companies', '',
+      '| Symbol | Category | Missing fiscal years | Missing quarters | Full-year facts | Promise stage | Docs pending/failed | Candidates (outcomes) |', '|---|---|---|---|---|---|---|---|');
+    for (const r of incomplete) {
+      const missingQuarters = r.facts.missingQuarters || [];
+      const quarterCell = !r.facts.quarterlyFacts ? 'no quarterly facts' : missingQuarters.length ? `${missingQuarters.length}: ${missingQuarters.slice(0, 6).join(', ')}${missingQuarters.length > 6 ? ', ...' : ''}` : 'none';
+      const outcomes = Object.entries(r.promises.outcomes || {}).map(([k, v]) => `${k} ${v}`).join(', ');
+      lines.push(`| ${r.symbol} | ${r.category} | ${r.facts.missingYears.map((y) => `FY${y}`).join(', ') || 'none'} | ${quarterCell} | ${(r.facts.fullYearFacts || []).map((y) => `FY${y}`).join(', ') || 'none'} | ${r.promiseStage} | ${r.registry.promisePending}/${r.registry.promiseFailed} | ${r.promises.candidates.pending + r.promises.candidates.accepted + r.promises.candidates.rejected}${outcomes ? ` (${outcomes})` : ''} |`);
+    }
   }
   if (api) {
     lines.push('', '## API view', '', '| Symbol | Report HTTP | Years | Src docs | State | Timeline HTTP | Data mode | Promises |', '|---|---|---|---|---|---|---|---|');

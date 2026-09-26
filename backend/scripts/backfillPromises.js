@@ -40,6 +40,7 @@ import { CompanyDocumentRegistry } from '../models/CompanyDocumentRegistry.js';
 import { getDocumentBuffer } from '../providers/ExchangeFilingDocumentProvider.js';
 import { extractPromisesFromPdfBuffer, buildPromiseCandidate, PROMISE_ELIGIBLE_SOURCE_TYPES } from '../services/PromiseExtractionService.js';
 import { saveCandidates } from '../services/PromiseCandidateService.js';
+import PromiseCandidate from '../models/PromiseCandidate.js';
 import { getCompanyResearchProfile } from '../research/CompanyResearchProfiles.js';
 import { logger } from '../utils/logger.js';
 
@@ -84,8 +85,14 @@ export const resetPromiseExtractionStatus = async (symbol, { fromYear = null, to
   return { symbol: normalized, scoped: Boolean(fromYear && toYear), modifiedCount: result.modifiedCount };
 };
 
+/** maxCandidateSequence - pure. The highest "-CAND-NNN" number among candidate ids (0 when there are none). */
+export const maxCandidateSequence = (ids = []) => ids.reduce((max, id) => {
+  const match = String(id || '').match(/-CAND-(\d+)$/);
+  return match ? Math.max(max, Number(match[1])) : max;
+}, 0);
+
 export const runPromiseBackfillForSymbol = async (symbol, {
-  resume = false, fromYear = null, toYear = null, onProgress = () => {},
+  resume = false, fromYear = null, toYear = null, onProgress = () => {}, getBuffer = getDocumentBuffer,
 } = {}) => {
   const normalized = String(symbol).toUpperCase();
   const profile = getCompanyResearchProfile(normalized);
@@ -99,8 +106,13 @@ export const runPromiseBackfillForSymbol = async (symbol, {
   }
   const documents = await CompanyDocumentRegistry.find(query).sort({ publicationDate: 1 }).lean();
 
-  const summary = { symbol: normalized, documentsConsidered: documents.length, documentsProcessed: 0, candidatesGenerated: 0, candidatesSaved: 0, errors: [] };
-  let sequence = await CompanyDocumentRegistry.countDocuments({ symbol: normalized, promiseExtractionStatus: 'EXTRACTED' });
+  const summary = {
+    symbol: normalized, documentsConsidered: documents.length, documentsProcessed: 0, documentsWithNoGuidance: 0, candidatesGenerated: 0, candidatesSaved: 0, errors: [],
+  };
+  // New ids continue after the highest one already on file for this company. Seeding from the
+  // number of extracted documents (as this once did) can land on an id an earlier run created,
+  // and candidate ids are unique, so that candidate would fail to save on a resumed run.
+  let sequence = maxCandidateSequence((await PromiseCandidate.find({ symbol: normalized }, { id: 1 }).lean()).map((c) => c.id));
 
   for (let i = 0; i < documents.length; i += 1) {
     const doc = documents[i];
@@ -109,7 +121,7 @@ export const runPromiseBackfillForSymbol = async (symbol, {
     try {
       // eslint-disable-next-line no-await-in-loop
       await withTimeout((async () => {
-        const { buffer, source } = await getDocumentBuffer(doc);
+        const { buffer, source } = await getBuffer(doc);
         if (!buffer) throw new Error(`No durable copy and source re-fetch failed (${source})`);
 
         const extracted = await extractPromisesFromPdfBuffer(buffer, {
@@ -135,6 +147,8 @@ export const runPromiseBackfillForSymbol = async (symbol, {
 
         await CompanyDocumentRegistry.updateOne({ _id: doc._id }, { $set: { promiseExtractionStatus: 'EXTRACTED', promisesExtracted: candidates.length } });
         summary.documentsProcessed += 1;
+        // Read in full and nothing qualified: a finding about the document, recorded apart from the failure path below.
+        if (!candidates.length) summary.documentsWithNoGuidance += 1;
         summary.candidatesGenerated += candidates.length;
         summary.candidatesSaved += saved;
         onProgress(`${progressPrefix} -- done: ${candidates.length} candidate(s), ${saved} saved`);

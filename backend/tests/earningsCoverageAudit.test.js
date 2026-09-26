@@ -73,7 +73,9 @@ const baseRow = (over = {}) => ({
   symbol: 'AAA',
   profile: { present: true, researchEnabled: true, bseScripCode: '500001', marketCapCr: 100 },
   facts: { real: 0, financial: 0, nonReal: 0, uniqueSourceDocs: 0, exchangeSourceDocs: 0, coveredYears: [], missingYears: [2022, 2023, 2024, 2025, 2026], byYear: {} },
-  promises: { real: 0, publicSafe: 0, curatedFile: 0, candidates: { pending: 0, accepted: 0, rejected: 0 } },
+  promises: {
+    real: 0, publicSafe: 0, curatedFile: 0, candidates: { pending: 0, accepted: 0, rejected: 0 }, outcomes: {}, acceptedOutcomes: {},
+  },
   registry: { total: 0, extracted: 0, failed: 0, inFlight: 0, eligible: 0, promiseExtracted: 0, promiseFailed: 0, promisePending: 0, topErrors: [] },
   job: null,
   run: null,
@@ -104,12 +106,34 @@ test('missing years are named, and accepted promises alone do not make a company
   assert.ok(result.reasons.some((r) => /3\/5 years \(missing FY2025, FY2026\)/.test(r)));
 });
 
-test('pending-review candidates count as processed promise work but never as accepted', () => {
-  const row = baseRow({ facts: fullYears, promises: { real: 0, publicSafe: 0, curatedFile: 0, candidates: { pending: 4, accepted: 0, rejected: 0 } } });
+test('pending-review candidates count as processed promise work but never as accepted, and never make a company COMPLETE', () => {
+  const row = baseRow({
+    facts: fullYears,
+    promises: {
+      real: 0, publicSafe: 0, curatedFile: 0, candidates: { pending: 4, accepted: 0, rejected: 0 }, outcomes: {}, acceptedOutcomes: {},
+    },
+  });
   const result = classifyCoverage(row, WINDOW);
   assert.equal(result.promiseStage, 'CANDIDATES_PENDING_REVIEW');
-  assert.equal(result.category, 'COMPLETE');
+  // Financial years are all covered, but nothing a visitor can see exists yet (the timeline API would still
+  // report RESEARCH_PENDING) -- this is the exact shape RELIANCE/HDFCBANK/HINDUNILVR were wrongly marked COMPLETE
+  // under the old rule (financialComplete && promiseStage !== 'NOT_RUN'), confirmed live against the API.
+  assert.equal(result.category, 'PARTIAL');
+  assert.ok(result.reasons.some((r) => /4 promise candidate\(s\) await human review/.test(r)));
   assert.equal(summarize([{ ...row, ...result }]).acceptedPromises, 0, 'a pending candidate must never be counted as an accepted promise');
+});
+
+test('accepted promises make a company COMPLETE even while some outcomes are still PENDING, and the unresolved count is reported separately', () => {
+  const row = baseRow({
+    facts: fullYears,
+    promises: {
+      real: 3, publicSafe: 1, curatedFile: 0, candidates: { pending: 0, accepted: 2, rejected: 0 }, outcomes: {}, acceptedOutcomes: { ACHIEVED: 1, PENDING: 2 },
+    },
+  });
+  const result = classifyCoverage(row, WINDOW);
+  assert.equal(result.promiseStage, 'ACCEPTED_PRESENT');
+  assert.equal(result.category, 'COMPLETE', 'accepted promises are deliverable now, even if a forward-looking one has no outcome yet');
+  assert.ok(result.reasons.some((r) => /2 of 3 accepted promise\(s\) have no resolved outcome yet/.test(r)), 'outcome verification is reported apart from acceptance');
 });
 
 test('a company with nothing stored is PENDING, and an attempted-but-empty one says so', () => {
@@ -249,4 +273,27 @@ test('the markdown report states the target, the window and every symbol', () =>
   assert.match(md, /FY2022-FY2026/);
   assert.match(md, /\| AAA \| PARTIAL \| 5\/5 \|/);
   assert.ok(!/x \| y/.test(md), 'a pipe inside a reason must not break the table');
+});
+
+test('quarter-level gaps, full-year facts and candidate outcomes are reported per company', async () => {
+  const db = fakeDb({
+    companyhistoricalfacts: [
+      fact('AAA', 'Q1 FY2026'), fact('AAA', 'Q2 FY2026'), fact('AAA', 'Q4 FY2026'), fact('AAA', 'FY2026'), fact('AAA', 'Q1 FY2025'),
+      fact('AAA', 'Q3 FY2026', { metrics: { metric: 'OTHER_INCOME', actualValue: 1 } }),
+      fact('BBB', 'FY2024'),
+    ],
+    promisecandidates: [
+      { symbol: 'AAA', reviewStatus: 'PENDING_REVIEW' }, { symbol: 'AAA', reviewStatus: 'PENDING_REVIEW' },
+    ],
+  });
+  const { rows } = await collectCoverageRows(db, { symbols: ['AAA', 'BBB'], now: new Date('2026-09-25T00:00:00Z') });
+  const [aaa, bbb] = rows;
+  assert.equal(aaa.facts.quarterlyFacts, 4, 'a non-coverage metric does not count as a quarter');
+  assert.deepEqual(aaa.facts.fullYearFacts, [2026]);
+  assert.ok(aaa.facts.missingQuarters.includes('FY2026 Q3'), 'a quarter that only has a non-coverage metric is missing');
+  assert.ok(!aaa.facts.missingQuarters.includes('FY2026 Q1'));
+  assert.ok(aaa.facts.missingQuarters.includes('FY2022 Q1'));
+  assert.equal(aaa.facts.missingQuarters.length, 20 - 3 - 1, '20 quarters in the window, minus Q1/Q2/Q4 FY2026 and Q1 FY2025');
+  assert.deepEqual(aaa.promises.outcomes, { UNKNOWN: 2 }, 'outcome status is unknown when the store gives none');
+  assert.deepEqual([bbb.facts.quarterlyFacts, bbb.facts.missingQuarters], [0, []], 'a company with no quarterly facts does not list every quarter as missing');
 });

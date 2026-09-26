@@ -57,6 +57,13 @@ export const TAG_MAP = Object.freeze([
   { tag: 'ProfitLossForThePeriod', metric: 'PAT', scale: 'RUPEES', label: 'Profit for the period', fallback: true },
   { tag: 'BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations', metric: 'EPS', scale: 'PER_SHARE', label: 'Basic earnings per share', fallback: true },
   { tag: 'BasicEarningsPerShareAfterExtraordinaryItems', metric: 'EPS', scale: 'PER_SHARE', label: 'Basic earnings per share', fallback: true },
+
+  // Insurers file the shareholders' result under these names (checked live on
+  // SBI Life's FY2026 filing: PAT 804.6 crore, and total `Income` reconciles to
+  // premium plus investment income). No other filing format uses them.
+  { tag: 'ProfitLossAfterTaxAndExtraordinaryItems', metric: 'PAT', scale: 'RUPEES', label: 'Profit after tax', fallback: true },
+  { tag: 'ProfitLossBeforeTax', metric: 'PROFIT_BEFORE_TAX', scale: 'RUPEES', label: 'Profit before tax', fallback: true },
+  { tag: 'BasicAndDilutedEPSAfterExtraordinaryItemsNetOfTaxExpenseForThePeriodNotToBeAnnualized', metric: 'EPS', scale: 'PER_SHARE', label: 'Basic and diluted earnings per share', fallback: true },
 ]);
 
 /** Every tag a stored fact of this metric may legitimately have been read from. */
@@ -117,6 +124,47 @@ export const parseNseDate = (value) => {
 
 const isoDay = (date) => (date ? date.toISOString().slice(0, 10) : null);
 
+const MONTH_LABELS = Object.freeze(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
+
+/** A UTC date written the way NSE writes it ("01-Jan-2026"); the inverse of parseNseDate for a whole day. */
+export const toNseDateString = (date) => `${String(date.getUTCDate()).padStart(2, '0')}-${MONTH_LABELS[date.getUTCMonth()]}-${date.getUTCFullYear()}`;
+
+/**
+ * integratedRowToRecord - maps one row of NSE's Integrated Filing (Financials)
+ * feed (`/api/integrated-filing-results`, which is current where the legacy
+ * `corporates-financial-results` index stops at the quarter ended 2024-12-31)
+ * onto the record shape the rest of this service reads.
+ *
+ * The feed gives the quarter END (`qe_Date`, e.g. "31-MAR-2026") but no start.
+ * A results filing is for one quarter, so the start is the first day of the
+ * month two before the end month. That is only a claim about which context to
+ * look for: a figure is still stored only if the filing's own XBRL carries a
+ * context spanning exactly that period, so a wrong guess yields no fact, never
+ * a wrong one. Rows with no XBRL link, or an end date that is not a month end,
+ * are refused (null).
+ */
+export const integratedRowToRecord = (row) => {
+  const end = parseNseDate(row?.qe_Date);
+  if (!end || !row?.xbrl) return null;
+  if (new Date(end.getTime() + 86_400_000).getUTCDate() !== 1) return null;
+  const start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - 2, 1));
+  return {
+    symbol: row.symbol,
+    companyName: row.cmName || row.smName || row.symbol,
+    fromDate: toNseDateString(start),
+    toDate: toNseDateString(end),
+    relatingTo: null,
+    consolidated: row.consolidated,
+    audited: row.audited,
+    // A revision has no broadcast date; its revision date is when it superseded the original.
+    filingDate: row.revised_Date || row.broadcast_Date || row.creation_Date || null,
+    cumulative: null,
+    xbrl: row.xbrl,
+    feed: 'INTEGRATED_FILING',
+    filingKind: row.type_Sub || null,
+  };
+};
+
 /** "01-Oct-2024".."31-Dec-2024" + "Third Quarter" -> "Q3 FY2025" (Indian FY ends 31 Mar). */
 export const toReportingPeriod = ({ fromDate, toDate, relatingTo }) => {
   const end = parseNseDate(toDate);
@@ -124,7 +172,19 @@ export const toReportingPeriod = ({ fromDate, toDate, relatingTo }) => {
   const month = end.getUTCMonth();
   const fiscalYear = month >= 3 ? end.getUTCFullYear() + 1 : end.getUTCFullYear();
   const quarterByName = { 'First Quarter': 1, 'Second Quarter': 2, 'Third Quarter': 3, 'Fourth Quarter': 4 };
-  const quarter = quarterByName[relatingTo] || Math.floor(((month + 9) % 12) / 3) + 1;
+  const calendarQuarter = Math.floor(((month + 9) % 12) / 3) + 1;
+  const namedQuarter = quarterByName[relatingTo];
+  // A company whose own fiscal year does not run April-March numbers its quarters differently (checked live:
+  // ABB India and VBL historically reported January-December, Siemens India October-September, each moving
+  // to the standard April-March year only in its Integrated Filings from FY2025 -- e.g. ABB's own filing
+  // states financialYear "01-Jan-2022 To 31-Dec-2022" while NSE's relatingTo says "First Quarter" for a
+  // filing whose dates are 01-Jan-2022..31-Mar-2022). Every other part of this system (the coverage window,
+  // quarter-sum corroboration, the annual snapshot) assumes the standard April-March grid, so a filing whose
+  // own relatingTo disagrees with the quarter its calendar dates imply under that grid cannot be safely
+  // placed on it -- refused rather than mislabeled (this exact mismatch was found stored as "Q1 FY2022" for
+  // a Jan-Mar filing, which under the April-March convention this system uses everywhere else is Q4 FY2022).
+  if (namedQuarter !== undefined && namedQuarter !== calendarQuarter) return null;
+  const quarter = calendarQuarter;
   const start = parseNseDate(fromDate);
   const spansYear = start && (end - start) > 300 * 86_400_000;
   return spansYear ? `FY${fiscalYear}` : `Q${quarter} FY${fiscalYear}`;
@@ -239,20 +299,30 @@ export const findTagForPeriod = (xml, tag, { start, end }, contexts = parseXbrlC
 
 export const readTagForPeriod = (xml, tag, range, contexts) => findTagForPeriod(xml, tag, range, contexts)?.value ?? null;
 
-/** Builds the facts one filing yields for its OWN period. Returns [] when the period is unreadable or no tag has a matching context. */
-export const extractFactsFromFiling = (xml, record) => {
-  const period = toReportingPeriod(record);
-  const start = isoDay(parseNseDate(record.fromDate));
-  const end = isoDay(parseNseDate(record.toDate));
-  if (!period || !start || !end) return [];
+/** contextSource of a full-year figure read through the period a filing STATES where its declared context says otherwise. */
+export const STATED_OVER_DECLARED = 'STATED_OVER_DECLARED';
 
-  const filedAt = parseNseDate(record.filingDate) || parseNseDate(record.broadCastDate) || parseNseDate(record.toDate) || new Date();
-  const contexts = parseXbrlContexts(xml);
+/**
+ * Builds the facts for ONE period (a quarter or a full year) from a filing,
+ * each read from the context spanning exactly [start, end]. A metric with no
+ * such context yields nothing.
+ */
+const buildFactsForPeriod = (xml, record, {
+  period, start, end, contexts, filedAt, allowStated = false,
+}) => {
   const facts = [];
 
   for (const mapping of TAG_MAP) {
     if (mapping.fallback && facts.some((f) => f.metric === mapping.metric)) continue;
-    const found = findTagForPeriod(xml, mapping.tag, { start, end }, contexts);
+    // A context the filing declares with different dates than it states is refused above; with allowStated the
+    // period the filing STATES is used instead, and the fact is marked so it is kept only if corroborated.
+    let found = findTagForPeriod(xml, mapping.tag, { start, end }, contexts);
+    if (!found && allowStated) {
+      const stated = findTagByStatedPeriod(xml, mapping.tag, { start, end });
+      // Marked distinctly from a context that is merely undeclared (source STATED, accepted as before): this one
+      // overrides a declaration the filing itself contradicts, so it must be corroborated before it is kept.
+      if (stated) found = { ...stated, source: STATED_OVER_DECLARED };
+    }
     if (!found) continue;
 
     const isPerShare = mapping.scale === 'PER_SHARE';
@@ -290,6 +360,135 @@ export const extractFactsFromFiling = (xml, record) => {
 };
 
 /**
+ * Builds the facts one filing yields. The filing's own quarter always; and,
+ * for a March-quarter (Q4) filing, the full fiscal year too, because a Q4
+ * filing also carries the year-to-date figures, which for that filing are the
+ * whole year. The year is read only if the filing declares a context spanning
+ * exactly April 1 to March 31 (and does not contradict it), so a filing whose
+ * year context is missing or mislabelled yields quarter facts only.
+ * Returns [] when the period is unreadable or no tag has a matching context.
+ */
+export const extractFactsFromFiling = (xml, record, { includeFullYear = true, allowStatedFullYear = false } = {}) => {
+  const period = toReportingPeriod(record);
+  const start = isoDay(parseNseDate(record.fromDate));
+  const end = isoDay(parseNseDate(record.toDate));
+  if (!period || !start || !end) return [];
+
+  const filedAt = parseNseDate(record.filingDate) || parseNseDate(record.broadCastDate) || parseNseDate(record.toDate) || new Date();
+  const contexts = parseXbrlContexts(xml);
+  const facts = buildFactsForPeriod(xml, record, {
+    period, start, end, contexts, filedAt,
+  });
+
+  const fiscalYear = fiscalYearOfPeriod(period);
+  if (includeFullYear && fiscalYear && /^Q4 FY/.test(period) && end === `${fiscalYear}-03-31`) {
+    facts.push(...buildFactsForPeriod(xml, record, {
+      period: `FY${fiscalYear}`, start: `${fiscalYear - 1}-04-01`, end, contexts, filedAt, allowStated: allowStatedFullYear,
+    }));
+  }
+  return facts;
+};
+
+const QUARTER_PERIOD = /^Q([1-4]) FY(\d{4})$/;
+/** Standalone and Non-Consolidated are the same basis under the two feeds' names. */
+export const basisKey = (label) => (/non-?consolidated|standalone/i.test(String(label || '')) ? 'STANDALONE' : /consolidated/i.test(String(label || '')) ? 'CONSOLIDATED' : 'UNKNOWN');
+
+/**
+ * factBasisFilter - a Mongo filter fragment that matches only a stored fact
+ * for the SAME basis as `consolidatedLabel` ("Consolidated" / "Standalone" /
+ * "Non-Consolidated", as toFactDocument writes it verbatim into the fact's
+ * narrative sentence -- there is no separate basis field on the model).
+ * Required in every query that finds-or-upserts an NSE XBRL fact by
+ * {symbol, period, metric} alone: that triple is NOT unique on its own (a
+ * company can file both a Consolidated and a Standalone result for the same
+ * period), so a query without this would let a Standalone figure silently
+ * overwrite a Consolidated one (or vice versa) under the same stored document.
+ */
+export const factBasisFilter = (consolidatedLabel) => ({
+  fact: new RegExp(`\\(${String(consolidatedLabel || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')},`),
+});
+/** Additive across quarters, so four quarters can be summed against the year. Per-share and ratio figures are not. */
+export const ADDITIVE_METRICS = Object.freeze(['REVENUE', 'PAT']);
+
+/** checkQuarterSums - pure. Four quarterly figures must add up to the full-year figure (crore), within rounding. */
+export const checkQuarterSums = (quarterValues, fullYearValue) => {
+  const sum = Number(quarterValues.reduce((s, v) => s + v, 0).toFixed(2));
+  const tolerance = Math.max(0.5, Math.abs(fullYearValue) * 0.001);
+  return {
+    status: Math.abs(sum - fullYearValue) <= tolerance ? 'SUM_MATCH' : 'SUM_MISMATCH', sum, fullYear: fullYearValue, difference: Number((sum - fullYearValue).toFixed(2)),
+  };
+};
+
+/**
+ * corroborateStatedFullYear - pure. Some filings (checked live: many March
+ * 2023 and March 2024 results) DECLARE their year-to-date context with the
+ * quarter's dates while STATING the true full-year period. Those year figures
+ * come back from extractFactsFromFiling marked contextSource STATED_OVER_DECLARED.
+ *
+ * Corroboration is decided PER METRIC, never by group membership: a revenue
+ * figure that sums correctly against its quarters does NOT vouch for PAT, EPS,
+ * or any other metric read from the very same context (a real defect found and
+ * fixed this session -- the first version accepted every metric in a filing
+ * once ANY additive metric in it passed the sum check, which silently stored
+ * unverified EPS/PROFIT_BEFORE_TAX/OTHER_INCOME/EMPLOYEE_COST figures on the
+ * strength of an unrelated REVENUE match). A non-additive metric (anything
+ * outside ADDITIVE_METRICS -- EPS and every ratio/margin) has no quarter-sum
+ * check at all and is therefore NEVER kept via this path, whatever the other
+ * metrics in the same filing corroborate to.
+ *
+ * `facts` are this run's facts; `storedQuarters` are quarter facts already in
+ * the database as { period, metric, value, consolidated, tag }. Returns
+ * { facts, rejected }: `facts` is everything to store, `rejected` names each
+ * withheld (fiscalYear, basis, metric) and why.
+ */
+export const corroborateStatedFullYear = (facts, storedQuarters = []) => {
+  const isStatedYear = (f) => /^FY\d{4}$/.test(f.period) && f.extraction?.contextSource === STATED_OVER_DECLARED;
+  const kept = facts.filter((f) => !isStatedYear(f));
+  const statedYears = facts.filter(isStatedYear);
+  if (!statedYears.length) return { facts, rejected: [] };
+
+  // This run's quarters come first: a filing read now supersedes what is stored.
+  const quarterPool = [
+    ...facts.filter((f) => QUARTER_PERIOD.test(f.period)).map((f) => ({
+      period: f.period, metric: f.metric, value: f.value, consolidated: f.consolidated, tag: f.extraction?.tag,
+    })),
+    ...storedQuarters,
+  ];
+
+  const accepted = [];
+  const rejected = [];
+  for (const fact of statedYears) {
+    const fiscalYear = fact.period;
+    const basis = basisKey(fact.consolidated);
+    if (!ADDITIVE_METRICS.includes(fact.metric)) {
+      rejected.push({
+        fiscalYear, basis, metric: fact.metric, reason: `${fact.metric} cannot be corroborated by quarter-sum (only ${ADDITIVE_METRICS.join('/')} are additive across quarters); a stated-but-undeclared annual context is not trusted for it`,
+      });
+      continue;
+    }
+    const quarters = [1, 2, 3, 4].map((q) => quarterPool.find((p) => p.period === `Q${q} ${fiscalYear}` && p.metric === fact.metric
+      && basisKey(p.consolidated) === basis && p.tag === fact.extraction.tag));
+    if (quarters.some((q) => !q)) {
+      rejected.push({ fiscalYear, basis, metric: fact.metric, reason: 'no complete quarter set on the same basis and tag to corroborate the stated year' });
+      continue;
+    }
+    const check = checkQuarterSums(quarters.map((q) => q.value), fact.value);
+    if (check.status !== 'SUM_MATCH') {
+      rejected.push({
+        fiscalYear, basis, metric: fact.metric, reason: 'the four quarters do not sum to the stated year', failures: [{ metric: fact.metric, ...check }],
+      });
+      continue;
+    }
+    fact.extraction = { ...fact.extraction, corroboration: { method: 'QUARTER_SUM', evidence: [{ metric: fact.metric, ...check }] } };
+    accepted.push(fact);
+  }
+  return { facts: [...kept, ...accepted], rejected };
+};
+
+/** A row's XBRL link is real only if it points at an .xml file; NSE lists a bare "-" (and similar) for filings with none. */
+export const hasXbrlLink = (row) => /^https?:\/\/\S+\.xml$/i.test(String(row?.xbrl || ''));
+
+/**
  * selectFilings - which filings from an NSE results index to read.
  *
  * Only non-cumulative (single-period) filings are read: a cumulative filing
@@ -301,10 +500,12 @@ export const extractFactsFromFiling = (xml, record) => {
  * come first; periods before `fromYear` are dropped; at most `maxFilings` are
  * kept.
  */
-export const selectFilings = (index, { symbol = null, fromYear = null, maxFilings = 12, preferConsolidated = false } = {}) => {
+export const selectFilings = (index, {
+  symbol = null, fromYear = null, toYear = null, maxFilings = 12, preferConsolidated = false,
+} = {}) => {
   const time = (value) => parseNseDate(value)?.getTime() || 0;
   const newestFirst = (index || [])
-    .filter((r) => r.xbrl && (!symbol || r.symbol === symbol) && !/^cumulative$/i.test(String(r.cumulative || '')))
+    .filter((r) => hasXbrlLink(r) && (!symbol || r.symbol === symbol) && !/^cumulative$/i.test(String(r.cumulative || '')))
     .sort((a, b) => time(b.filingDate) - time(a.filingDate));
 
   const byKey = new Map();
@@ -327,9 +528,26 @@ export const selectFilings = (index, { symbol = null, fromYear = null, maxFiling
 
   return chosen
     .filter((entry) => fromYear == null || (fiscalYearOfPeriod(entry.period) ?? 0) >= fromYear)
+    .filter((entry) => toYear == null || (fiscalYearOfPeriod(entry.period) ?? Infinity) <= toYear)
     .sort((a, b) => time(b.filing.toDate) - time(a.filing.toDate))
     .slice(0, maxFilings)
     .map((entry) => entry.filing);
+};
+
+/**
+ * olderVersionsOf - the other single-period filings for the same company,
+ * period and basis as `filing`, newest first. selectFilings keeps only the
+ * newest (a revision supersedes its original); this is the fallback when that
+ * newest file turns out not to carry the statements, so a period is not lost
+ * to a revision that only re-filed a cover page.
+ */
+export const olderVersionsOf = (index, filing) => {
+  const time = (value) => parseNseDate(value)?.getTime() || 0;
+  const period = toReportingPeriod(filing);
+  return (index || [])
+    .filter((r) => r !== filing && hasXbrlLink(r) && r.symbol === filing.symbol && r.consolidated === filing.consolidated
+      && !/^cumulative$/i.test(String(r.cumulative || '')) && toReportingPeriod(r) === period)
+    .sort((a, b) => time(b.filingDate) - time(a.filingDate));
 };
 
 /**
@@ -341,9 +559,9 @@ export const deriveJobOutcome = ({
   indexError = null, filings = 0, factsStored = 0, coveredYears = 0, expectedYears, latestPeriod = null, attempt = 1, maxAttempts = 3,
 }) => {
   if (indexError) {
-    return { status: attempt >= maxAttempts ? 'FAILED_PERMANENT' : 'FAILED_RETRYABLE', lastError: `NSE results index unavailable: ${indexError}` };
+    return { status: attempt >= maxAttempts ? 'FAILED_PERMANENT' : 'FAILED_RETRYABLE', lastError: `NSE results feeds unavailable: ${indexError}` };
   }
-  if (filings === 0) return { status: 'FAILED_PERMANENT', lastError: 'NSE results index has no XBRL filings for this symbol in the requested fiscal years' };
+  if (filings === 0) return { status: 'FAILED_PERMANENT', lastError: 'NSE\'s legacy results index and integrated filing feed have no XBRL filings for this symbol in the requested fiscal years' };
   if (coveredYears >= expectedYears) return { status: 'COMPLETED', lastError: null };
   if (coveredYears > 0) {
     return { status: 'PARTIAL', lastError: `Covered ${coveredYears}/${expectedYears} fiscal years from NSE XBRL${latestPeriod ? `; the newest filing available is ${latestPeriod}` : ''}` };
@@ -353,6 +571,11 @@ export const deriveJobOutcome = ({
     lastError: factsStored === 0 ? 'No filing carried a mapped figure for its own reporting period' : 'Facts stored but none in the requested fiscal years',
   };
 };
+
+/** Provenance note for a full-year figure read through the period the filing states rather than the one it declares. */
+const statedNote = (fact) => (fact.extraction.contextSource === STATED_OVER_DECLARED && fact.extraction.corroboration
+  ? ' [Period stated by the filing; its declared context dates differ. Corroborated: the four quarters sum to this figure.]'
+  : '');
 
 /** The document shape stored for one extracted fact (dataOrigin REAL_RESEARCH, exchange-hosted source URL). */
 export const toFactDocument = (fact) => ({
@@ -377,11 +600,11 @@ export const toFactDocument = (fact) => ({
     url: fact.sourceUrl,
     publishedAt: fact.filedAt,
     pageNumber: null,
-    excerpt: `${fact.label}: ${fact.extraction.originalValue} ${fact.extraction.originalUnit} (XBRL tag ${fact.extraction.tag}, context ${fact.extraction.contextRef} ${fact.extraction.periodStart}..${fact.extraction.periodEnd})`,
+    excerpt: `${fact.label}: ${fact.extraction.originalValue} ${fact.extraction.originalUnit} (XBRL tag ${fact.extraction.tag}, context ${fact.extraction.contextRef} ${fact.extraction.periodStart}..${fact.extraction.periodEnd})${statedNote(fact)}`,
   },
-  confidence: 0.99, // read directly from the company's own filed XBRL
+  confidence: fact.extraction.contextSource === STATED_OVER_DECLARED ? 0.95 : 0.99, // read directly from the company's own filed XBRL
   verified: true,
   dataOrigin: 'REAL_RESEARCH',
   isNegative: false,
-  summary: `Extracted from ${fact.extraction.tag} in the NSE-published XBRL; ${fact.extraction.conversion}.`,
+  summary: `Extracted from ${fact.extraction.tag} in the NSE-published XBRL; ${fact.extraction.conversion}.${statedNote(fact)}`,
 });

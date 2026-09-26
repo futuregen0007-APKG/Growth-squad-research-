@@ -76,7 +76,19 @@ export const extractYearFromPeriod = (period) => {
 };
 
 /**
+ * isSubYearPeriod - true for a period label that covers less than a fiscal
+ * year: "Q3 FY2026", "H1 FY2025", "9M FY2025", "Q4FY25". The annual series
+ * below is keyed by fiscal year, so a quarter must never be filed under (and
+ * overwrite) its year: one quarter's revenue shown as the year's revenue is a
+ * wrong number, and every growth rate and score built on it would be wrong too.
+ * Quarterly facts stay available in the timeline; only the annual series
+ * excludes them.
+ */
+export const isSubYearPeriod = (period) => /(^|[^A-Za-z0-9])(Q[1-4]|H[12]|[1-9]M)(?=FY|[^A-Za-z]|$)/i.test(String(period || ''));
+
+/**
  * Builds 5-Year Verified Financial Track Record matrix and growth calculations
+ * from FULL-YEAR facts only (see isSubYearPeriod).
  */
 export const buildFinancialSnapshot = (facts = []) => {
   const metricHistory = {
@@ -98,6 +110,7 @@ export const buildFinancialSnapshot = (facts = []) => {
   };
 
   facts.forEach(fact => {
+    if (isSubYearPeriod(fact.period)) return;
     const rawMetric = String(fact.metrics?.metric || '').toUpperCase().trim();
     const period = fact.period;
     const year = extractYearFromPeriod(period);

@@ -186,14 +186,30 @@ ${pages.map((p) => `=== PAGE ${p.pageNumber} ===\n${p.text.slice(0, 4000)}`).joi
 const normalizeTargetPeriod = (period) => String(period || '').trim()
   .replace(/FY\s*'?(\d{2})\b/gi, (_, yy) => `FY20${yy}`);
 
+/**
+ * PromiseExtractionFailure - the extraction could not be carried out (no model,
+ * an API/parse error, an unreadable PDF). It is thrown, never returned as an
+ * empty list, because an empty list means "the document was read and holds no
+ * qualifying guidance": a caller that recorded a failure as that would present
+ * an outage as a finding.
+ */
+export class PromiseExtractionFailure extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'PromiseExtractionFailure';
+  }
+}
+
+// A transcript or results filing with less text than this has no usable text layer (a scan or an empty file).
+const MIN_DOCUMENT_TEXT_CHARS = 200;
+
 const extractPromisesFromPageBatch = async (pages, context) => {
   const cacheKey = `promiseextract:${hashBatchForCache(pages, context)}`;
   const cached = await getCache(cacheKey);
   if (cached) return cached;
 
   if (!openai || !process.env.OPENAI_API_KEY) {
-    logger.warn('[PromiseExtractionService] OpenAI not configured -- skipping promise extraction for this batch.');
-    return [];
+    throw new PromiseExtractionFailure('OpenAI is not configured, so promise extraction could not run');
   }
 
   const pageTextByNumber = new Map(pages.map((p) => [p.pageNumber, p.text]));
@@ -231,7 +247,7 @@ const extractPromisesFromPageBatch = async (pages, context) => {
     return validated;
   } catch (error) {
     logger.warn(`[PromiseExtractionService] Extraction failed for ${context.symbol} (pages ${pages.map((p) => p.pageNumber).join(',')}): ${error.message}`);
-    return [];
+    throw new PromiseExtractionFailure(`Promise extraction failed on pages ${pages.map((p) => p.pageNumber).join(',')}: ${error.message}`);
   }
 };
 
@@ -245,16 +261,15 @@ export const extractPromisesFromPdfBuffer = async (buffer, context) => {
   if (!PROMISE_ELIGIBLE_SOURCE_TYPES.has(context.sourceType)) return [];
 
   const pages = await extractPdfPages(buffer);
-  const relevantPages = findRelevantPages(pages);
-  const promises = [];
-
-  for (let i = 0; i < relevantPages.length; i += PAGES_PER_OPENAI_CALL) {
-    const batch = relevantPages.slice(i, i + PAGES_PER_OPENAI_CALL);
-    if (!batch.length) continue;
-    // eslint-disable-next-line no-await-in-loop
-    const batchPromises = await extractPromisesFromPageBatch(batch, context);
-    promises.push(...batchPromises);
+  if (pages.reduce((total, page) => total + page.text.length, 0) < MIN_DOCUMENT_TEXT_CHARS) {
+    throw new PromiseExtractionFailure('The PDF has no extractable text layer (a scan or an empty file), so it could not be read for guidance');
   }
+  const relevantPages = findRelevantPages(pages);
+
+  const batches = [];
+  for (let i = 0; i < relevantPages.length; i += PAGES_PER_OPENAI_CALL) batches.push(relevantPages.slice(i, i + PAGES_PER_OPENAI_CALL));
+  // Issued together; the shared semaphore (configurePromiseExtractionConcurrency) is what bounds how many run at once.
+  const promises = (await Promise.all(batches.map((batch) => extractPromisesFromPageBatch(batch, context)))).flat();
 
   // Dedup near-identical promises within this one document (same metric+period+page).
   const seen = new Set();
@@ -391,6 +406,7 @@ export const buildPromiseCandidate = async (extracted, context, sequence, { outc
 export default {
   extractPromisesFromDocument,
   extractPromisesFromPdfBuffer,
+  PromiseExtractionFailure,
   configurePromiseExtractionConcurrency,
   PROMISE_ELIGIBLE_SOURCE_TYPES,
   buildPromiseCandidate,

@@ -3,7 +3,14 @@
  * ======================
  * `npm run earnings:xbrl-batch -- --expect-target <host>/<database> [--batch-size 10]
  *    [--max-batches N] [--max-runtime-min N] [--symbols A,B] [--from-year 2022]
- *    [--max-filings 24] [--delay-ms 1000] [--pause-ms 2000] [--plan-only]`
+ *    [--max-filings 24] [--delay-ms 1000] [--pause-ms 2000] [--plan-only]
+ *    [--scope pending|incomplete|with-facts] [--full-year-only]`
+ *
+ * --scope pending (default) works through companies with nothing stored yet;
+ * --scope incomplete also revisits any company still missing a fiscal year;
+ * --scope with-facts revisits every company that already holds real facts.
+ * --full-year-only reads only each company's March-quarter filings and stores
+ * just their full-year figures (period FY20xx), leaving jobs untouched.
  *
  * Works through the PENDING supported companies in small batches, collecting
  * NSE XBRL facts with scripts/collectNseXbrlFundamentals.js (period-checked;
@@ -34,13 +41,23 @@ import { collectCoverageRows, orderPending, summarize } from './earningsCoverage
 const BACKEND_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const MAX_CONSECUTIVE_INDEX_FAILURES = 3;
 
+/** incompleteRows - pure. Supported companies still missing at least one fiscal year of financial coverage, alphabetical. */
+export const incompleteRows = (rows) => rows
+  .filter((r) => r.category !== 'COMPLETE' && (r.facts?.missingYears?.length ?? 0) > 0)
+  .sort((a, b) => a.symbol.localeCompare(b.symbol));
+
+/** withFactsRows - pure. Supported companies that already hold real facts, alphabetical (the full-year pass revisits these). */
+export const withFactsRows = (rows) => rows
+  .filter((r) => (r.facts?.real ?? 0) > 0)
+  .sort((a, b) => a.symbol.localeCompare(b.symbol));
+
 /**
  * planBatch - pure. The next symbols to process: the explicit list if given,
  * otherwise the pending, research-enabled companies by market cap (then
  * alphabetically), skipping anything already attempted in this run.
  */
 export const planBatch = (rows, {
-  batchSize = 10, explicit = null, attempted = new Set(), priority = [],
+  batchSize = 10, explicit = null, attempted = new Set(), priority = [], scope = 'pending',
 } = {}) => {
   let candidates;
   if (explicit?.length) {
@@ -49,7 +66,10 @@ export const planBatch = (rows, {
   } else {
     // `priority` (e.g. market-cap order) puts those symbols first, in that order; anything unlisted follows in the default order.
     const rank = new Map(priority.map((symbol, i) => [symbol, i]));
-    candidates = orderPending(rows)
+    // scope 'incomplete' also re-reads companies that already have some years but still miss one (a
+    // PARTIAL or previously BLOCKED company), which the default 'pending' scope never revisits.
+    const pool = scope === 'incomplete' ? incompleteRows(rows) : scope === 'with-facts' ? withFactsRows(rows) : orderPending(rows);
+    candidates = pool
       .map((row, position) => ({ row, position }))
       .sort((a, b) => ((rank.get(a.row.symbol) ?? Infinity) - (rank.get(b.row.symbol) ?? Infinity)) || (a.position - b.position))
       .map((entry) => entry.row);
@@ -59,7 +79,7 @@ export const planBatch = (rows, {
 
 /** shouldStop - pure. Why the run must stop now, or null. */
 export const shouldStop = ({ consecutiveIndexFailures = 0, elapsedMs = 0, maxRuntimeMs = 0, batchesDone = 0, maxBatches = 0 }) => {
-  if (consecutiveIndexFailures >= MAX_CONSECUTIVE_INDEX_FAILURES) return `NSE's results index was unavailable for ${consecutiveIndexFailures} companies in a row; stopping rather than hammering it`;
+  if (consecutiveIndexFailures >= MAX_CONSECUTIVE_INDEX_FAILURES) return `NSE's results feeds were unavailable for ${consecutiveIndexFailures} companies in a row; stopping rather than hammering them`;
   if (maxRuntimeMs && elapsedMs >= maxRuntimeMs) return 'the --max-runtime-min budget is used up';
   if (maxBatches && batchesDone >= maxBatches) return 'the --max-batches limit was reached';
   return null;
@@ -82,6 +102,8 @@ const parseArgs = (argv) => {
     pauseMs: get('--pause-ms') ? Number(get('--pause-ms')) : 2000,
     planOnly: argv.includes('--plan-only'),
     label: get('--label') || 'xbrl-batch',
+    scope: ['incomplete', 'with-facts'].includes(get('--scope')) ? get('--scope') : 'pending',
+    fullYearOnly: argv.includes('--full-year-only'),
   };
 };
 
@@ -98,7 +120,10 @@ if (isMainModule) {
     const { collectSymbol, recordJob } = await import('./collectNseXbrlFundamentals.js');
     const window = getFiscalWindow();
     const fromYear = args.fromYear ?? window.fromYear;
-    const options = { dryRun: false, fromYear, maxFilings: args.maxFilings, preferConsolidated: true, delayMs: args.delayMs };
+    const options = {
+      dryRun: false, fromYear, toYear: window.toYear, maxFilings: args.maxFilings, preferConsolidated: true, delayMs: args.delayMs, fullYearOnly: args.fullYearOnly,
+    };
+    const poolOf = (rows) => (args.scope === 'incomplete' ? incompleteRows(rows) : args.scope === 'with-facts' ? withFactsRows(rows) : orderPending(rows));
 
     const ledgerDir = path.join(BACKEND_DIR, 'reports', 'earnings-coverage');
     fs.mkdirSync(ledgerDir, { recursive: true });
@@ -113,11 +138,13 @@ if (isMainModule) {
     for (;;) {
       // eslint-disable-next-line no-await-in-loop
       const { rows } = await collectCoverageRows(mongoose.connection.db);
-      const symbols = planBatch(rows, { batchSize: args.batchSize, explicit: args.explicit, attempted, priority: args.priority });
-      const remaining = orderPending(rows).filter((r) => !attempted.has(r.symbol)).length;
-      if (!symbols.length) { console.log(`\nNothing left to attempt (pending not yet tried this run: ${remaining}).`); break; }
+      const symbols = planBatch(rows, {
+        batchSize: args.batchSize, explicit: args.explicit, attempted, priority: args.priority, scope: args.scope,
+      });
+      const remaining = poolOf(rows).filter((r) => !attempted.has(r.symbol)).length;
+      if (!symbols.length) { console.log(`\nNothing left to attempt (${args.scope} not yet tried this run: ${remaining}).`); break; }
 
-      console.log(`\n=== Batch ${batchesDone + 1}: ${symbols.join(', ')}  (pending in database: ${orderPending(rows).length}) ===`);
+      console.log(`\n=== Batch ${batchesDone + 1}: ${symbols.join(', ')}  (${args.scope} in database: ${poolOf(rows).length}) ===`);
       if (args.planOnly) { console.log('--plan-only: stopping before any request.'); break; }
 
       for (const symbol of symbols) {
@@ -125,8 +152,9 @@ if (isMainModule) {
         const t0 = Date.now();
         // eslint-disable-next-line no-await-in-loop
         const result = await collectSymbol(symbol, options);
+        // A full-year pass sees only year-level facts, so it must not rewrite the job's coverage record.
         // eslint-disable-next-line no-await-in-loop
-        const status = await recordJob(result, { fromYear, toYear: window.toYear });
+        const status = args.fullYearOnly ? 'FULL_YEAR_PASS' : await recordJob(result, { fromYear, toYear: window.toYear });
         totals.companies += 1;
         totals.facts += result.stored;
         totals.requests += result.requests || 0;
@@ -150,7 +178,7 @@ if (isMainModule) {
     console.log(`\n${stopReason ? `Stopped: ${stopReason}.` : 'Run finished.'}`);
     console.log(`This run: ${totals.companies} companies, ${totals.facts} facts stored, ~${totals.requests} exchange requests, ${Math.round((Date.now() - startedAt) / 60000)} min. Job outcomes: ${JSON.stringify(totals.statuses)}`);
     console.log(`Database now: ${JSON.stringify(summarize(rows).categories)}; ledger: ${path.relative(process.cwd(), ledger)}`);
-    console.log(`Resume with the same command; the next symbols will be: ${planBatch(rows, { batchSize: 10, priority: args.priority }).join(',') || '(none pending)'}`);
+    console.log(`Resume with the same command; the next symbols will be: ${planBatch(rows, { batchSize: 10, priority: args.priority, scope: args.scope }).join(',') || `(none ${args.scope})`}`);
     await mongoose.disconnect();
     process.exit(0);
   })().catch(async (error) => {
