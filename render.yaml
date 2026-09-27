@@ -1,0 +1,62 @@
+# Render Blueprint additions for the Earnings Intelligence pipeline.
+#
+# This file defines two Cron Job services that let the XBRL and promise-
+# extraction pipelines keep running without a human (or Claude) driving them
+# from a laptop. It does NOT redefine the existing backend web service --
+# only add these two new services when connecting this Blueprint via the
+# Render dashboard (New > Blueprint), so the already-configured web service
+# is left untouched. Committing this file changes nothing live by itself;
+# a person must explicitly connect the Blueprint in Render for these jobs to
+# start running.
+#
+# Both jobs need the SAME environment variables the existing web service
+# already has (MONGODB_URI, OPENAI_API_KEY, INDIAN_API_KEY, etc.). The
+# cleanest way to share them without re-entering secrets is an Environment
+# Group in the Render dashboard (Environment > Groups) attached to both the
+# web service and these cron jobs -- `fromGroup` below assumes one named
+# `growth-squad-earnings`; rename it to match whatever the operator creates
+# (or remove `envVarGroups` and add the variables directly on each job).
+#
+# NEITHER job sends a notification anywhere on failure or on finding a new
+# reconciliation problem: Render's own "Notify on failure" setting (per
+# service, in its dashboard Settings > Notifications) is the only alerting
+# that exists today. There is no Slack/email hook in this codebase. See the
+# session report for what else remains before this can run fully unattended.
+
+services:
+  - type: cron
+    name: earnings-xbrl-refresh
+    runtime: node
+    rootDir: backend
+    plan: starter
+    # Weekly: quarterly results cluster within ~45 days of each fiscal quarter-end (mid Apr/Jul/Oct/Jan),
+    # so a weekly run picks up a newly-filed quarter within days without hammering NSE the rest of the time.
+    schedule: "0 3 * * 1"
+    buildCommand: npm ci --omit=dev
+    # --scope with-facts revisits every company that already has data (not just ones with a gap), which is
+    # what is needed to pick up a newly-published quarter for an otherwise-COMPLETE company; --expect-target
+    # is the same production-target guard used throughout this session, so a misconfigured MONGODB_URI on
+    # the cron service refuses to run rather than writing to the wrong database.
+    startCommand: >
+      node scripts/earningsXbrlBatch.js
+      --expect-target cluster0.yxgjqf0.mongodb.net/test
+      --scope with-facts --batch-size 20 --delay-ms 700 --pause-ms 500
+      --max-runtime-min 45 --label cron-xbrl-refresh
+    envVarGroups:
+      - growth-squad-earnings
+
+  - type: cron
+    name: earnings-transcript-refresh
+    runtime: node
+    rootDir: backend
+    plan: starter
+    # A week after the XBRL refresh, by which point that week's earnings-call transcripts are usually filed too.
+    schedule: "0 3 * * 3"
+    buildCommand: npm ci --omit=dev
+    startCommand: >
+      node scripts/collectNseTranscripts.js
+      --expect-target cluster0.yxgjqf0.mongodb.net/test
+      --concurrency 2 --openai-concurrency 3 --batch-size 15
+      --max-runtime-min 45 --label cron-transcript-refresh
+    envVarGroups:
+      - growth-squad-earnings

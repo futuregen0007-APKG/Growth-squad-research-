@@ -26,6 +26,11 @@ const isDbConnected = () => mongoose.connection?.readyState === 1;
 
 const researchJobs = new Map();
 const REAL_RESEARCH_FILTER = { dataOrigin: 'REAL_RESEARCH' };
+// A quarantined CompanyHistoricalFact was read correctly from its source but the value itself is
+// implausible/internally inconsistent with the company's own adjacent filings (see the model's
+// `quarantine` field and services/factQuarantine.js) -- never shown in a public report, timeline or
+// financial snapshot. Spread into every CompanyHistoricalFact query this service runs for a symbol.
+const NOT_QUARANTINED_FILTER = { 'quarantine.quarantined': { $ne: true } };
 
 // A ResearchRun stuck at status:'RUNNING' with no progress update for this
 // long is treated as orphaned (the process that owned it is gone -- e.g. a
@@ -1225,7 +1230,7 @@ export const refreshCompanyResearch = async (symbol, researchRunId = null, progr
 
     updateProgress('CALCULATING_EXECUTION_SCORE', 'Calculating deterministic Company Execution Score & financial snapshot...');
 
-    const allDbFacts = isDbConnected() ? await CompanyHistoricalFact.find({ symbol: normalized, ...REAL_RESEARCH_FILTER }).lean() : verifiedFacts;
+    const allDbFacts = isDbConnected() ? await CompanyHistoricalFact.find({ symbol: normalized, ...REAL_RESEARCH_FILTER, ...NOT_QUARANTINED_FILTER }).lean() : verifiedFacts;
     const allDbPromises = isDbConnected() ? await ManagementPromise.find({ symbol: normalized, ...REAL_RESEARCH_FILTER, ...PUBLIC_SAFE_EVIDENCE_QUERY }).lean() : [];
 
     const executionScoreResult = calculateCompanyExecutionScore({
@@ -1349,7 +1354,7 @@ export const getCompanyPromises = async (symbol, filters = {}) => {
 
 export const getCompanyFacts = async (symbol, filters = {}) => {
   if (!isDbConnected()) return [];
-  const query = { symbol: String(symbol).toUpperCase(), ...REAL_RESEARCH_FILTER };
+  const query = { symbol: String(symbol).toUpperCase(), ...REAL_RESEARCH_FILTER, ...NOT_QUARANTINED_FILTER };
   if (filters.category) query.category = String(filters.category).toUpperCase();
   if (filters.year) query.period = new RegExp(String(filters.year), 'i');
   if (filters.period) query.period = String(filters.period);
@@ -1795,7 +1800,7 @@ export const getCompanyResearchDebug = async (symbol) => {
   if (isDbConnected()) {
     try {
       latestRun = await ResearchRun.findOne({ companySymbol: normalized, ...REAL_RESEARCH_FILTER }).sort({ createdAt: -1 }).lean();
-      facts = await CompanyHistoricalFact.find({ symbol: normalized, ...REAL_RESEARCH_FILTER }).lean();
+      facts = await CompanyHistoricalFact.find({ symbol: normalized, ...REAL_RESEARCH_FILTER, ...NOT_QUARANTINED_FILTER }).lean();
       promises = await ManagementPromise.find({ symbol: normalized, ...REAL_RESEARCH_FILTER }).lean();
     } catch (err) {
       logger.warn(`Failed to query debug data for ${symbol}: ${err.message}`);

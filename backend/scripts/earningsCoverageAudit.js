@@ -36,7 +36,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { SUPPORTED_STOCKS, FEATURED_SYMBOLS, EARNINGS_COVERAGE_METRICS } from '../utils/constants.js';
-import { PUBLIC_SAFE_EVIDENCE_STATUSES } from '../utils/earningsIntelligenceValidation.js';
+import { PUBLIC_SAFE_EVIDENCE_STATUSES, isPubliclyVisibleRecord } from '../utils/earningsIntelligenceValidation.js';
 import { describeMongoTarget, assertMongoTarget } from '../utils/mongoTarget.js';
 import { getFiscalWindow } from '../utils/fiscalWindow.js';
 
@@ -69,10 +69,10 @@ const emptyRow = (symbol) => ({
   featured: FEATURED_SYMBOLS.includes(symbol),
   profile: { present: false, researchEnabled: null, bseScripCode: null, marketCapCr: null },
   facts: {
-    real: 0, financial: 0, nonReal: 0, uniqueSourceDocs: 0, exchangeSourceDocs: 0, coveredYears: [], missingYears: [], byYear: {}, fullYearFacts: [], quarterlyFacts: 0, missingQuarters: [],
+    real: 0, financial: 0, nonReal: 0, quarantined: 0, uniqueSourceDocs: 0, exchangeSourceDocs: 0, coveredYears: [], missingYears: [], byYear: {}, fullYearFacts: [], quarterlyFacts: 0, missingQuarters: [],
   },
   promises: {
-    real: 0, publicSafe: 0, curatedFile: 0, candidates: { pending: 0, accepted: 0, rejected: 0 }, outcomes: {}, acceptedOutcomes: {},
+    real: 0, publicSafe: 0, curatedFile: 0, timelineDeliverable: 0, candidates: { pending: 0, accepted: 0, rejected: 0 }, outcomes: {}, acceptedOutcomes: {},
   },
   registry: { total: 0, extracted: 0, failed: 0, inFlight: 0, eligible: 0, promiseExtracted: 0, promiseFailed: 0, promisePending: 0, topErrors: [] },
   job: null,
@@ -103,7 +103,10 @@ const DELIVERABLE_PROMISE_STAGES = ['ACCEPTED_PRESENT', 'EXTRACTED_NONE_FOUND'];
 export const classifyCoverage = (row, { expectedYears }) => {
   const { facts, promises, registry: reg, job, profile } = row;
   const years = facts.coveredYears.length;
-  const acceptedPromises = promises.publicSafe + promises.curatedFile + promises.candidates.accepted;
+  // publicSafe (ManagementPromise, served by /report) and timelineDeliverable (curated file union accepted
+  // candidates, served by /timeline) are two INDEPENDENT public surfaces with their own id spaces -- summed,
+  // never double-counted within either (see collectCoverageRows for how timelineDeliverable is deduped).
+  const acceptedPromises = promises.publicSafe + promises.timelineDeliverable;
   const reasons = [];
 
   const promiseStage = acceptedPromises > 0 ? 'ACCEPTED_PRESENT'
@@ -162,18 +165,33 @@ const latestBy = (rows, keyOf) => {
   return map;
 };
 
-const readCuratedPromiseCounts = () => {
+/**
+ * readCuratedPromiseIds - the curated JSON file (data/earnings-intelligence/
+ * promises/<SYMBOL>.json) for each symbol, as the set of record ids that are
+ * actually PUBLICLY VISIBLE -- the same isPubliclyVisibleRecord gate the real
+ * timeline API applies (CuratedEarningsIntelligenceService.fetchMergedRecords).
+ * A record whose evidenceIntegrity.status is QUARANTINED (a real, recorded
+ * source-fetch failure -- see utils/earningsIntelligenceValidation.js) is kept
+ * in the file for audit history but never served publicly, so counting it as
+ * an "accepted promise" here would overstate coverage the same way the old,
+ * looser dataMode!=='DEMO_SYNTHETIC' filter did (confirmed live: TCS.json
+ * carries 3 records, one QUARANTINED after a tcs.com 403 on re-fetch, so only
+ * 2 are ever actually delivered -- exactly what the real timeline reports).
+ */
+export const readCuratedPromiseIds = () => {
   const dir = path.join(BACKEND_DIR, 'data', 'earnings-intelligence', 'promises');
-  const counts = {};
-  if (!fs.existsSync(dir)) return counts;
+  const idsBySymbol = {};
+  if (!fs.existsSync(dir)) return idsBySymbol;
   for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.json'))) {
     try {
       const parsed = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
       const records = Array.isArray(parsed) ? parsed : (parsed.records || []);
-      counts[path.basename(file, '.json').toUpperCase()] = records.filter((r) => r.dataMode !== 'DEMO_SYNTHETIC').length;
+      idsBySymbol[path.basename(file, '.json').toUpperCase()] = new Set(
+        records.filter((r) => r.dataMode !== 'DEMO_SYNTHETIC' && isPubliclyVisibleRecord(r)).map((r) => r.id),
+      );
     } catch { /* an unreadable curated file simply contributes nothing */ }
   }
-  return counts;
+  return idsBySymbol;
 };
 
 /** Reads everything needed with raw collection queries (read-only) and returns one row per symbol. */
@@ -182,18 +200,29 @@ export const collectCoverageRows = async (db, { symbols = null, now = new Date()
   const universe = symbols?.length ? symbols : Object.keys(SUPPORTED_STOCKS);
   const col = (name) => db.collection(name);
 
-  const [realFacts, nonRealAgg, promiseDocs, candidateAgg, registryDocs, jobs, runs, profiles] = await Promise.all([
-    col('companyhistoricalfacts').find({ dataOrigin: 'REAL_RESEARCH' }, { projection: { symbol: 1, period: 1, 'metrics.metric': 1, 'metrics.actualValue': 1, 'source.url': 1 } }).toArray(),
+  const [realFacts, nonRealAgg, promiseDocs, candidateAgg, acceptedCandidateDocs, registryDocs, jobs, runs, profiles] = await Promise.all([
+    col('companyhistoricalfacts').find({ dataOrigin: 'REAL_RESEARCH' }, { projection: { symbol: 1, period: 1, 'metrics.metric': 1, 'metrics.actualValue': 1, 'source.url': 1, quarantine: 1 } }).toArray(),
     col('companyhistoricalfacts').aggregate([{ $match: { dataOrigin: { $ne: 'REAL_RESEARCH' } } }, { $group: { _id: '$symbol', n: { $sum: 1 } } }]).toArray(),
     col('managementpromises').find({ dataOrigin: 'REAL_RESEARCH' }, { projection: { symbol: 1, 'evidenceIntegrity.status': 1, 'evidence.promiseSource.sourceUrl': 1 } }).toArray(),
     col('promisecandidates').aggregate([{ $group: { _id: { symbol: '$symbol', status: '$reviewStatus', outcome: '$outcome.status' }, n: { $sum: 1 } } }]).toArray(),
+    // Full id list (not just a count) for ACCEPTED candidates only -- needed to de-duplicate against the
+    // curated JSON file below: acceptCandidate (scripts/earningsReview.js) writes a promoted candidate into
+    // BOTH PromiseCandidate (reviewStatus: ACCEPTED) and promises/<SYMBOL>.json under the SAME id, so the two
+    // stores hold the same promise, not two different ones, once promotion has happened.
+    col('promisecandidates').find({ reviewStatus: 'ACCEPTED' }, { projection: { symbol: 1, id: 1 } }).toArray(),
     col('companydocumentregistries').find({}, { projection: { symbol: 1, sourceType: 1, extractionStatus: 1, promiseExtractionStatus: 1, error: 1 } }).toArray(),
     col('researchjobs').find({}).toArray(),
     col('researchruns').find({ dataOrigin: 'REAL_RESEARCH' }).toArray(),
     col('companyresearchprofiles').find({}).toArray(),
   ]);
 
-  const curated = readCuratedPromiseCounts();
+  const curatedIds = readCuratedPromiseIds();
+  const acceptedIdsBySymbol = new Map();
+  for (const doc of acceptedCandidateDocs) {
+    const symbol = String(doc.symbol || '').toUpperCase();
+    if (!acceptedIdsBySymbol.has(symbol)) acceptedIdsBySymbol.set(symbol, new Set());
+    acceptedIdsBySymbol.get(symbol).add(doc.id);
+  }
   const rows = new Map(universe.map((s) => [s, emptyRow(s)]));
   const rowFor = (symbol) => rows.get(String(symbol || '').toUpperCase());
 
@@ -206,6 +235,12 @@ export const collectCoverageRows = async (db, { symbols = null, now = new Date()
     if (!row) continue;
     row.facts.real += 1;
     const url = fact.source?.url;
+    // A quarantined fact was read correctly from its source, but the value itself is implausible/internally
+    // inconsistent with the company's own adjacent filings (see models/CompanyHistoricalFact.js `quarantine`
+    // field) -- it counts toward "real facts on file" for transparency but never toward covered years/quarters,
+    // the same way the report/timeline routes exclude it from what a visitor sees (NOT_QUARANTINED_FILTER in
+    // ManagementPromiseService.js).
+    if (fact.quarantine?.quarantined) { row.facts.quarantined = (row.facts.quarantined || 0) + 1; continue; }
     const validFinancial = EARNINGS_COVERAGE_METRICS.includes(fact.metrics?.metric) && fact.metrics?.actualValue != null && isHttpUrl(url);
     if (validFinancial) {
       row.facts.financial += 1;
@@ -242,7 +277,7 @@ export const collectCoverageRows = async (db, { symbols = null, now = new Date()
       urlSets.get(row.symbol).add(url);
     }
   }
-  for (const [symbol, count] of Object.entries(curated)) { const row = rowFor(symbol); if (row) row.promises.curatedFile = count; }
+  for (const [symbol, ids] of Object.entries(curatedIds)) { const row = rowFor(symbol); if (row) row.promises.curatedFile = ids.size; }
   for (const item of candidateAgg) {
     const row = rowFor(item._id.symbol);
     if (!row) continue;
@@ -253,6 +288,15 @@ export const collectCoverageRows = async (db, { symbols = null, now = new Date()
     // Only an ACCEPTED candidate is ever shown to a visitor (PENDING_REVIEW never reaches the timeline API), so
     // outcome verification is reported for this subset specifically -- never blended with unreviewed candidates.
     if (item._id.status === 'ACCEPTED') row.promises.acceptedOutcomes[outcome] = (row.promises.acceptedOutcomes[outcome] || 0) + item.n;
+  }
+  // Deliverable promises visible via the /timeline route: the curated file's publicly-visible ids UNION the
+  // accepted candidates' ids -- a union, not a sum, because acceptCandidate gives a promoted candidate the SAME
+  // id in both stores, so it must count once, not twice (the exact bug this replaces: TCS previously summed 3
+  // curated-file records, one of them QUARANTINED, plus its raw accepted-candidate count, well past the 2
+  // promises the real timeline API actually serves).
+  for (const row of rows.values()) {
+    const ids = new Set([...(curatedIds[row.symbol] || []), ...(acceptedIdsBySymbol.get(row.symbol) || [])]);
+    row.promises.timelineDeliverable = ids.size;
   }
 
   const errorCounts = new Map();
@@ -330,8 +374,9 @@ export const summarize = (rows) => {
     realFacts: sum((r) => r.facts.real),
     financialFacts: sum((r) => r.facts.financial),
     nonRealFactsExcluded: sum((r) => r.facts.nonReal),
+    quarantinedFacts: sum((r) => r.facts.quarantined || 0),
     uniqueSourceDocs: sum((r) => r.facts.uniqueSourceDocs),
-    acceptedPromises: sum((r) => r.promises.publicSafe + r.promises.curatedFile + r.promises.candidates.accepted),
+    acceptedPromises: sum((r) => r.promises.publicSafe + r.promises.timelineDeliverable),
     pendingCandidates: sum((r) => r.promises.candidates.pending),
     rejectedCandidates: sum((r) => r.promises.candidates.rejected),
     registryDocs: sum((r) => r.registry.total),
@@ -409,11 +454,12 @@ export const renderMarkdown = ({ label, target, window, rows, summary, api }) =>
   lines.push(`| Supported symbols | ${summary.symbols} |`);
   for (const [k, v] of Object.entries(summary.categories)) lines.push(`| ${k} | ${v} |`);
   lines.push(`| Real facts (financial-valid) | ${summary.realFacts} (${summary.financialFacts}) |`, `| Non-real facts excluded (demo/unknown origin) | ${summary.nonRealFactsExcluded} |`,
+    `| Quarantined facts excluded (implausible value, source verified) | ${summary.quarantinedFacts} |`,
     `| Unique source documents | ${summary.uniqueSourceDocs} |`, `| Accepted promises | ${summary.acceptedPromises} |`, `| Pending-review candidates | ${summary.pendingCandidates} |`,
     `| Registry documents | ${summary.registryDocs} |`, '', '## Per symbol', '',
     '| Symbol | Category | FY covered | Real facts | Src docs (exchange) | Promises acc/pend | Registry ok/fail | Job | Reason |', '|---|---|---|---|---|---|---|---|---|');
   for (const r of rows) {
-    lines.push(`| ${r.symbol} | ${r.category} | ${yearsCell(r, window)} | ${r.facts.real} | ${r.facts.uniqueSourceDocs} (${r.facts.exchangeSourceDocs}) | ${r.promises.publicSafe + r.promises.curatedFile + r.promises.candidates.accepted}/${r.promises.candidates.pending} | ${r.registry.extracted}/${r.registry.failed} | ${r.job?.status || '-'} | ${r.reasons.join('; ').replace(/\|/g, '/')} |`);
+    lines.push(`| ${r.symbol} | ${r.category} | ${yearsCell(r, window)} | ${r.facts.real} | ${r.facts.uniqueSourceDocs} (${r.facts.exchangeSourceDocs}) | ${r.promises.publicSafe + r.promises.timelineDeliverable}/${r.promises.candidates.pending} | ${r.registry.extracted}/${r.registry.failed} | ${r.job?.status || '-'} | ${r.reasons.join('; ').replace(/\|/g, '/')} |`);
   }
   const incomplete = rows.filter((r) => r.category !== 'COMPLETE');
   if (incomplete.length) {
@@ -475,12 +521,12 @@ if (isMainModule) {
 
     console.log(`\nFiscal window FY${window.fromYear}-FY${window.toYear}`);
     console.log('Categories:', JSON.stringify(summary.categories));
-    console.log(`Real facts ${summary.realFacts} (financial-valid ${summary.financialFacts}) | non-real excluded ${summary.nonRealFactsExcluded} | source docs ${summary.uniqueSourceDocs} | accepted promises ${summary.acceptedPromises} | pending candidates ${summary.pendingCandidates} | registry docs ${summary.registryDocs}`);
+    console.log(`Real facts ${summary.realFacts} (financial-valid ${summary.financialFacts}) | non-real excluded ${summary.nonRealFactsExcluded} | quarantined ${summary.quarantinedFacts} | source docs ${summary.uniqueSourceDocs} | accepted promises ${summary.acceptedPromises} | pending candidates ${summary.pendingCandidates} | registry docs ${summary.registryDocs}`);
     const shown = rows.filter((r) => r.category !== 'PENDING' || args.symbols);
     if (shown.length) {
       console.log(`\n${pad('SYMBOL', 12)}${pad('CATEGORY', 10)}${pad('FY', 6)}${pad('FACTS', 7)}${pad('DOCS', 6)}${pad('PROM a/p', 10)}REASON`);
       for (const r of shown) {
-        console.log(`${pad(r.symbol, 12)}${pad(r.category, 10)}${pad(yearsCell(r, window), 6)}${pad(r.facts.real, 7)}${pad(r.facts.uniqueSourceDocs, 6)}${pad(`${r.promises.publicSafe + r.promises.curatedFile + r.promises.candidates.accepted}/${r.promises.candidates.pending}`, 10)}${r.reasons.join('; ').slice(0, 110)}`);
+        console.log(`${pad(r.symbol, 12)}${pad(r.category, 10)}${pad(yearsCell(r, window), 6)}${pad(r.facts.real, 7)}${pad(r.facts.uniqueSourceDocs, 6)}${pad(`${r.promises.publicSafe + r.promises.timelineDeliverable}/${r.promises.candidates.pending}`, 10)}${r.reasons.join('; ').slice(0, 110)}`);
       }
     }
     if (api) {

@@ -1,11 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   getFiscalWindow, fiscalYearOf, isExchangeHosted, classifyCoverage, collectCoverageRows, orderPending, summarize,
-  renderMarkdown, PROMISE_ELIGIBLE_TYPES,
+  renderMarkdown, PROMISE_ELIGIBLE_TYPES, readCuratedPromiseIds,
 } from '../scripts/earningsCoverageAudit.js';
 import { describeMongoTarget, assertMongoTarget } from '../utils/mongoTarget.js';
 import { EARNINGS_COVERAGE_METRICS } from '../utils/constants.js';
+
+const PROMISES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data', 'earnings-intelligence', 'promises');
 
 /**
  * earningsCoverageAudit.test.js
@@ -74,7 +79,7 @@ const baseRow = (over = {}) => ({
   profile: { present: true, researchEnabled: true, bseScripCode: '500001', marketCapCr: 100 },
   facts: { real: 0, financial: 0, nonReal: 0, uniqueSourceDocs: 0, exchangeSourceDocs: 0, coveredYears: [], missingYears: [2022, 2023, 2024, 2025, 2026], byYear: {} },
   promises: {
-    real: 0, publicSafe: 0, curatedFile: 0, candidates: { pending: 0, accepted: 0, rejected: 0 }, outcomes: {}, acceptedOutcomes: {},
+    real: 0, publicSafe: 0, curatedFile: 0, timelineDeliverable: 0, candidates: { pending: 0, accepted: 0, rejected: 0 }, outcomes: {}, acceptedOutcomes: {},
   },
   registry: { total: 0, extracted: 0, failed: 0, inFlight: 0, eligible: 0, promiseExtracted: 0, promiseFailed: 0, promisePending: 0, topErrors: [] },
   job: null,
@@ -99,7 +104,9 @@ test('all five years but no proof promise extraction ran is only PARTIAL', () =>
 test('missing years are named, and accepted promises alone do not make a company complete', () => {
   const row = baseRow({
     facts: { ...fullYears, coveredYears: [2022, 2023, 2024], missingYears: [2025, 2026] },
-    promises: { real: 0, publicSafe: 2, curatedFile: 0, candidates: { pending: 0, accepted: 0, rejected: 0 } },
+    promises: {
+      real: 0, publicSafe: 2, curatedFile: 0, timelineDeliverable: 0, candidates: { pending: 0, accepted: 0, rejected: 0 }, outcomes: {}, acceptedOutcomes: {},
+    },
   });
   const result = classifyCoverage(row, WINDOW);
   assert.equal(result.category, 'PARTIAL');
@@ -110,7 +117,7 @@ test('pending-review candidates count as processed promise work but never as acc
   const row = baseRow({
     facts: fullYears,
     promises: {
-      real: 0, publicSafe: 0, curatedFile: 0, candidates: { pending: 4, accepted: 0, rejected: 0 }, outcomes: {}, acceptedOutcomes: {},
+      real: 0, publicSafe: 0, curatedFile: 0, timelineDeliverable: 0, candidates: { pending: 4, accepted: 0, rejected: 0 }, outcomes: {}, acceptedOutcomes: {},
     },
   });
   const result = classifyCoverage(row, WINDOW);
@@ -127,7 +134,7 @@ test('accepted promises make a company COMPLETE even while some outcomes are sti
   const row = baseRow({
     facts: fullYears,
     promises: {
-      real: 3, publicSafe: 1, curatedFile: 0, candidates: { pending: 0, accepted: 2, rejected: 0 }, outcomes: {}, acceptedOutcomes: { ACHIEVED: 1, PENDING: 2 },
+      real: 3, publicSafe: 1, curatedFile: 0, timelineDeliverable: 2, candidates: { pending: 0, accepted: 2, rejected: 0 }, outcomes: {}, acceptedOutcomes: { ACHIEVED: 1, PENDING: 2 },
     },
   });
   const result = classifyCoverage(row, WINDOW);
@@ -296,4 +303,78 @@ test('quarter-level gaps, full-year facts and candidate outcomes are reported pe
   assert.equal(aaa.facts.missingQuarters.length, 20 - 3 - 1, '20 quarters in the window, minus Q1/Q2/Q4 FY2026 and Q1 FY2025');
   assert.deepEqual(aaa.promises.outcomes, { UNKNOWN: 2 }, 'outcome status is unknown when the store gives none');
   assert.deepEqual([bbb.facts.quarterlyFacts, bbb.facts.missingQuarters], [0, []], 'a company with no quarterly facts does not list every quarter as missing');
+});
+
+// ---------------------------------------------------------------------------
+// Promise-count aggregation: quarantined curated records and promoted
+// candidates must never inflate the accepted-promise count beyond what the
+// real /report and /timeline APIs actually deliver.
+// ---------------------------------------------------------------------------
+
+/** Writes a throwaway curated promises file for a symbol that can never collide with a real one, and guarantees cleanup. */
+const withCuratedFile = async (symbol, records, run) => {
+  const filePath = path.join(PROMISES_DIR, `${symbol}.json`);
+  fs.mkdirSync(PROMISES_DIR, { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify({ records }, null, 2));
+  try {
+    return await run();
+  } finally {
+    fs.rmSync(filePath, { force: true });
+  }
+};
+
+const curatedRecord = (id, over = {}) => ({
+  id,
+  dataMode: 'CURATED_VERIFIED',
+  evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' },
+  promise: { targetPeriod: 'FY2027' },
+  ...over,
+});
+
+test('readCuratedPromiseIds excludes QUARANTINED and DEMO_SYNTHETIC records, and records with no evidenceIntegrity at all', async () => {
+  await withCuratedFile('ZZTEST_QUARANTINE', [
+    curatedRecord('ZZTEST-1'),
+    curatedRecord('ZZTEST-2', { evidenceIntegrity: { status: 'QUARANTINED' } }),
+    curatedRecord('ZZTEST-3', { dataMode: 'DEMO_SYNTHETIC' }),
+    curatedRecord('ZZTEST-4', { evidenceIntegrity: undefined }),
+  ], async () => {
+    const ids = readCuratedPromiseIds();
+    assert.deepEqual([...(ids.ZZTEST_QUARANTINE || [])], ['ZZTEST-1'], 'only the one record with public-safe evidenceIntegrity survives');
+  });
+});
+
+test('a promoted candidate (same id in the curated file and PromiseCandidate ACCEPTED) counts once, not twice, in the deliverable total', async () => {
+  await withCuratedFile('ZZTEST_PROMOTED', [curatedRecord('ZZTEST-PROMOTED-1')], async () => {
+    const db = fakeDb({
+      companyhistoricalfacts: [fact('ZZTEST_PROMOTED', 'FY2022')],
+      promisecandidates: [
+        { symbol: 'ZZTEST_PROMOTED', id: 'ZZTEST-PROMOTED-1', reviewStatus: 'ACCEPTED' }, // promoted: same id as the curated record above
+        { symbol: 'ZZTEST_PROMOTED', id: 'ZZTEST-PROMOTED-2', reviewStatus: 'ACCEPTED' }, // a second, distinct accepted candidate not yet promoted
+      ],
+    });
+    const { rows } = await collectCoverageRows(db, { symbols: ['ZZTEST_PROMOTED'], now: new Date('2026-09-25T00:00:00Z') });
+    const row = rows[0];
+    assert.equal(row.promises.curatedFile, 1, 'one publicly-visible curated record');
+    assert.equal(row.promises.timelineDeliverable, 2, 'the union of {curated ZZTEST-PROMOTED-1} and {accepted ZZTEST-PROMOTED-1, ZZTEST-PROMOTED-2} has 2 distinct ids, not 1+2=3');
+  });
+});
+
+test('the audit before this fix would have summed 3 (a quarantined curated record plus a duplicate-counted promoted candidate); it now reports the true deliverable count', async () => {
+  // Reproduces the real TCS shape found live: one curated record QUARANTINED (excluded), one VERIFIED and
+  // ALREADY PROMOTED (same id lives in both stores), one VERIFIED and never sent through the candidate
+  // pipeline at all. The true number a visitor's /timeline call would see is 2.
+  await withCuratedFile('ZZTEST_TCSLIKE', [
+    curatedRecord('ZZTEST-Q', { evidenceIntegrity: { status: 'QUARANTINED' } }),
+    curatedRecord('ZZTEST-PROMOTED'),
+    curatedRecord('ZZTEST-JSONONLY'),
+  ], async () => {
+    const db = fakeDb({
+      companyhistoricalfacts: [fact('ZZTEST_TCSLIKE', 'FY2022')],
+      promisecandidates: [{ symbol: 'ZZTEST_TCSLIKE', id: 'ZZTEST-PROMOTED', reviewStatus: 'ACCEPTED' }],
+    });
+    const { rows } = await collectCoverageRows(db, { symbols: ['ZZTEST_TCSLIKE'], now: new Date('2026-09-25T00:00:00Z') });
+    const row = rows[0];
+    assert.equal(row.promises.timelineDeliverable, 2, 'ZZTEST-Q is quarantined (excluded); ZZTEST-PROMOTED counts once despite living in both stores; ZZTEST-JSONONLY counts once');
+    assert.equal(summarize(rows).acceptedPromises, 2);
+  });
 });

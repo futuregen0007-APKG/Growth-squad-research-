@@ -441,7 +441,10 @@ export const calculateCapitalAllocationScore = (snapshot, facts = []) => {
  * Overall Deterministic Company Execution Score (0-100)
  */
 export const calculateCompanyExecutionScore = ({ facts = [], promises = [], profile = {} }) => {
-  facts = facts.filter((fact) => fact.dataOrigin !== 'SEEDED_DEMO');
+  // Belt-and-suspenders: the real query path (ManagementPromiseService's NOT_QUARANTINED_FILTER) already
+  // excludes these, but this function must never let a quarantined value (source verified, value implausible
+  // -- see models/CompanyHistoricalFact.js) into a growth rate or score even if some other caller forgets to filter.
+  facts = facts.filter((fact) => fact.dataOrigin !== 'SEEDED_DEMO' && !fact.quarantine?.quarantined);
   promises = promises.filter((promise) => promise.dataOrigin !== 'SEEDED_DEMO');
   const financialSnapshot = buildFinancialSnapshot(facts);
 

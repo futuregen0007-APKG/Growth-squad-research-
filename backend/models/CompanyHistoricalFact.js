@@ -119,7 +119,19 @@ const companyHistoricalFactSchema = new mongoose.Schema({
     default: false
   },
 
-  researchRunId: { 
+  // A fact whose value was read correctly from its source document, but whose value is itself
+  // implausible or internally inconsistent with the company's own adjacent filings (e.g. a filer-side
+  // XBRL scale error) -- see services/factQuarantine.js for the pre-storage screen this complements.
+  // The ORIGINAL stored value is never modified: quarantining only marks the record and gives every
+  // downstream reader (coverage counting, the annual financial snapshot, the report/timeline routes)
+  // an explicit signal to exclude it, rather than silently deleting or "correcting" real filed data.
+  quarantine: {
+    quarantined: { type: Boolean, default: false, index: true },
+    reason: { type: String, default: null },
+    quarantinedAt: { type: Date, default: null },
+  },
+
+  researchRunId: {
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'ResearchRun', 
     default: null 
