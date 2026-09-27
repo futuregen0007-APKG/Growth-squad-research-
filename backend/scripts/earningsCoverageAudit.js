@@ -36,6 +36,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { SUPPORTED_STOCKS, FEATURED_SYMBOLS, EARNINGS_COVERAGE_METRICS } from '../utils/constants.js';
+// Kept in sync with models/ReconciliationCheck.js's OK_STATUSES by hand, not by import: this file imports no
+// Mongoose models (see header) so connecting here never creates that collection/its indexes as a side effect.
+const RECONCILIATION_OK_STATUSES = ['MATCH', 'SUM_MATCH'];
 import { PUBLIC_SAFE_EVIDENCE_STATUSES, isPubliclyVisibleRecord } from '../utils/earningsIntelligenceValidation.js';
 import { describeMongoTarget, assertMongoTarget } from '../utils/mongoTarget.js';
 import { getFiscalWindow } from '../utils/fiscalWindow.js';
@@ -75,6 +78,7 @@ const emptyRow = (symbol) => ({
     real: 0, publicSafe: 0, curatedFile: 0, timelineDeliverable: 0, candidates: { pending: 0, accepted: 0, rejected: 0 }, outcomes: {}, acceptedOutcomes: {},
   },
   registry: { total: 0, extracted: 0, failed: 0, inFlight: 0, eligible: 0, promiseExtracted: 0, promiseFailed: 0, promisePending: 0, topErrors: [] },
+  dataQuality: { unresolvedReconciliationMismatches: 0 },
   job: null,
   run: null,
 });
@@ -101,7 +105,9 @@ const DELIVERABLE_PROMISE_STAGES = ['ACCEPTED_PRESENT', 'EXTRACTED_NONE_FOUND'];
  * PARTIAL, not COMPLETE: its promise/outcome side is not yet deliverable.
  */
 export const classifyCoverage = (row, { expectedYears }) => {
-  const { facts, promises, registry: reg, job, profile } = row;
+  const {
+    facts, promises, registry: reg, job, profile, dataQuality,
+  } = row;
   const years = facts.coveredYears.length;
   // publicSafe (ManagementPromise, served by /report) and timelineDeliverable (curated file union accepted
   // candidates, served by /timeline) are two INDEPENDENT public surfaces with their own id spaces -- summed,
@@ -138,6 +144,11 @@ export const classifyCoverage = (row, { expectedYears }) => {
   if (reg.inFlight > 0) reasons.push(`${reg.inFlight} registry document(s) still FETCHED/PENDING`);
   if (reg.failed > 0) reasons.push(`${reg.failed} registry document(s) FAILED`);
   if (job && ACTIVE_JOB_STATUSES.includes(job.status)) reasons.push(`Job still ${job.status}`);
+  // Visible, never silently dropped: a mismatch between two independent readings of the same figures (source
+  // filing vs. stored value, or quarters vs. declared full year) that has NOT been proven wrong on either side
+  // (see models/ReconciliationCheck.js) -- reported here for transparency, the same as quarantinedFacts, but it
+  // never by itself keeps a company from COMPLETE: the underlying values are each individually source-correct.
+  if (dataQuality?.unresolvedReconciliationMismatches > 0) reasons.push(`${dataQuality.unresolvedReconciliationMismatches} unresolved reconciliation mismatch(es) (npm run earnings:verify-xbrl) -- values are individually source-verified, not silently treated as reconciled`);
 
   const financialComplete = years === expectedYears && facts.exchangeSourceDocs >= 1;
   const settled = reg.inFlight === 0 && !(job && ACTIVE_JOB_STATUSES.includes(job.status));
@@ -200,10 +211,10 @@ export const collectCoverageRows = async (db, { symbols = null, now = new Date()
   const universe = symbols?.length ? symbols : Object.keys(SUPPORTED_STOCKS);
   const col = (name) => db.collection(name);
 
-  const [realFacts, nonRealAgg, promiseDocs, candidateAgg, acceptedCandidateDocs, registryDocs, jobs, runs, profiles] = await Promise.all([
+  const [realFacts, nonRealAgg, promiseDocs, candidateAgg, acceptedCandidateDocs, registryDocs, jobs, runs, profiles, reconciliationChecks] = await Promise.all([
     col('companyhistoricalfacts').find({ dataOrigin: 'REAL_RESEARCH' }, { projection: { symbol: 1, period: 1, 'metrics.metric': 1, 'metrics.actualValue': 1, 'source.url': 1, quarantine: 1 } }).toArray(),
     col('companyhistoricalfacts').aggregate([{ $match: { dataOrigin: { $ne: 'REAL_RESEARCH' } } }, { $group: { _id: '$symbol', n: { $sum: 1 } } }]).toArray(),
-    col('managementpromises').find({ dataOrigin: 'REAL_RESEARCH' }, { projection: { symbol: 1, 'evidenceIntegrity.status': 1, 'evidence.promiseSource.sourceUrl': 1 } }).toArray(),
+    col('managementpromises').find({ dataOrigin: 'REAL_RESEARCH' }, { projection: { symbol: 1, 'evidenceIntegrity.status': 1, 'evidence.promiseSource.sourceUrl': 1, curatedRecordId: 1 } }).toArray(),
     col('promisecandidates').aggregate([{ $group: { _id: { symbol: '$symbol', status: '$reviewStatus', outcome: '$outcome.status' }, n: { $sum: 1 } } }]).toArray(),
     // Full id list (not just a count) for ACCEPTED candidates only -- needed to de-duplicate against the
     // curated JSON file below: acceptCandidate (scripts/earningsReview.js) writes a promoted candidate into
@@ -214,6 +225,7 @@ export const collectCoverageRows = async (db, { symbols = null, now = new Date()
     col('researchjobs').find({}).toArray(),
     col('researchruns').find({ dataOrigin: 'REAL_RESEARCH' }).toArray(),
     col('companyresearchprofiles').find({}).toArray(),
+    col('reconciliation_checks').find({}, { projection: { symbol: 1, status: 1 } }).toArray(),
   ]);
 
   const curatedIds = readCuratedPromiseIds();
@@ -223,8 +235,29 @@ export const collectCoverageRows = async (db, { symbols = null, now = new Date()
     if (!acceptedIdsBySymbol.has(symbol)) acceptedIdsBySymbol.set(symbol, new Set());
     acceptedIdsBySymbol.get(symbol).add(doc.id);
   }
+  // A ManagementPromise document imported from the curated file (npm run earnings:import) carries the JSON
+  // record's own id in `curatedRecordId` -- an explicit, schema-designed link, not a coincidence. Confirmed
+  // live for TCS: both its publicSafe ManagementPromise records set curatedRecordId to TCS-FY2025-001 and
+  // TCS-FY2026-002, the SAME two curated-file records -- identical statement, target period and source URL.
+  // Without excluding these, timelineDeliverable's union would count the SAME promise a second time under the
+  // curated file's id, alongside publicSafe already counting it under the ManagementPromise id.
+  const linkedCuratedIdsBySymbol = new Map();
+  for (const promise of promiseDocs) {
+    if (!promise.curatedRecordId || !PUBLIC_SAFE_EVIDENCE_STATUSES.includes(promise.evidenceIntegrity?.status)) continue;
+    const symbol = String(promise.symbol || '').toUpperCase();
+    if (!linkedCuratedIdsBySymbol.has(symbol)) linkedCuratedIdsBySymbol.set(symbol, new Set());
+    linkedCuratedIdsBySymbol.get(symbol).add(promise.curatedRecordId);
+  }
   const rows = new Map(universe.map((s) => [s, emptyRow(s)]));
   const rowFor = (symbol) => rows.get(String(symbol || '').toUpperCase());
+
+  // Unresolved reconciliation differences (scripts/verifyNseXbrlFacts.js): each check's LATEST verdict is
+  // persisted, so a check that used to mismatch and has since been confirmed correct is no longer counted here.
+  for (const check of reconciliationChecks) {
+    if (RECONCILIATION_OK_STATUSES.includes(check.status)) continue;
+    const row = rowFor(check.symbol);
+    if (row) row.dataQuality.unresolvedReconciliationMismatches += 1;
+  }
 
   const urlSets = new Map();
   const yearSets = new Map();
@@ -290,12 +323,13 @@ export const collectCoverageRows = async (db, { symbols = null, now = new Date()
     if (item._id.status === 'ACCEPTED') row.promises.acceptedOutcomes[outcome] = (row.promises.acceptedOutcomes[outcome] || 0) + item.n;
   }
   // Deliverable promises visible via the /timeline route: the curated file's publicly-visible ids UNION the
-  // accepted candidates' ids -- a union, not a sum, because acceptCandidate gives a promoted candidate the SAME
-  // id in both stores, so it must count once, not twice (the exact bug this replaces: TCS previously summed 3
-  // curated-file records, one of them QUARANTINED, plus its raw accepted-candidate count, well past the 2
-  // promises the real timeline API actually serves).
+  // accepted candidates' ids, MINUS any id already linked to and counted by a publicSafe ManagementPromise
+  // record (see linkedCuratedIdsBySymbol above) -- a union, not a sum, because acceptCandidate gives a promoted
+  // candidate the SAME id in both stores, and earnings:import gives an imported ManagementPromise record the
+  // curated file's own id. Both are the same promise counted twice under a different id, not two promises.
   for (const row of rows.values()) {
-    const ids = new Set([...(curatedIds[row.symbol] || []), ...(acceptedIdsBySymbol.get(row.symbol) || [])]);
+    const linked = linkedCuratedIdsBySymbol.get(row.symbol) || new Set();
+    const ids = new Set([...(curatedIds[row.symbol] || []), ...(acceptedIdsBySymbol.get(row.symbol) || [])].filter((id) => !linked.has(id)));
     row.promises.timelineDeliverable = ids.size;
   }
 
@@ -375,6 +409,7 @@ export const summarize = (rows) => {
     financialFacts: sum((r) => r.facts.financial),
     nonRealFactsExcluded: sum((r) => r.facts.nonReal),
     quarantinedFacts: sum((r) => r.facts.quarantined || 0),
+    unresolvedReconciliationMismatches: sum((r) => r.dataQuality?.unresolvedReconciliationMismatches || 0),
     uniqueSourceDocs: sum((r) => r.facts.uniqueSourceDocs),
     acceptedPromises: sum((r) => r.promises.publicSafe + r.promises.timelineDeliverable),
     pendingCandidates: sum((r) => r.promises.candidates.pending),
@@ -455,6 +490,7 @@ export const renderMarkdown = ({ label, target, window, rows, summary, api }) =>
   for (const [k, v] of Object.entries(summary.categories)) lines.push(`| ${k} | ${v} |`);
   lines.push(`| Real facts (financial-valid) | ${summary.realFacts} (${summary.financialFacts}) |`, `| Non-real facts excluded (demo/unknown origin) | ${summary.nonRealFactsExcluded} |`,
     `| Quarantined facts excluded (implausible value, source verified) | ${summary.quarantinedFacts} |`,
+    `| Unresolved reconciliation mismatches (npm run earnings:verify-xbrl) | ${summary.unresolvedReconciliationMismatches} |`,
     `| Unique source documents | ${summary.uniqueSourceDocs} |`, `| Accepted promises | ${summary.acceptedPromises} |`, `| Pending-review candidates | ${summary.pendingCandidates} |`,
     `| Registry documents | ${summary.registryDocs} |`, '', '## Per symbol', '',
     '| Symbol | Category | FY covered | Real facts | Src docs (exchange) | Promises acc/pend | Registry ok/fail | Job | Reason |', '|---|---|---|---|---|---|---|---|---|');
@@ -521,7 +557,7 @@ if (isMainModule) {
 
     console.log(`\nFiscal window FY${window.fromYear}-FY${window.toYear}`);
     console.log('Categories:', JSON.stringify(summary.categories));
-    console.log(`Real facts ${summary.realFacts} (financial-valid ${summary.financialFacts}) | non-real excluded ${summary.nonRealFactsExcluded} | quarantined ${summary.quarantinedFacts} | source docs ${summary.uniqueSourceDocs} | accepted promises ${summary.acceptedPromises} | pending candidates ${summary.pendingCandidates} | registry docs ${summary.registryDocs}`);
+    console.log(`Real facts ${summary.realFacts} (financial-valid ${summary.financialFacts}) | non-real excluded ${summary.nonRealFactsExcluded} | quarantined ${summary.quarantinedFacts} | unresolved reconciliation mismatches ${summary.unresolvedReconciliationMismatches} | source docs ${summary.uniqueSourceDocs} | accepted promises ${summary.acceptedPromises} | pending candidates ${summary.pendingCandidates} | registry docs ${summary.registryDocs}`);
     const shown = rows.filter((r) => r.category !== 'PENDING' || args.symbols);
     if (shown.length) {
       console.log(`\n${pad('SYMBOL', 12)}${pad('CATEGORY', 10)}${pad('FY', 6)}${pad('FACTS', 7)}${pad('DOCS', 6)}${pad('PROM a/p', 10)}REASON`);

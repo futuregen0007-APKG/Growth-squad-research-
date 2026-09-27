@@ -2,7 +2,7 @@
  * verifyNseXbrlFacts.js
  * =======================
  * `npm run earnings:verify-xbrl -- --symbols A,B,C [--sample N] [--delay-ms 1000]
- *    [--expect-target host/db] [--label pilot] [--fail-on-mismatch]`
+ *    [--expect-target host/db] [--label pilot] [--fail-on-mismatch] [--skip-persist]`
  *
  * READ-ONLY, and independent of how the facts were collected. For each stored
  * REAL_RESEARCH fact whose source is an NSE XBRL filing, it re-downloads that
@@ -19,7 +19,13 @@
  * four quarterly revenue (and profit) figures must sum to the full-year figure
  * carried by that year's Q4 filing.
  *
- * It never writes to the database. Requests are throttled.
+ * It never changes a stored fact. It DOES persist each check's own verdict
+ * (models/ReconciliationCheck.js) unless --skip-persist is given: a one-off
+ * JSON report under reports/earnings-coverage/ does not survive a Render Cron
+ * Job's ephemeral disk between runs, so without this an unresolved mismatch
+ * this run finds would be invisible again the moment the process exits. A
+ * check that used to mismatch and now matches is flipped back to OK in place,
+ * never left stranded as a stale mismatch. Requests are throttled.
  */
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
@@ -30,6 +36,7 @@ import { assertMongoTarget } from '../utils/mongoTarget.js';
 import {
   TAG_MAP, RUPEES_PER_CRORE, NSE_REQUEST_HEADERS, periodRange, parseXbrlContexts, findTagForPeriod, findTagByStatedPeriod, checkQuarterSums,
 } from '../services/NseXbrlService.js';
+import ReconciliationCheck from '../models/ReconciliationCheck.js';
 
 const BACKEND_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SUM_METRICS = ['REVENUE', 'PAT']; // additive across quarters; EPS and margins are not
@@ -112,7 +119,9 @@ export const verifySymbol = async (db, symbol, { sample, delayMs, xmlCache }) =>
   const urls = [...byUrl.keys()].sort((a, b) => (byUrl.get(a)[0].period > byUrl.get(b)[0].period ? 1 : -1));
   const chosen = evenlySpaced(urls, sample);
 
-  const result = { symbol, storedFacts: facts.length, urlsStored: urls.length, urlsChecked: 0, factsChecked: 0, statuses: {}, failures: [], sums: { checked: 0, ok: 0, mismatches: [] }, fetchFailures: [] };
+  const result = {
+    symbol, storedFacts: facts.length, urlsStored: urls.length, urlsChecked: 0, factsChecked: 0, statuses: {}, failures: [], sums: { checked: 0, ok: 0, mismatches: [] }, fetchFailures: [], checks: [],
+  };
   const reportedFailures = new Set();
   const noteFetchFailure = (url, error) => {
     if (reportedFailures.has(url)) return;
@@ -137,6 +146,9 @@ export const verifySymbol = async (db, symbol, { sample, delayMs, xmlCache }) =>
       const verdict = verifyFactAgainstXml(fact, xml, contexts);
       result.factsChecked += 1;
       result.statuses[verdict.status] = (result.statuses[verdict.status] || 0) + 1;
+      result.checks.push({
+        type: 'SOURCE_VALUE', period: fact.period, metric: fact.metrics?.metric, basis: basisOf(fact), status: verdict.status, detail: verdict.detail,
+      });
       if (verdict.status !== 'MATCH') result.failures.push({ period: fact.period, metric: fact.metrics?.metric, status: verdict.status, detail: verdict.detail, url });
     }
   }
@@ -164,12 +176,54 @@ export const verifySymbol = async (db, symbol, { sample, delayMs, xmlCache }) =>
     if (error) { noteFetchFailure(quarters.Q4.source.url, error); continue; }
     // Some filings declare the full-year context with the quarter's dates while stating the true period; the sum below corroborates whichever is used.
     const full = findTagForPeriod(xml, mapping.tag, periodRange(`FY${fy}`)) || findTagByStatedPeriod(xml, mapping.tag, periodRange(`FY${fy}`));
-    if (!full) { result.sums.mismatches.push({ basis, metric, fy, status: 'NO_FULL_YEAR_CONTEXT' }); result.sums.checked += 1; continue; }
+    if (!full) {
+      result.sums.mismatches.push({ basis, metric, fy, status: 'NO_FULL_YEAR_CONTEXT' });
+      result.checks.push({
+        type: 'QUARTER_SUM', period: `FY${fy}`, metric, basis, status: 'NO_FULL_YEAR_CONTEXT', detail: null,
+      });
+      result.sums.checked += 1;
+      continue;
+    }
     const check = checkQuarterSums(['Q1', 'Q2', 'Q3', 'Q4'].map((q) => quarters[q].metrics.actualValue), expectedStoredValue(mapping, full.value));
     result.sums.checked += 1;
+    result.checks.push({
+      type: 'QUARTER_SUM', period: `FY${fy}`, metric, basis, status: check.status, detail: check.status === 'SUM_MATCH' ? null : JSON.stringify(check),
+    });
     if (check.status === 'SUM_MATCH') result.sums.ok += 1; else result.sums.mismatches.push({ basis, metric, fy, ...check });
   }
   return result;
+};
+
+/** checkKeyFor - pure. The stable identity of one check, independent of run label or timestamp. */
+export const checkKeyFor = (symbol, check) => `${symbol}|${check.type}|${check.period}|${check.metric}|${check.basis || ''}`;
+
+/**
+ * persistReconciliationChecks - upserts every check from every symbol's
+ * result (both OK and mismatched -- see verifySymbol's `checks` array) so the
+ * data-quality view (earnings:audit's dataQuality.unresolvedReconciliationMismatches,
+ * and GET /api/earnings-intelligence/data-quality) always reflects the latest
+ * verdict, never a run that has since been superseded.
+ */
+export const persistReconciliationChecks = async (results, { label = null } = {}) => {
+  const now = new Date();
+  let upserted = 0;
+  for (const result of results) {
+    for (const check of result.checks) {
+      const checkKey = checkKeyFor(result.symbol, check);
+      // eslint-disable-next-line no-await-in-loop
+      await ReconciliationCheck.findOneAndUpdate(
+        { checkKey },
+        {
+          $set: {
+            checkKey, checkType: check.type, symbol: result.symbol, metric: check.metric, period: check.period, basis: check.basis || null, status: check.status, detail: check.detail || null, lastCheckedAt: now, label,
+          },
+        },
+        { upsert: true },
+      );
+      upserted += 1;
+    }
+  }
+  return { upserted };
 };
 
 const parseArgs = (argv) => {
@@ -181,6 +235,7 @@ const parseArgs = (argv) => {
     expectTarget: get('--expect-target'),
     label: get('--label') || 'xbrl-verification',
     failOnMismatch: argv.includes('--fail-on-mismatch'),
+    skipPersist: argv.includes('--skip-persist'),
   };
 };
 
@@ -190,6 +245,7 @@ if (isMainModule) {
     dotenv.config();
     const args = parseArgs(process.argv.slice(2));
     if (!args.symbols.length) throw new Error('--symbols is required');
+    if (!args.skipPersist && !args.expectTarget) throw new Error('--expect-target <host>/<database> is required (this run persists check verdicts); pass --skip-persist for a read-only dry look.');
     const target = assertMongoTarget(process.env.MONGODB_URI, args.expectTarget);
     console.log(`Target database: ${target.label}${target.implicitDatabase ? '  (URI names no database -> driver default "test")' : ''}`);
     await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 15000 });
@@ -209,6 +265,11 @@ if (isMainModule) {
       factsChecked: t.factsChecked + r.factsChecked, match: t.match + (r.statuses.MATCH || 0), sumsChecked: t.sumsChecked + r.sums.checked, sumsOk: t.sumsOk + r.sums.ok, fetchFailures: t.fetchFailures + r.fetchFailures.length,
     }), { factsChecked: 0, match: 0, sumsChecked: 0, sumsOk: 0, fetchFailures: 0 });
     console.log(`\nVERIFICATION: ${totals.match}/${totals.factsChecked} facts match their source filing; quarter sums ${totals.sumsOk}/${totals.sumsChecked}; fetch failures ${totals.fetchFailures}`);
+
+    if (!args.skipPersist) {
+      const { upserted } = await persistReconciliationChecks(results, { label: args.label });
+      console.log(`Persisted ${upserted} check verdict(s) to reconciliation_checks (visible in npm run earnings:audit and GET /data-quality); pass --skip-persist to disable.`);
+    }
 
     const outDir = path.join(BACKEND_DIR, 'reports', 'earnings-coverage');
     fs.mkdirSync(outDir, { recursive: true });

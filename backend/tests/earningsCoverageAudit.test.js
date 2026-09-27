@@ -171,6 +171,23 @@ test('documents still in flight keep a company from being complete', () => {
   assert.ok(result.reasons.some((r) => /still FETCHED\/PENDING/.test(r)));
 });
 
+test('an unresolved reconciliation mismatch is reported visibly but never by itself blocks COMPLETE (each value is individually source-verified)', () => {
+  const row = baseRow({
+    facts: fullYears,
+    registry: { ...baseRow().registry, total: 10, extracted: 10, eligible: 8, promiseExtracted: 8 },
+    dataQuality: { unresolvedReconciliationMismatches: 2 },
+  });
+  const result = classifyCoverage(row, WINDOW);
+  assert.equal(result.category, 'COMPLETE', 'an unresolved cross-check difference is not proof either reading is wrong, so it must not silently downgrade coverage');
+  assert.ok(result.reasons.some((r) => /2 unresolved reconciliation mismatch\(es\)/.test(r)), 'but it must never be silently dropped either');
+});
+
+test('zero unresolved reconciliation mismatches adds no reason line', () => {
+  const row = baseRow({ facts: fullYears, registry: { ...baseRow().registry, total: 10, extracted: 10, eligible: 8, promiseExtracted: 8 }, dataQuality: { unresolvedReconciliationMismatches: 0 } });
+  const result = classifyCoverage(row, WINDOW);
+  assert.ok(!result.reasons.some((r) => /reconciliation/.test(r)));
+});
+
 /** A minimal in-memory stand-in for the read-only slice of the Mongo driver the audit uses. */
 const fakeDb = (data) => ({
   collection: (name) => {
@@ -244,6 +261,23 @@ test('accepted promises come from curated files and public-safe records, never f
   assert.equal(tcs.promises.real, 2);
   assert.equal(tcs.promises.publicSafe, 1, 'only VERIFIED_* evidence is public-safe');
   assert.deepEqual(tcs.promises.candidates, { pending: 2, accepted: 1, rejected: 1 });
+});
+
+test('collectCoverageRows/summarize surface unresolved reconciliation mismatches per company and in aggregate, and a resolved (OK) check counts toward nothing', async () => {
+  const db = fakeDb({
+    companyhistoricalfacts: [fact('TCS', 'FY2022'), fact('INFY', 'FY2022')],
+    reconciliation_checks: [
+      { symbol: 'TCS', status: 'VALUE_MISMATCH' },
+      { symbol: 'TCS', status: 'NO_FULL_YEAR_CONTEXT' },
+      { symbol: 'TCS', status: 'MATCH' }, // an OK check for the same company must not be counted
+      { symbol: 'INFY', status: 'SUM_MATCH' },
+    ],
+  });
+  const { rows } = await collectCoverageRows(db, { symbols: ['TCS', 'INFY'], now: new Date('2026-09-25T00:00:00Z') });
+  const by = Object.fromEntries(rows.map((r) => [r.symbol, r]));
+  assert.equal(by.TCS.dataQuality.unresolvedReconciliationMismatches, 2);
+  assert.equal(by.INFY.dataQuality.unresolvedReconciliationMismatches, 0, 'SUM_MATCH is an OK verdict, not a mismatch');
+  assert.equal(summarize(rows).unresolvedReconciliationMismatches, 2);
 });
 
 test('registry rows drive promise-stage state and the top failure reasons', async () => {
@@ -375,6 +409,43 @@ test('the audit before this fix would have summed 3 (a quarantined curated recor
     const { rows } = await collectCoverageRows(db, { symbols: ['ZZTEST_TCSLIKE'], now: new Date('2026-09-25T00:00:00Z') });
     const row = rows[0];
     assert.equal(row.promises.timelineDeliverable, 2, 'ZZTEST-Q is quarantined (excluded); ZZTEST-PROMOTED counts once despite living in both stores; ZZTEST-JSONONLY counts once');
+    assert.equal(summarize(rows).acceptedPromises, 2);
+  });
+});
+
+test('a ManagementPromise record imported from the curated file (curatedRecordId set) is the same promise, not a second one', async () => {
+  // Reproduces the real TCS shape found live 2026-09-27: a ManagementPromise document carries the curated
+  // JSON record's own id in curatedRecordId (set by npm run earnings:import) -- identical statement, target
+  // period and source URL to the curated record it was imported from. Before this fix, publicSafe (from
+  // ManagementPromise) and timelineDeliverable (from the curated file) summed both as if distinct.
+  await withCuratedFile('ZZTEST_IMPORTED', [curatedRecord('ZZTEST-IMPORTED-1')], async () => {
+    const db = fakeDb({
+      companyhistoricalfacts: [fact('ZZTEST_IMPORTED', 'FY2022')],
+      managementpromises: [
+        { symbol: 'ZZTEST_IMPORTED', dataOrigin: 'REAL_RESEARCH', evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' }, curatedRecordId: 'ZZTEST-IMPORTED-1' },
+      ],
+    });
+    const { rows } = await collectCoverageRows(db, { symbols: ['ZZTEST_IMPORTED'], now: new Date('2026-09-25T00:00:00Z') });
+    const row = rows[0];
+    assert.equal(row.promises.publicSafe, 1, 'the ManagementPromise record is counted once, normally');
+    assert.equal(row.promises.curatedFile, 1, 'the curated file record is still reported as present');
+    assert.equal(row.promises.timelineDeliverable, 0, 'but excluded from the timeline-deliverable union: it is the SAME promise as the one already counted via publicSafe');
+    assert.equal(summarize(rows).acceptedPromises, 1, 'total is 1 distinct promise, not 2');
+  });
+});
+
+test('an unlinked ManagementPromise record and an unrelated curated-file record for the same symbol ARE both counted: nothing is merged without the explicit curatedRecordId link', async () => {
+  await withCuratedFile('ZZTEST_UNLINKED', [curatedRecord('ZZTEST-UNLINKED-1')], async () => {
+    const db = fakeDb({
+      companyhistoricalfacts: [fact('ZZTEST_UNLINKED', 'FY2022')],
+      managementpromises: [
+        { symbol: 'ZZTEST_UNLINKED', dataOrigin: 'REAL_RESEARCH', evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } }, // no curatedRecordId: genuinely independent
+      ],
+    });
+    const { rows } = await collectCoverageRows(db, { symbols: ['ZZTEST_UNLINKED'], now: new Date('2026-09-25T00:00:00Z') });
+    const row = rows[0];
+    assert.equal(row.promises.publicSafe, 1);
+    assert.equal(row.promises.timelineDeliverable, 1, 'with no curatedRecordId link, the curated record is a genuinely distinct promise and stays counted');
     assert.equal(summarize(rows).acceptedPromises, 2);
   });
 });

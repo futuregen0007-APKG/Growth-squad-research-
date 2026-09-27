@@ -105,6 +105,10 @@ test('verifySymbol confirms every fact against its filing and that four quarters
   assert.equal(result.urlsChecked, 4);
   assert.deepEqual(result.statuses, { MATCH: 4 });
   assert.deepEqual([result.sums.checked, result.sums.ok, result.sums.mismatches.length], [1, 1, 0]);
+  // Every check (not just failures) is recorded, for persistReconciliationChecks to flip a past mismatch back to OK.
+  assert.equal(result.checks.length, 5, '4 SOURCE_VALUE checks + 1 QUARTER_SUM check');
+  assert.ok(result.checks.every((c) => c.status === 'MATCH' || c.status === 'SUM_MATCH'));
+  assert.equal(result.checks.filter((c) => c.type === 'QUARTER_SUM')[0].status, 'SUM_MATCH');
 });
 
 test('verifySymbol flags quarters that do not add up to the filing\'s full year', async () => {
@@ -114,6 +118,8 @@ test('verifySymbol flags quarters that do not add up to the filing\'s full year'
   assert.equal(result.sums.ok, 0);
   assert.equal(result.sums.mismatches[0].status, 'SUM_MISMATCH');
   assert.equal(result.sums.mismatches[0].metric, 'REVENUE');
+  const sumCheck = result.checks.find((c) => c.type === 'QUARTER_SUM');
+  assert.equal(sumCheck.status, 'SUM_MISMATCH', 'the unresolved mismatch itself must be in the persisted-check list, not just the failure summary');
 });
 
 test('an unreachable source is reported as a fetch failure, never as a match', async () => {

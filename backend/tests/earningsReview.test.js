@@ -10,6 +10,7 @@ import {
 } from '../scripts/earningsReview.js';
 import { saveCandidate } from '../services/PromiseCandidateService.js';
 import PromiseCandidate from '../models/PromiseCandidate.js';
+import ManagementPromise from '../models/ManagementPromise.js';
 import { getCompanyTimeline, reloadCuratedDataset } from '../services/CuratedEarningsIntelligenceService.js';
 import { RESOLVED_STATUSES } from '../utils/earningsIntelligenceValidation.js';
 
@@ -61,6 +62,7 @@ const mongoCandidate = (overrides = {}) => ({
 
 const cleanupTestSymbol = async () => {
   await PromiseCandidate.deleteMany({ symbol: TEST_SYMBOL });
+  await ManagementPromise.deleteMany({ symbol: TEST_SYMBOL });
   if (fs.existsSync(promisesPath)) fs.unlinkSync(promisesPath);
   const companiesFile = JSON.parse(fs.readFileSync(COMPANIES_FILE, 'utf8'));
   const filtered = companiesFile.companies.filter((c) => c.symbol !== TEST_SYMBOL);
@@ -243,6 +245,27 @@ test('acceptCandidate is idempotent: accepting the same id twice never duplicate
 
   const promisesFile = JSON.parse(fs.readFileSync(promisesPath, 'utf8'));
   assert.equal(promisesFile.records.length, 1);
+});
+
+test('acceptCandidate mirrors the accepted record into ManagementPromise (curatedRecordId-linked) so /report reflects it immediately, without duplicating on repeat accepts', async (t) => {
+  t.after(cleanupTestSymbol);
+  await cleanupTestSymbol();
+  await saveCandidate(mongoCandidate());
+
+  const result = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: TEST_SECRET, evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
+  assert.equal(result.ok, true);
+
+  const mirrored = await ManagementPromise.findOne({ curatedRecordId: `${TEST_SYMBOL}-FY2026-CAND-001` }).lean();
+  assert.ok(mirrored, 'acceptCandidate must mirror the newly-accepted record into ManagementPromise so /report is not stale');
+  assert.equal(mirrored.symbol, TEST_SYMBOL);
+  assert.equal(mirrored.promise.statement, 'Test candidate statement.');
+
+  const second = await acceptCandidate(TEST_SYMBOL, `${TEST_SYMBOL}-FY2026-CAND-001`, { reviewer: 'tester', secret: TEST_SECRET, evidenceIntegrity: { status: 'VERIFIED_EXCHANGE_COPY' } });
+  assert.equal(second.ok, true);
+  assert.equal(second.idempotent, true);
+
+  const mirroredCount = await ManagementPromise.countDocuments({ curatedRecordId: `${TEST_SYMBOL}-FY2026-CAND-001` });
+  assert.equal(mirroredCount, 1, 'a repeat accept must not duplicate the ManagementPromise mirror');
 });
 
 test('acceptCandidate refuses to promote a candidate that fails validateManagementPromiseRecord', async (t) => {

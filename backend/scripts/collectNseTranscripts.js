@@ -3,9 +3,15 @@
  * ==========================
  * `npm run earnings:collect-transcripts -- --expect-target <host>/<database>
  *    [--symbols A,B] [--priority A,B,...] [--batch-size 10] [--max-batches N]
- *    [--max-runtime-min N] [--from-year 2022] [--to-year 2026]
+ *    [--max-runtime-min N] [--max-cost-usd N] [--from-year 2022] [--to-year 2026]
  *    [--concurrency 2] [--openai-concurrency 3] [--delay-ms 800]
- *    [--max-docs-per-symbol N] [--skip-promises] [--dry-run] [--label name]`
+ *    [--max-docs-per-symbol N] [--skip-promises] [--dry-run] [--label name]
+ *    [--no-overlap-guard]`
+ *
+ * --max-cost-usd is an explicit, enforced spend cap on this run's OpenAI
+ * calls (checked after every company, using the same token-based estimate
+ * printed at the end); the run stops as soon as it is reached, mid-batch if
+ * necessary, the same as --max-runtime-min.
  *
  * The transcript half of the earnings pipeline, run from NSE's own
  * announcements (see providers/NseAnnouncementProvider.js), because the BSE
@@ -46,6 +52,7 @@ import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { assertMongoTarget } from '../utils/mongoTarget.js';
 import { getFiscalWindow } from '../utils/fiscalWindow.js';
+import { claimRun, heartbeat, completeRun } from '../services/ScheduledJobRunService.js';
 
 const BACKEND_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const MAX_CONSECUTIVE_FAILURES = 4;
@@ -75,13 +82,17 @@ export const planTranscriptBatch = (rows, {
 
 /** shouldStopTranscripts - pure. Why the run must stop now, or null. */
 export const shouldStopTranscripts = ({
-  consecutiveFailures = 0, elapsedMs = 0, maxRuntimeMs = 0, batchesDone = 0, maxBatches = 0,
+  consecutiveFailures = 0, elapsedMs = 0, maxRuntimeMs = 0, batchesDone = 0, maxBatches = 0, estimatedUsd = 0, maxCostUsd = 0,
 }) => {
   if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) return `${consecutiveFailures} companies in a row failed at discovery or extraction; stopping rather than repeat the same failure`;
   if (maxRuntimeMs && elapsedMs >= maxRuntimeMs) return 'the --max-runtime-min budget is used up';
   if (maxBatches && batchesDone >= maxBatches) return 'the --max-batches limit was reached';
+  if (maxCostUsd && estimatedUsd >= maxCostUsd) return `the --max-cost-usd budget ($${maxCostUsd}) is used up (spent ~$${estimatedUsd.toFixed(3)})`;
   return null;
 };
+
+// gpt-4o-mini list price at the time of writing: $0.15 per million input tokens, $0.60 per million output tokens.
+export const estimateModelCostUsd = (modelUsage) => (modelUsage.promptTokens * 0.15 + modelUsage.completionTokens * 0.60) / 1e6;
 
 /**
  * processSymbol - one company: discover, register new documents, run the
@@ -145,6 +156,7 @@ const parseArgs = (argv) => {
     batchSize: Number(get('--batch-size')) || 10,
     maxBatches: Number(get('--max-batches')) || 0,
     maxRuntimeMin: Number(get('--max-runtime-min')) || 0,
+    maxCostUsd: Number(get('--max-cost-usd')) || 0,
     fromYear: get('--from-year') ? Number(get('--from-year')) : null,
     toYear: get('--to-year') ? Number(get('--to-year')) : null,
     concurrency: Number(get('--concurrency')) || 2,
@@ -154,11 +166,14 @@ const parseArgs = (argv) => {
     skipPromises: argv.includes('--skip-promises'),
     dryRun: argv.includes('--dry-run'),
     label: get('--label') || 'transcripts',
+    noOverlapGuard: argv.includes('--no-overlap-guard'),
   };
 };
 
 const isMainModule = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMainModule) {
+  let jobName = null;
+  let runId = null;
   (async () => {
     dotenv.config();
     const args = parseArgs(process.argv.slice(2));
@@ -197,6 +212,18 @@ if (isMainModule) {
       const target = assertMongoTarget(process.env.MONGODB_URI, args.expectTarget);
       console.log(`Target database: ${target.label}${target.implicitDatabase ? '  (URI names no database -> driver default "test")' : ''}`);
       await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 15000 });
+
+      jobName = `transcripts-batch:${args.label}`;
+      if (!args.noOverlapGuard) {
+        const claim = await claimRun(jobName);
+        if (!claim.ok) {
+          console.error(`Refusing to start: job "${jobName}" is already RUNNING (started ${claim.existing?.startedAt}, last heartbeat ${claim.existing?.heartbeatAt || 'never'}). Pass --no-overlap-guard to override.`);
+          await mongoose.disconnect();
+          process.exit(1);
+        }
+        runId = claim.runId;
+        console.log(`Claimed scheduled-job run "${jobName}" (${runId}).`);
+      }
     } else {
       console.log('Dry run: discovery only, no database connection.');
     }
@@ -273,7 +300,9 @@ if (isMainModule) {
           fs.appendFileSync(ledger, `${JSON.stringify(line)}\n`);
           const years = Object.entries(result.byFiscalYear).map(([fy, n]) => `${fy}:${n}`).join(' ') || 'none';
           console.log(`  ${symbol.padEnd(12)} transcripts=${result.discovered} [${years}] registered=${result.registered} dup=${result.duplicates} dlFail=${result.downloadFailed} | promise docs=${result.promiseDocsProcessed} noGuidance=${result.noGuidanceDocs} failed=${result.promiseFailures} candidates=${result.candidates} ${line.seconds}s${result.error ? ` | ${result.error}` : ''}${result.noTranscripts && !result.error ? ' | NO TRANSCRIPTS ON NSE IN WINDOW' : ''}`);
-          stopReason = shouldStopTranscripts({ consecutiveFailures, elapsedMs: Date.now() - startedAt, maxRuntimeMs: args.maxRuntimeMin * 60000 });
+          stopReason = shouldStopTranscripts({
+            consecutiveFailures, elapsedMs: Date.now() - startedAt, maxRuntimeMs: args.maxRuntimeMin * 60000, estimatedUsd: estimateModelCostUsd(modelUsage), maxCostUsd: args.maxCostUsd,
+          });
           // eslint-disable-next-line no-await-in-loop
           await sleep(1000);
         }
@@ -282,24 +311,31 @@ if (isMainModule) {
       await Promise.all(Array.from({ length: Math.min(args.concurrency, symbols.length) }, worker));
 
       batchesDone += 1;
+      // eslint-disable-next-line no-await-in-loop
+      if (runId) await heartbeat(jobName, runId, { batchesDone, attempted: [...attempted], totals, estimatedUsd: estimateModelCostUsd(modelUsage) });
       if (!stopReason) stopReason = shouldStopTranscripts({ batchesDone, maxBatches: args.maxBatches });
       if (stopReason) break;
     }
 
     console.log(`\n${stopReason ? `Stopped: ${stopReason}.` : 'Run finished.'}`);
     console.log(`This run: ${JSON.stringify(totals)} in ${Math.round((Date.now() - startedAt) / 60000)} min; ledger ${path.relative(process.cwd(), ledger)}`);
-    // gpt-4o-mini list price at the time of writing: $0.15 per million input tokens, $0.60 per million output tokens.
-    const estimatedUsd = (modelUsage.promptTokens * 0.15 + modelUsage.completionTokens * 0.60) / 1e6;
+    const estimatedUsd = estimateModelCostUsd(modelUsage);
     console.log(`Model usage: ${modelUsage.calls} calls, ${modelUsage.promptTokens} prompt + ${modelUsage.completionTokens} completion tokens (about $${estimatedUsd.toFixed(3)} at list price)`);
     if (!args.dryRun) {
       const { rows } = await collectCoverageRows(mongoose.connection.db);
       console.log(`Database now: ${JSON.stringify(summarize(rows).categories)}`);
       console.log(`Resume with the same command; next: ${planTranscriptBatch(rows, { batchSize: 10, priority: args.priority }).join(',') || '(none unsettled)'}`);
+      if (runId) await completeRun(jobName, runId, { status: 'SUCCESS', stats: { ...totals, batchesDone, stopReason, estimatedUsd } });
       await mongoose.disconnect();
     }
     process.exit(0);
   })().catch(async (error) => {
     console.error('Transcript run failed:', error.message);
+    try {
+      if (jobName && runId && mongoose.connection.readyState === 1) {
+        await completeRun(jobName, runId, { status: 'FAILED', error: error.message });
+      }
+    } catch { /* best-effort: the primary failure is already reported above */ }
     await mongoose.disconnect().catch(() => {});
     process.exit(1);
   });

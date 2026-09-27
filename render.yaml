@@ -57,6 +57,6 @@ services:
       node scripts/collectNseTranscripts.js
       --expect-target cluster0.yxgjqf0.mongodb.net/test
       --concurrency 2 --openai-concurrency 3 --batch-size 15
-      --max-runtime-min 45 --label cron-transcript-refresh
+      --max-runtime-min 45 --max-cost-usd 5 --label cron-transcript-refresh
     envVarGroups:
       - growth-squad-earnings

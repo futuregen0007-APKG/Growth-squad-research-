@@ -14,6 +14,8 @@ import {
 import * as CuratedEarningsIntelligenceService from '../services/CuratedEarningsIntelligenceService.js';
 import ManagementPromise from '../models/ManagementPromise.js';
 import CompanyHistoricalFact from '../models/CompanyHistoricalFact.js';
+import ReconciliationCheck, { OK_STATUSES as RECONCILIATION_OK_STATUSES } from '../models/ReconciliationCheck.js';
+import { getAllStatuses as getScheduledJobStatuses } from '../services/ScheduledJobRunService.js';
 import { isPubliclyVisibleRecord } from '../utils/earningsIntelligenceValidation.js';
 
 const router = express.Router();
@@ -84,6 +86,47 @@ router.get('/jobs/:jobId', async (req, res, next) => {
     res.json({ success: true, data });
   } catch (error) {
     console.error('[Earnings Intelligence] /jobs/:jobId error:', error);
+    next(error);
+  }
+});
+
+/**
+ * GET /data-quality - the operational status a human (not Claude, not a
+ * laptop) needs to trust the pipeline is still running unattended: each
+ * scheduled job's last success/failure, and every unresolved reconciliation
+ * difference (see models/ReconciliationCheck.js) grouped by symbol. A
+ * mismatch here does not mean a stored value is wrong -- see the model's own
+ * docstring -- but it must be visible here rather than silently dropped once
+ * the verification run that found it exits.
+ */
+router.get('/data-quality', async (req, res, next) => {
+  try {
+    const [scheduledJobs, unresolvedChecks] = await Promise.all([
+      getScheduledJobStatuses(),
+      ReconciliationCheck.find({ status: { $nin: RECONCILIATION_OK_STATUSES } }).sort({ symbol: 1 }).lean(),
+    ]);
+    const bySymbol = new Map();
+    for (const check of unresolvedChecks) {
+      if (!bySymbol.has(check.symbol)) bySymbol.set(check.symbol, []);
+      bySymbol.get(check.symbol).push({
+        checkType: check.checkType, metric: check.metric, period: check.period, basis: check.basis, status: check.status, detail: check.detail, lastCheckedAt: check.lastCheckedAt,
+      });
+    }
+    res.json({
+      success: true,
+      data: {
+        scheduledJobs: scheduledJobs.map((j) => ({
+          jobName: j.jobName, status: j.status, startedAt: j.startedAt, finishedAt: j.finishedAt, heartbeatAt: j.heartbeatAt, checkpoint: j.checkpoint, lastSuccessAt: j.lastSuccessAt, lastFailureAt: j.lastFailureAt, lastFailureError: j.lastFailureError,
+        })),
+        reconciliation: {
+          unresolvedCount: unresolvedChecks.length,
+          unresolvedSymbolCount: bySymbol.size,
+          bySymbol: Object.fromEntries(bySymbol),
+        },
+      },
+    });
+  } catch (error) {
+    console.error('[Earnings Intelligence] /data-quality error:', error);
     next(error);
   }
 });

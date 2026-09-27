@@ -37,6 +37,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertMongoTarget } from '../utils/mongoTarget.js';
 import { getFiscalWindow } from '../utils/fiscalWindow.js';
 import { collectCoverageRows, orderPending, summarize } from './earningsCoverageAudit.js';
+import { claimRun, heartbeat, completeRun } from '../services/ScheduledJobRunService.js';
 
 const BACKEND_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const MAX_CONSECUTIVE_INDEX_FAILURES = 3;
@@ -104,11 +105,14 @@ const parseArgs = (argv) => {
     label: get('--label') || 'xbrl-batch',
     scope: ['incomplete', 'with-facts'].includes(get('--scope')) ? get('--scope') : 'pending',
     fullYearOnly: argv.includes('--full-year-only'),
+    noOverlapGuard: argv.includes('--no-overlap-guard'),
   };
 };
 
 const isMainModule = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMainModule) {
+  let jobName = null;
+  let runId = null;
   (async () => {
     dotenv.config();
     const args = parseArgs(process.argv.slice(2));
@@ -116,6 +120,18 @@ if (isMainModule) {
     const target = assertMongoTarget(process.env.MONGODB_URI, args.expectTarget);
     console.log(`Target database: ${target.label}${target.implicitDatabase ? '  (URI names no database -> driver default "test")' : ''}`);
     await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 15000 });
+
+    jobName = `xbrl-batch:${args.label}`;
+    if (!args.noOverlapGuard) {
+      const claim = await claimRun(jobName);
+      if (!claim.ok) {
+        console.error(`Refusing to start: job "${jobName}" is already RUNNING (started ${claim.existing?.startedAt}, last heartbeat ${claim.existing?.heartbeatAt || 'never'}). Pass --no-overlap-guard to override.`);
+        await mongoose.disconnect();
+        process.exit(1);
+      }
+      runId = claim.runId;
+      console.log(`Claimed scheduled-job run "${jobName}" (${runId}).`);
+    }
 
     const { collectSymbol, recordJob } = await import('./collectNseXbrlFundamentals.js');
     const window = getFiscalWindow();
@@ -170,6 +186,8 @@ if (isMainModule) {
         await sleep(args.pauseMs);
       }
       batchesDone += 1;
+      // eslint-disable-next-line no-await-in-loop
+      if (runId) await heartbeat(jobName, runId, { batchesDone, attempted: [...attempted], totals });
       if (!stopReason) stopReason = shouldStop({ batchesDone, maxBatches: args.maxBatches });
       if (stopReason) break;
     }
@@ -179,10 +197,16 @@ if (isMainModule) {
     console.log(`This run: ${totals.companies} companies, ${totals.facts} facts stored, ~${totals.requests} exchange requests, ${Math.round((Date.now() - startedAt) / 60000)} min. Job outcomes: ${JSON.stringify(totals.statuses)}`);
     console.log(`Database now: ${JSON.stringify(summarize(rows).categories)}; ledger: ${path.relative(process.cwd(), ledger)}`);
     console.log(`Resume with the same command; the next symbols will be: ${planBatch(rows, { batchSize: 10, priority: args.priority, scope: args.scope }).join(',') || `(none ${args.scope})`}`);
+    if (runId) await completeRun(jobName, runId, { status: 'SUCCESS', stats: { ...totals, batchesDone, stopReason } });
     await mongoose.disconnect();
     process.exit(0);
   })().catch(async (error) => {
     console.error('Batch run failed:', error.message);
+    try {
+      if (jobName && runId && mongoose.connection.readyState === 1) {
+        await completeRun(jobName, runId, { status: 'FAILED', error: error.message });
+      }
+    } catch { /* best-effort: the primary failure is already reported above */ }
     await mongoose.disconnect().catch(() => {});
     process.exit(1);
   });

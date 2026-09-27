@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  planTranscriptBatch, shouldStopTranscripts, processSymbol, MAX_CONSECUTIVE_FAILURES,
+  planTranscriptBatch, shouldStopTranscripts, processSymbol, MAX_CONSECUTIVE_FAILURES, estimateModelCostUsd,
 } from '../scripts/collectNseTranscripts.js';
 
 /**
@@ -40,6 +40,21 @@ test('the run stops on repeated failure, the time budget or the batch limit, and
   assert.match(shouldStopTranscripts({ elapsedMs: 61000, maxRuntimeMs: 60000 }), /max-runtime-min/);
   assert.match(shouldStopTranscripts({ batchesDone: 3, maxBatches: 3 }), /max-batches/);
   assert.equal(shouldStopTranscripts({ consecutiveFailures: MAX_CONSECUTIVE_FAILURES - 1, elapsedMs: 1, maxRuntimeMs: 60000 }), null);
+});
+
+test('the run stops once the explicit --max-cost-usd budget is reached, and a zero budget means unlimited', () => {
+  assert.equal(shouldStopTranscripts({ estimatedUsd: 0.5, maxCostUsd: 0 }), null, 'no cap configured -> never stops on cost');
+  assert.equal(shouldStopTranscripts({ estimatedUsd: 0.49, maxCostUsd: 0.5 }), null, 'under budget -> continue');
+  assert.match(shouldStopTranscripts({ estimatedUsd: 0.5, maxCostUsd: 0.5 }), /max-cost-usd/, 'at the cap -> stop, not just over it');
+  assert.match(shouldStopTranscripts({ estimatedUsd: 1.2, maxCostUsd: 0.5 }), /max-cost-usd/);
+});
+
+test('estimateModelCostUsd prices prompt and completion tokens separately at gpt-4o-mini list rates', () => {
+  assert.equal(estimateModelCostUsd({ promptTokens: 0, completionTokens: 0 }), 0);
+  // 1,000,000 prompt tokens -> $0.15; 1,000,000 completion tokens -> $0.60
+  assert.equal(estimateModelCostUsd({ promptTokens: 1_000_000, completionTokens: 0 }), 0.15);
+  assert.equal(estimateModelCostUsd({ promptTokens: 0, completionTokens: 1_000_000 }), 0.60);
+  assert.equal(estimateModelCostUsd({ promptTokens: 500_000, completionTokens: 250_000 }), 0.225);
 });
 
 // ---------------------------------------------------------------------------
@@ -98,6 +113,41 @@ test('already-registered, duplicate and failed downloads are counted separately 
   assert.deepEqual([result.registered, result.alreadyRegistered, result.duplicates, result.downloadFailed], [1, 1, 1, 1]);
   assert.deepEqual(result.errors, [{ url: FILINGS[3].url, error: 'HTTP 503' }]);
   assert.equal(calls.promises.length, 1);
+});
+
+test('a second, later run discovers a genuinely new filing for an already-processed company: the old ones are ALREADY_REGISTERED and only the new one is registered and promise-extracted', async () => {
+  // A stateful fake registry, shared across two sequential processSymbol calls, standing in for the real
+  // CompanyDocumentRegistry collection: registering the same URL twice must not download or extract it twice.
+  const registeredUrls = new Set();
+  const promiseRuns = [];
+  const makeDeps = (filings) => ({
+    fromYear: 2025,
+    toYear: 2026,
+    delayMs: 0,
+    discover: async () => ({ filings, rowsSeen: filings.length }),
+    register: async (f) => {
+      if (registeredUrls.has(f.url)) return { status: 'ALREADY_REGISTERED' };
+      registeredUrls.add(f.url);
+      return { status: 'REGISTERED', buffer: Buffer.from(`pdf:${f.url}`) };
+    },
+    runPromises: async (symbol) => {
+      promiseRuns.push(symbol);
+      return { documentsProcessed: 1, documentsWithNoGuidance: 0, candidatesSaved: 1, errors: [] };
+    },
+  });
+
+  // Run 1: NSE's feed currently holds one transcript. It is discovered and registered.
+  const firstRun = await processSymbol('ACME', makeDeps([FILINGS[0]]));
+  assert.equal(firstRun.registered, 1);
+  assert.equal(firstRun.alreadyRegistered, 0);
+  assert.equal(promiseRuns.length, 1);
+
+  // Run 2 (a later scheduled run): NSE has since filed a new transcript alongside the old one.
+  const secondRun = await processSymbol('ACME', makeDeps([FILINGS[0], FILINGS[1]]));
+  assert.equal(secondRun.discovered, 2, 'both the old and the newly-filed document are discovered');
+  assert.equal(secondRun.registered, 1, 'only the genuinely new filing is registered');
+  assert.equal(secondRun.alreadyRegistered, 1, 'the previously-processed filing is recognised, not re-downloaded');
+  assert.equal(promiseRuns.length, 2, 'the promise stage still runs on the second pass, to read the newly-registered document');
 });
 
 test('a company with no transcripts is reported as that, not as a failure and not as "no guidance"', async () => {

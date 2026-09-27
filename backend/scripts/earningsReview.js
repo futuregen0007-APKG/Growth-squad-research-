@@ -53,7 +53,9 @@ import { SUPPORTED_STOCKS } from '../utils/constants.js';
 import { validateManagementPromiseRecord, validateCuratedCompanyRecord, RESOLVED_STATUSES, PUBLIC_SAFE_EVIDENCE_STATUSES } from '../utils/earningsIntelligenceValidation.js';
 import { listCandidatesForSymbol } from '../services/PromiseCandidateService.js';
 import PromiseCandidate from '../models/PromiseCandidate.js';
-import { reloadCuratedDataset } from '../services/CuratedEarningsIntelligenceService.js';
+import ManagementPromise from '../models/ManagementPromise.js';
+import { reloadCuratedDataset, getCompanyCoverage } from '../services/CuratedEarningsIntelligenceService.js';
+import { toManagementPromiseDoc } from './earningsImport.js';
 import { logger } from '../utils/logger.js';
 
 dotenv.config();
@@ -188,6 +190,22 @@ export const acceptCandidate = async (symbol, candidateId, { reviewer, secret, e
   if (!alreadyPromoted) {
     promisesFile.records.push(promoted);
     writeJson(promisesFilePath, promisesFile);
+  }
+
+  // Mirror into ManagementPromise immediately (the same transform npm run earnings:import applies) so an
+  // acceptance is visible on BOTH public surfaces without a separate manual step -- /timeline already read
+  // ACCEPTED candidates live from Mongo, but /report's "Management Guidance" tab reads ONLY ManagementPromise
+  // (frontend/src/pages/EarningsIntelligence.jsx: `report.promises`), so without this a freshly accepted
+  // candidate would be invisible there until someone remembered to run the import script. Best-effort, like
+  // the companies.json update below: this never blocks or fails the acceptance itself, since the JSON file
+  // (already written above) plus PromiseCandidate.reviewStatus (written below) is what makes the promotion
+  // durable and is already what npm run earnings:import itself treats as the source of truth.
+  try {
+    const coverage = await getCompanyCoverage(symbol);
+    const managementPromiseDoc = toManagementPromiseDoc(promoted, coverage);
+    await ManagementPromise.findOneAndUpdate({ curatedRecordId: candidateId }, managementPromiseDoc, { upsert: true, new: true });
+  } catch (err) {
+    logger.warn(`[earnings:review] ManagementPromise mirror failed for ${symbol} ${candidateId}: ${err.message}`);
   }
 
   // Best-effort companies.json update -- never blocks or fails the acceptance itself.
