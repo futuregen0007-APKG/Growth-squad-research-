@@ -50,7 +50,21 @@ export const SCRIP_ID_OVERRIDES = {
 const fetchScripMasterRaw = async () => {
   const response = await axios.get(BSE_SCRIP_LIST_URL, {
     params: { Group: '', Scripcode: '', industry: '', segment: 'Equity', status: 'Active' },
-    headers: { 'User-Agent': BROWSER_UA, Referer: BSE_REFERER, Accept: 'application/json, text/plain, */*' },
+    // BSE's edge started returning HTTP 403 for the original, thinner header
+    // set (User-Agent/Referer/Accept only) -- confirmed live that the same
+    // request succeeds once it also carries the Origin and Sec-Fetch-*
+    // headers a real browser's fetch() always sends for a cross-origin XHR;
+    // Accept-Language is included for the same fuller-fingerprint reason.
+    headers: {
+      'User-Agent': BROWSER_UA,
+      Referer: BSE_REFERER,
+      Origin: 'https://www.bseindia.com',
+      Accept: 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'sec-fetch-site': 'same-site',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-dest': 'empty',
+    },
     httpsAgent: NO_KEEPALIVE_AGENT,
     timeout: 30000,
   });

@@ -29,6 +29,7 @@ const STOCK_REJECTION_LABELS = {
   HORIZON_MISMATCH: "don't fit this goal's time horizon",
   INVALID_METRICS: 'have invalid or incomplete identifying data',
   PROVIDER_UNAVAILABLE: 'could not be evaluated because a data provider was unavailable',
+  MARKET_CAP_UNVERIFIED: 'have no independently verified market capitalization yet (cannot be assessed, not disqualified)',
 };
 
 /** Builds the exact, backend-driven explanation for why the Direct Stocks bucket has no (or only some) eligible stocks -- never a generic placeholder once a real request has completed. */

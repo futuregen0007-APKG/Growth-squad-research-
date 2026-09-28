@@ -634,7 +634,7 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
       evaluatedCount: 0,
       eligibleCount: 0,
       rejectionCounts: {
-        INSUFFICIENT_HISTORY: 0, AWAITING_FUNDAMENTALS: 0, STALE_DATA: 0, RISK_MISMATCH: 0, HORIZON_MISMATCH: 0, INVALID_METRICS: 0, PROVIDER_UNAVAILABLE: 0,
+        INSUFFICIENT_HISTORY: 0, AWAITING_FUNDAMENTALS: 0, STALE_DATA: 0, RISK_MISMATCH: 0, HORIZON_MISMATCH: 0, INVALID_METRICS: 0, PROVIDER_UNAVAILABLE: 0, MARKET_CAP_UNVERIFIED: 0,
       },
       disclaimer: 'Investment returns are market-dependent and not guaranteed. This analysis is for informational purposes and should not be treated as personalized financial advice.',
       projection: buildProjection(goalProfile),
@@ -650,7 +650,7 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
   // quality or suitability rejection.
   const rejectionCounts = {
     INSUFFICIENT_HISTORY: 0, AWAITING_FUNDAMENTALS: 0, STALE_DATA: 0, RISK_MISMATCH: 0,
-    HORIZON_MISMATCH: 0, INVALID_METRICS: 0, PROVIDER_UNAVAILABLE: 0,
+    HORIZON_MISMATCH: 0, INVALID_METRICS: 0, PROVIDER_UNAVAILABLE: 0, MARKET_CAP_UNVERIFIED: 0,
   };
 
   const filtered = universe.filter((stock) => {
@@ -744,6 +744,15 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
     // diversity still applies (never mixes disallowed segments in), but the
     // per-sector cap of 5 takes precedence over the 2/2/1 segment caps.
     const sectorFiltered = rankable.filter((stock) => {
+      // A goal whose horizon allows NO segment at all (e.g. <3 years) excludes
+      // every stock on suitability grounds alone -- true regardless of
+      // whether any stock's market cap could be verified, so it is checked
+      // first. Only once some segment IS allowed does "cannot assess this
+      // stock's segment" (no independently verified market cap, e.g. the BSE
+      // scrip-master provider being unavailable) become the operative,
+      // distinct reason -- never conflated with "assessed and unsuitable".
+      if (!segmentPolicy.allowedSegments.length) { rejectionCounts.HORIZON_MISMATCH += 1; return false; }
+      if (!stock.marketCapSegment) { rejectionCounts.MARKET_CAP_UNVERIFIED += 1; return false; }
       if (!segmentPolicy.allowedSegments.includes(stock.marketCapSegment)) { rejectionCounts.HORIZON_MISMATCH += 1; return false; }
       if (stock.marketCapSegment === 'SMALL' && !passesSmallCapEligibilityGate(stock)) { rejectionCounts.RISK_MISMATCH += 1; return false; }
       return true;
@@ -754,7 +763,12 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
     const bySegment = { LARGE: [], MID: [], SMALL: [] };
     for (const stock of rankable) {
       const segment = stock.marketCapSegment;
-      if (!segment || !segmentPolicy.allowedSegments.includes(segment)) {
+      // Same ordering as the sector-filtered branch above: a horizon that
+      // allows no segment at all rejects on suitability alone, before data
+      // availability is even considered.
+      if (!segmentPolicy.allowedSegments.length) { rejectionCounts.HORIZON_MISMATCH += 1; continue; }
+      if (!segment) { rejectionCounts.MARKET_CAP_UNVERIFIED += 1; continue; }
+      if (!segmentPolicy.allowedSegments.includes(segment)) {
         rejectionCounts.HORIZON_MISMATCH += 1;
         continue;
       }
@@ -771,7 +785,7 @@ export const buildGoalRecommendation = async (goal = {}, stocks = [], profile = 
     ];
     // Everything eligible-segment but crowded out by the sector-dedupe or the
     // per-segment cap is still a real, evaluated stock -- HORIZON_MISMATCH
-    // (a portfolio-construction/diversity limit) is the closest of the 7
+    // (a portfolio-construction/diversity limit) is the closest of the 8
     // canonical reason codes, not a silent drop.
     const excessCount = (dedupedLarge.length - Math.min(dedupedLarge.length, segmentPolicy.maxBySegment.LARGE || 0))
       + (dedupedMid.length - Math.min(dedupedMid.length, segmentPolicy.maxBySegment.MID || 0))

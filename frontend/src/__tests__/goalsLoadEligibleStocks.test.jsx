@@ -157,6 +157,27 @@ describe('Goals page — Load Eligible Stocks', () => {
     expect(screen.getByText(/awaiting verified fundamentals data/i)).toBeInTheDocument();
   });
 
+  test('an unverified-market-cap rejection is shown with its own distinct, actionable reason -- never mislabeled as a horizon mismatch', async () => {
+    global.fetch = jest.fn((url) => {
+      if (String(url).includes('/allocation-plan')) return jsonResponse({ success: true, data: ALLOCATION_PLAN });
+      return jsonResponse({
+        success: true,
+        data: {
+          recommendations: [], stocks: [], status: 'UNAVAILABLE', universeCount: 205, evaluatedCount: 205, eligibleCount: 0,
+          rejectionCounts: { MARKET_CAP_UNVERIFIED: 158, HORIZON_MISMATCH: 0 },
+          missingDataReasons: [{ reasonCode: 'MARKET_CAP_UNVERIFIED', count: 158 }],
+        },
+      });
+    });
+
+    await openGoalRecommendationsDialog();
+    fireEvent.click(screen.getByRole('button', { name: /Load Eligible Stocks/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /Load Eligible Stocks/i })).not.toBeDisabled());
+
+    expect(await screen.findByText(/no independently verified market capitalization/i)).toBeInTheDocument();
+    expect(screen.queryByText(/don't fit this goal's time horizon/i)).not.toBeInTheDocument();
+  });
+
   test('a network/HTTP failure shows a precise error and clears only the stock bucket, never the fund buckets', async () => {
     global.fetch = jest.fn((url) => {
       if (String(url).includes('/allocation-plan')) return jsonResponse({ success: true, data: ALLOCATION_PLAN });

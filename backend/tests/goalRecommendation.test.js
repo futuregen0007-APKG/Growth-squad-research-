@@ -483,6 +483,45 @@ test('a mixed-segment universe returns at most 2 large, 2 mid and 1 small candid
   assert.ok((bySegment.LARGE || 0) > 0 && (bySegment.MID || 0) > 0, 'a diverse universe should surface at least one of each larger segment');
 });
 
+test('a stock with no independently verified market cap (e.g. the BSE scrip-master provider unavailable) is rejected MARKET_CAP_UNVERIFIED, never conflated with HORIZON_MISMATCH -- "cannot assess" is not "assessed and unsuitable"', async () => {
+  const stocks = [
+    makeVerifiedStock({ ticker: 'NOCAPDATA', sector: 'Banking' }), // marketCapSegment intentionally omitted -- not independently verified
+    makeVerifiedStock({ ticker: 'REALLARGE', sector: 'IT', marketCapSegment: 'LARGE' }),
+  ];
+  const researchData = stocks.map((s) => makeVerifiedResearch(s.ticker, 220, { liquidityClassification: 'HIGH', corporateActionAdjustmentStatus: 'NOT_REQUIRED' }));
+  const goal = { ...wealthGoal, id: 'goal-market-cap-unverified' }; // 10y horizon -> LARGE/MID/SMALL all allowed, so segment (not horizon) is the only reason NOCAPDATA is excluded
+  const recommendation = await buildGoalRecommendation(goal, stocks, {}, { researchData });
+
+  assert.equal(recommendation.rejectionCounts.MARKET_CAP_UNVERIFIED, 1);
+  assert.equal(recommendation.rejectionCounts.HORIZON_MISMATCH, 0, 'a genuinely unverifiable stock must never be mislabeled as horizon-unsuitable');
+  assert.ok(recommendation.recommendations.some((r) => r.symbol === 'REALLARGE'), 'a real, verified LARGE stock is still recommended normally');
+  assert.ok(!recommendation.recommendations.some((r) => r.symbol === 'NOCAPDATA'));
+});
+
+test('a <3-year goal (no segment allowed at all) rejects an unverified stock as HORIZON_MISMATCH, not MARKET_CAP_UNVERIFIED -- suitability is the true, data-independent reason', async () => {
+  const shortGoal = {
+    id: 'goal-short-horizon-unverified-cap', type: 'car', name: 'New Car', targetAmount: 800000, currentAmount: 100000, targetYear: new Date().getFullYear() + 2, monthlyContribution: 20000, riskProfile: 'aggressive',
+  };
+  const stocks = [makeVerifiedStock({ ticker: 'SHORTNOSEGDATA', sector: 'Banking' })]; // marketCapSegment intentionally omitted
+  const researchData = [makeVerifiedResearch('SHORTNOSEGDATA', 220, { liquidityClassification: 'HIGH', corporateActionAdjustmentStatus: 'NOT_REQUIRED' })];
+  const recommendation = await buildGoalRecommendation(shortGoal, stocks, {}, { researchData });
+
+  assert.equal(recommendation.rejectionCounts.HORIZON_MISMATCH, 1, 'a <3-year goal excludes every stock on horizon grounds alone, whether or not its market cap could be verified');
+  assert.equal(recommendation.rejectionCounts.MARKET_CAP_UNVERIFIED, 0);
+});
+
+test('a stock with a real, verified market-cap segment that this horizon genuinely disallows is still reported HORIZON_MISMATCH, not MARKET_CAP_UNVERIFIED', async () => {
+  const shortGoal = {
+    id: 'goal-real-segment-horizon-mismatch', type: 'car', name: 'New Car', targetAmount: 800000, currentAmount: 100000, targetYear: new Date().getFullYear() + 2, monthlyContribution: 20000, riskProfile: 'aggressive',
+  };
+  const stocks = [makeVerifiedStock({ ticker: 'REALSEGSHORT', sector: 'Banking', marketCapSegment: 'LARGE' })];
+  const researchData = [makeVerifiedResearch('REALSEGSHORT', 220, { liquidityClassification: 'HIGH', corporateActionAdjustmentStatus: 'NOT_REQUIRED' })];
+  const recommendation = await buildGoalRecommendation(shortGoal, stocks, {}, { researchData });
+
+  assert.equal(recommendation.rejectionCounts.HORIZON_MISMATCH, 1);
+  assert.equal(recommendation.rejectionCounts.MARKET_CAP_UNVERIFIED, 0);
+});
+
 test('a small-cap stock failing the strict eligibility gate (LOW liquidity) is excluded even when otherwise well-scored', async () => {
   const stocks = [makeVerifiedStock({ ticker: 'ILLIQUIDSMALL', sector: 'Manufacturing', marketCapSegment: 'SMALL', marketCapCr: 1500 })];
   const researchData = [makeVerifiedResearch('ILLIQUIDSMALL', 220, { liquidityClassification: 'LOW', corporateActionAdjustmentStatus: 'NOT_REQUIRED' })];
