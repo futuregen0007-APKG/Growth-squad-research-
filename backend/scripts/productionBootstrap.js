@@ -50,6 +50,8 @@ import { logger } from '../utils/logger.js';
 import { BootstrapRunLog } from '../models/BootstrapRunLog.js';
 import { assertMongoTarget } from '../utils/mongoTarget.js';
 import { collectProductionStatus, explainSymptoms } from './productionStatus.js';
+import { claimRun, heartbeat, completeRun } from '../services/ScheduledJobRunService.js';
+import { deleteCache } from '../utils/redisClient.js';
 
 import { syncCompanyResearchProfiles } from '../services/CompanyResearchProfileSync.js';
 import { runStockHistoryBackfill } from './backfillStockHistory.js';
@@ -63,6 +65,17 @@ dotenv.config();
 
 const DEFAULT_MAX_RUNTIME_MIN = 12;
 const ALL_SYMBOLS = Object.keys(SUPPORTED_STOCKS);
+
+// One lock for the whole tool, regardless of which --stage subset is
+// requested: two overlapping invocations could otherwise race on the same
+// underlying collection (e.g. a scheduled full run and a manual single-stage
+// debug run). See services/ScheduledJobRunService.js (already built and
+// tested for the earnings-intelligence cron jobs) -- reused verbatim here.
+export const BOOTSTRAP_JOB_NAME = 'stocks-data-bootstrap';
+// The one thing every request-path stock screen reads live: invalidated so a
+// scheduled refresh's fresh market caps/segments are visible immediately,
+// not after this cache's own 24h TTL (see DynamicUniverseService.js).
+const UNIVERSE_CACHE_KEY = 'universe:eligible_stocks';
 
 class RuntimeBudgetExceeded extends Error {}
 
@@ -247,6 +260,7 @@ const parseArgs = (argv) => {
     resume: argv.includes('--resume'),
     maxRuntimeMin: Number(get('--max-runtime')) || DEFAULT_MAX_RUNTIME_MIN,
     expectTarget: get('--expect-target'),
+    noOverlapGuard: argv.includes('--no-overlap-guard'),
   };
 };
 
@@ -256,7 +270,7 @@ const selectedStages = (stageFilter) => (
 
 export const runBootstrap = async (options) => {
   const {
-    statusOnly, dryRun, stage, symbols, batchSize, resume, maxRuntimeMin,
+    statusOnly, dryRun, stage, symbols, batchSize, resume, maxRuntimeMin, noOverlapGuard,
   } = options;
   const targetSymbols = symbols && symbols.length ? symbols : ALL_SYMBOLS;
   const budget = makeBudget(maxRuntimeMin);
@@ -291,6 +305,17 @@ export const runBootstrap = async (options) => {
     }
     console.log('\nNo destructive operation exists in any stage: every write is an idempotent upsert keyed by (symbol[/date/scheme]); nothing is dropped or deleted.');
     return { dryRun: true, stages: stages.map((s) => s.name) };
+  }
+
+  let runId = null;
+  if (!noOverlapGuard) {
+    const claim = await claimRun(BOOTSTRAP_JOB_NAME);
+    if (!claim.ok) {
+      console.error(`Refusing to start: "${BOOTSTRAP_JOB_NAME}" is already RUNNING (started ${claim.existing?.startedAt}, last heartbeat ${claim.existing?.heartbeatAt || 'never'}). Pass --no-overlap-guard to override.`);
+      return { ok: false, reason: 'ALREADY_RUNNING', existing: claim.existing };
+    }
+    runId = claim.runId;
+    console.log(`Claimed scheduled-job run "${BOOTSTRAP_JOB_NAME}" (${runId}).`);
   }
 
   const outcomes = [];
@@ -334,6 +359,25 @@ export const runBootstrap = async (options) => {
       outcomes.push({ stage: s.name, status: 'FAILED', error: error.message });
       // Continue to next stage -- one stage failing must not abort the whole run.
     }
+    // eslint-disable-next-line no-await-in-loop
+    if (runId) await heartbeat(BOOTSTRAP_JOB_NAME, runId, { lastStage: s.name, stagesCompleted: outcomes.length, totalStages: stages.length });
+  }
+
+  // The stock screener's own 24h-TTL universe cache would otherwise hide a
+  // successful refresh's fresh market caps/segments/history from Goals until
+  // it happens to expire -- invalidated here so the very next request sees
+  // the new data. Best-effort: a Redis outage must not fail an otherwise-
+  // successful bootstrap run.
+  try { await deleteCache(UNIVERSE_CACHE_KEY); } catch (err) { logger.warn(`[productionBootstrap] Cache invalidation failed: ${err.message}`); }
+
+  const anyFailed = outcomes.some((o) => o.status === 'FAILED');
+  const anySucceeded = outcomes.some((o) => o.status === 'COMPLETED' || o.status === 'PARTIAL');
+  if (runId) {
+    await completeRun(BOOTSTRAP_JOB_NAME, runId, {
+      status: anyFailed && !anySucceeded ? 'FAILED' : 'SUCCESS',
+      stats: { stages: outcomes.map((o) => ({ stage: o.stage, status: o.status })) },
+      error: anyFailed ? outcomes.filter((o) => o.status === 'FAILED').map((o) => `${o.stage}: ${o.error || 'unknown'}`).join('; ') : null,
+    });
   }
 
   return { outcomes };
@@ -352,10 +396,16 @@ if (isMainModule) {
     console.log(`Target database: ${target.label}${target.implicitDatabase ? '  (URI names no database -> driver default "test")' : ''}`);
 
     if (mongoose.connection.readyState === 0) await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 10000 });
-    await runBootstrap(args);
+    const result = await runBootstrap(args);
 
     await mongoose.disconnect();
-    process.exit(0);
+    // Non-zero on genuine failure so a scheduled CI run is flagged red: a
+    // refused overlapping run, or every requested stage failing outright
+    // (a stage that ran with SOME success, even PARTIAL, still exits 0 --
+    // that is exactly what --resume is for).
+    const refused = result?.ok === false;
+    const allStagesFailed = Array.isArray(result?.outcomes) && result.outcomes.length > 0 && result.outcomes.every((o) => o.status === 'FAILED');
+    process.exit(refused || allStagesFailed ? 1 : 0);
   })().catch((err) => {
     logger.error(`[data:bootstrap] Failed: ${err.message}`);
     console.error('Bootstrap failed:', err.message);

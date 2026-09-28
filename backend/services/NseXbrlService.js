@@ -88,6 +88,13 @@ export const NSE_SYMBOL_ALIASES = Object.freeze({
   PBFINTECH: 'POLICYBZR',
   INFOEDGE: 'NAUKRI',
   GMRINFRA: 'GMRAIRPORT',
+  // Confirmed 2026-09-28 against BSE/NSE corporate-filing PDFs and the
+  // companies' own stock-exchange intimation letters (see the matching,
+  // more fully-sourced comment on SCRIP_ID_OVERRIDES in
+  // BseScripMasterProvider.js) -- not the earlier "unresolved" state noted
+  // there before that date.
+  LTIM: 'LTM',
+  GUJGASLTD: 'GUJENERGY',
 });
 
 /** The symbol NSE knows a supported company by. */

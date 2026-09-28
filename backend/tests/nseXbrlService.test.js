@@ -336,6 +336,8 @@ test('a renamed company is looked up on NSE by its current symbol, and other com
   assert.equal(nseSymbolFor('UNO MINDA'), 'UNOMINDA');
   assert.equal(nseSymbolFor('TCS'), 'TCS');
   assert.equal(nseSymbolFor('TATAMOTORS'), 'TATAMOTORS', 'a demerged company is not guessed at');
+  assert.equal(nseSymbolFor('LTIM'), 'LTM', 'LTIMindtree renamed its trading symbol to LTM effective 2026-02-27');
+  assert.equal(nseSymbolFor('GUJGASLTD'), 'GUJENERGY', 'Gujarat Gas was renamed Gujarat Energy Limited effective 2026-07-01');
 });
 
 // The supported list carries Max Financial Services twice (MAXFIN and MFSL); MAXFIN is aliased so it is not left empty beside MFSL.

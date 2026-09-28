@@ -87,3 +87,14 @@ test('resolveScripForSymbol returns null (never a guess) for a symbol genuinely 
   const resolved = await resolveScripForSymbol('NOTREAL', []);
   assert.equal(resolved, null);
 });
+
+test('LTIM and GUJGASLTD resolve via their confirmed 2026 renames (LTM, GUJENERGY), not guessed -- previously left unmapped, verified 2026-09-28 against real BSE/NSE corporate filings', async () => {
+  const scripMaster = [
+    { scripCode: '540005', symbol: 'LTM', companyName: 'LTM Limited (Formerly LTIMindtree Limited)', marketCapCr: 121318, isin: 'INE214T01019' },
+    { scripCode: '539336', symbol: 'GUJENERGY', companyName: 'Gujarat Energy Limited (Erstwhile Gujarat Gas Limited)', marketCapCr: 22085, isin: 'INE844O01030' },
+  ];
+  const ltim = await resolveScripForSymbol('LTIM', scripMaster);
+  assert.equal(ltim.scripCode, '540005');
+  const gujgas = await resolveScripForSymbol('GUJGASLTD', scripMaster);
+  assert.equal(gujgas.scripCode, '539336');
+});

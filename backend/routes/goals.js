@@ -3,50 +3,122 @@ import { buildGoalRecommendation, buildGoalProfile } from '../services/GoalRecom
 import { DynamicUniverseService } from '../services/DynamicUniverseService.js';
 import { RebalanceService } from '../services/RebalanceService.js';
 import { buildGoalAssetAllocation } from '../services/GoalAssetAllocationService.js';
-import { getTopProductsForCategory } from '../services/GoalProductRecommendationService.js';
-import { getRefreshMeta } from '../services/StockFundamentalsService.js';
+import { getTopProductsForCategory, FRESHNESS_MAX_AGE_DAYS as PRODUCT_FRESHNESS_MAX_AGE_DAYS } from '../services/GoalProductRecommendationService.js';
 import { getMetricsForSymbol } from '../services/StockHistoricalMetricsService.js';
 import BhavcopyIngestionStatus from '../models/BhavcopyIngestionStatus.js';
+import BootstrapRunLog from '../models/BootstrapRunLog.js';
+import StockPriceHistorySnapshot from '../models/StockPriceHistorySnapshot.js';
+import StockHistoricalMetricsSnapshot from '../models/StockHistoricalMetricsSnapshot.js';
+import StockFundamentalsSnapshot from '../models/StockFundamentalsSnapshot.js';
+import { CompanyResearchProfile } from '../models/CompanyResearchProfile.js';
+import { InvestmentProductSnapshot } from '../models/InvestmentProductSnapshot.js';
+import { SUPPORTED_STOCKS } from '../utils/constants.js';
+
+// Per-dataset states, applied uniformly (rule 5): FAILED beats staleness (a
+// FAILED job might have left old-but-real data behind, which must never
+// read as merely "stale"), then genuinely-never-populated, then age vs. the
+// dataset's own freshness window, then coverage, and only a dataset that is
+// both fresh AND (nearly) complete is FRESH.
+export const DATASET_STATUSES = Object.freeze(['FRESH', 'PARTIAL', 'STALE', 'FAILED', 'NOT_CONFIGURED_OR_NEVER_RUN']);
+const MIN_FRESH_COVERAGE = 0.9; // >=90% of the configured universe -- a handful of genuinely-unresolvable symbols (see BseScripMasterProvider.js) must never block FRESH forever
 
 /**
- * buildProviderStatus - real, per-provider status instead of one blanket
- * "UNKNOWN" string. Previously this endpoint always reported providerStatus
- * from getRefreshMeta() alone, which only tracks the IndianAPI fundamentals
- * batch job and defaults to UNKNOWN whenever that job hasn't run recently --
- * so a genuinely-known state (NSE bhavcopy ingestion succeeding, Angel One's
- * live-quote feed responding) was being hidden behind the same UNKNOWN label
- * as an actual outage. Each sub-status here is read from a real, already-
- * persisted signal; a provider this function has no signal for is reported
- * UNKNOWN rather than guessed.
+ * evaluateDatasetStatus - pure. `mostRecentAgeDays` is null when there is no
+ * dated evidence at all for records that do exist (treated conservatively,
+ * as STALE, never guessed FRESH).
  */
-const buildProviderStatus = async (universeCount) => {
-  const [refreshMeta, latestBhavcopy] = await Promise.all([
-    getRefreshMeta().catch(() => ({ providerStatus: 'UNKNOWN' })),
+export const evaluateDatasetStatus = ({
+  totalCount = 0, universeSize, mostRecentAgeDays = null, freshnessMaxDays, lastAttemptFailedWithNoSuccess = false,
+}) => {
+  if (lastAttemptFailedWithNoSuccess) return 'FAILED';
+  if (!totalCount) return 'NOT_CONFIGURED_OR_NEVER_RUN';
+  if (mostRecentAgeDays == null || mostRecentAgeDays > freshnessMaxDays) return 'STALE';
+  if (universeSize && totalCount / universeSize < MIN_FRESH_COVERAGE) return 'PARTIAL';
+  return 'FRESH';
+};
+
+/** deriveOverallProviderStatus - pure. Worst-of, in the order a person actually cares about (a real failure outranks mere staleness). */
+export const deriveOverallProviderStatus = (datasetStatuses) => {
+  const priority = ['FAILED', 'NOT_CONFIGURED_OR_NEVER_RUN', 'STALE', 'PARTIAL', 'FRESH'];
+  const present = new Set(Object.values(datasetStatuses));
+  return priority.find((s) => present.has(s)) || 'NOT_CONFIGURED_OR_NEVER_RUN';
+};
+
+const daysSince = (date) => (date ? (Date.now() - new Date(date).getTime()) / 86400000 : null);
+
+const lastStageFailedWithNoSuccess = (bootstrapLogs, stageName) => {
+  const log = bootstrapLogs.find((l) => l.stage === stageName);
+  return Boolean(log?.lastAttempt?.status === 'FAILED');
+};
+
+/**
+ * buildProviderStatus - a genuine, per-dataset status instead of one blanket
+ * string, for every dataset Goals' recommendation reads (rule 5). Backed
+ * entirely by DURABLE evidence (the data's own persisted freshness fields,
+ * plus scripts/productionBootstrap.js's BootstrapRunLog for "did the last
+ * attempted job fail outright") -- never the fundamentals Redis cache alone
+ * (StockFundamentalsService.getRefreshMeta): that cache has only a 7-day TTL
+ * and is empty whenever Redis itself is unavailable (confirmed: this
+ * environment currently reports redisAvailable:false in
+ * scripts/productionStatus.js), which is exactly how a real, populated
+ * StockFundamentalsSnapshot collection was previously still reporting
+ * providerStatus: UNKNOWN -- a successful past fetch masquerading as "no
+ * signal" rather than the genuinely-fresh state it was.
+ */
+export const buildProviderStatus = async (universeCount) => {
+  const universeSize = Object.keys(SUPPORTED_STOCKS).length;
+  const [
+    latestBhavcopy, metricsAgg, profileAgg, fundamentalsAgg, productsAgg, bootstrapLogs,
+  ] = await Promise.all([
     BhavcopyIngestionStatus.findOne().sort({ tradingDate: -1 }).lean().catch(() => null),
+    StockHistoricalMetricsSnapshot.aggregate([{ $group: { _id: null, n: { $sum: 1 }, mostRecent: { $max: '$computedAt' } } }]).catch(() => []),
+    CompanyResearchProfile.aggregate([{ $match: { marketCapCr: { $gt: 0 } } }, { $group: { _id: null, n: { $sum: 1 }, mostRecent: { $max: '$lastProfileSyncAt' } } }]).catch(() => []),
+    StockFundamentalsSnapshot.aggregate([{ $group: { _id: null, n: { $sum: 1 }, mostRecent: { $max: '$dataAsOf' } } }]).catch(() => []),
+    InvestmentProductSnapshot.aggregate([{ $group: { _id: null, n: { $sum: 1 }, mostRecent: { $max: '$dataAsOf' } } }]).catch(() => []),
+    BootstrapRunLog.find({}, { stage: 1, lastAttempt: 1 }).lean().catch(() => []),
   ]);
 
-  const historicalPrices = !latestBhavcopy
-    ? 'UNKNOWN'
-    : latestBhavcopy.status === 'COMPLETED' || latestBhavcopy.status === 'NO_TRADING'
-      ? 'OK'
-      : 'DEGRADED';
+  const historicalPrices = evaluateDatasetStatus({
+    totalCount: latestBhavcopy ? 1 : 0, // a durable per-day status doc exists at all -- coverage is validated per-day by symbolsMatched, not summarized here
+    universeSize: 1,
+    mostRecentAgeDays: latestBhavcopy ? daysSince(latestBhavcopy.tradingDate) : null,
+    freshnessMaxDays: 4, // NSE bhavcopy is published every trading day; spans a normal weekend/holiday gap without false-flagging stale on a Monday
+    lastAttemptFailedWithNoSuccess: lastStageFailedWithNoSuccess(bootstrapLogs, 'nse-bhavcopy'),
+  });
+  const historicalMetrics = evaluateDatasetStatus({
+    totalCount: metricsAgg[0]?.n || 0,
+    universeSize,
+    mostRecentAgeDays: daysSince(metricsAgg[0]?.mostRecent),
+    freshnessMaxDays: 4, // recomputed immediately after prices land -- same window
+    lastAttemptFailedWithNoSuccess: lastStageFailedWithNoSuccess(bootstrapLogs, 'historical-metrics'),
+  });
+  const companyProfiles = evaluateDatasetStatus({
+    totalCount: profileAgg[0]?.n || 0,
+    universeSize,
+    mostRecentAgeDays: daysSince(profileAgg[0]?.mostRecent),
+    freshnessMaxDays: 10, // market cap/BSE identity does not need daily precision
+    lastAttemptFailedWithNoSuccess: lastStageFailedWithNoSuccess(bootstrapLogs, 'bse-profile-sync'),
+  });
+  const fundamentals = evaluateDatasetStatus({
+    totalCount: fundamentalsAgg[0]?.n || 0,
+    universeSize,
+    mostRecentAgeDays: daysSince(fundamentalsAgg[0]?.mostRecent),
+    freshnessMaxDays: 30, // IndianAPI fundamentals (P/E, ROE, growth) change on a quarterly cadence, not daily
+    lastAttemptFailedWithNoSuccess: lastStageFailedWithNoSuccess(bootstrapLogs, 'stock-fundamentals'),
+  });
+  const investmentProducts = evaluateDatasetStatus({
+    totalCount: productsAgg[0]?.n || 0,
+    universeSize: productsAgg[0]?.n || 1, // AMFI's own scheme count, not the equity universe -- coverage is judged against itself
+    mostRecentAgeDays: daysSince(productsAgg[0]?.mostRecent),
+    freshnessMaxDays: PRODUCT_FRESHNESS_MAX_AGE_DAYS,
+    lastAttemptFailedWithNoSuccess: lastStageFailedWithNoSuccess(bootstrapLogs, 'investment-products'),
+  });
+  const liveQuotes = universeCount > 0 ? 'FRESH' : 'STALE';
 
-  const liveQuotes = universeCount > 0 ? 'OK' : 'DEGRADED';
-
-  const fundamentals = refreshMeta.providerStatus || 'UNKNOWN';
-
-  const overall = [historicalPrices, liveQuotes, fundamentals].includes('DEGRADED')
-    ? 'DEGRADED'
-    : [historicalPrices, liveQuotes, fundamentals].every((s) => s === 'OK')
-      ? 'OK'
-      : 'UNKNOWN';
-
-  return {
-    overall,
-    historicalPrices,
-    liveQuotes,
-    fundamentals,
+  const datasets = {
+    historicalPrices, historicalMetrics, companyProfiles, fundamentals, investmentProducts, liveQuotes,
   };
+  return { overall: deriveOverallProviderStatus(datasets), ...datasets };
 };
 
 /**
@@ -91,6 +163,20 @@ const buildStockCards = (recommendation) => (recommendation.recommendations || [
     provenance: r.fundamentals?.provenance || null,
     historicalSource: r.historical?.source || null,
   },
+  // Coverage metadata (never a substitute for the goal's own horizon, which
+  // is a suitability input, not an evidence window -- see
+  // GoalRecommendationService.js's getSegmentPolicy/getGoalBucket): the
+  // actual price window this stock's return/volatility/drawdown were
+  // computed from, so e.g. a "1Y Return" figure is never mistaken for ten
+  // years of evidence just because the goal has a ten-year horizon.
+  historicalCoverage: r.historical?.available ? {
+    observationCount: r.historical.observations,
+    firstDate: r.historical.firstDate,
+    lastDate: r.historical.lastDate,
+    dataAsOf: r.historical.dataAsOf,
+    computedAt: r.historical.computedAt,
+    corporateActionAdjustmentStatus: r.historical.corporateActionAdjustmentStatus,
+  } : null,
   suggestedMonthlyAmount: r.suggestedMonthlyAmount ?? null,
   dividendSuitability: r.dividendSuitability,
   reasons: (r.reasons || []).filter(Boolean).slice(0, 3),

@@ -290,7 +290,7 @@ const computeVerifiedScore = (availability, sectorFitScore) => {
 const calculateHistoricalMetrics = (snapshot) => {
   if (!snapshot) {
     return {
-      available: false, source: null, oneYearReturn: null, volatility: null, maxDrawdown: null, observations: 0, liquidityClassification: null, corporateActionAdjustmentStatus: null, dataAsOf: null,
+      available: false, source: null, oneYearReturn: null, volatility: null, maxDrawdown: null, observations: 0, liquidityClassification: null, corporateActionAdjustmentStatus: null, dataAsOf: null, firstDate: null, lastDate: null, computedAt: null,
     };
   }
   return {
@@ -302,7 +302,15 @@ const calculateHistoricalMetrics = (snapshot) => {
     observations: snapshot.observationCount || 0,
     liquidityClassification: snapshot.liquidityClassification ?? null,
     corporateActionAdjustmentStatus: snapshot.corporateActionAdjustmentStatus ?? null,
+    // dataAsOf: the last trading date the observation window actually covers
+    // (evidence freshness). firstDate/lastDate: the full observed window --
+    // surfaced so a 10-year goal horizon is never mistaken for 10 years of
+    // price evidence when only ~1 year has been backfilled (see
+    // backfillStockHistory.js's actual coverage window).
     dataAsOf: snapshot.dataAsOf ?? null,
+    firstDate: snapshot.firstDate ?? null,
+    lastDate: snapshot.lastDate ?? null,
+    computedAt: snapshot.computedAt ?? null,
   };
 };
 

@@ -55,6 +55,30 @@ test('status is PARTIAL when some stocks are eligible but not the whole universe
   assert.deepEqual(contract.stocks[0].metricsUsed, ['volatility', 'revenueGrowth', 'operatingMargin']);
   assert.equal(contract.stocks[0].source.fundamentalSource, 'REAL_RESEARCH_DERIVED');
   assert.equal(contract.dataAsOf, '2026-04-09T00:00:00.000Z');
+  assert.equal(contract.stocks[0].historicalCoverage, null, 'historical.available is falsy here -- coverage metadata must never be fabricated when there is none');
+});
+
+test('a stock with verified historical evidence exposes its actual coverage window (observation count, dates, freshness) -- never implying the goal horizon is the evidence window', () => {
+  const recommendation = baseRecommendation({
+    universeCount: 1, evaluatedCount: 1, eligibleCount: 1,
+    recommendations: [{
+      symbol: 'TCS', companyName: 'TCS', goalFitScore: 80, price: 3100, risk: 'MODERATE',
+      availableMetrics: ['volatility', 'oneYearReturn'], missingMetrics: [], fundamentals: {},
+      historical: {
+        available: true, source: 'NSE bhavcopy (NSE_BHAVCOPY)', observations: 245, firstDate: '2025-09-29T00:00:00.000Z', lastDate: '2026-09-25T00:00:00.000Z', dataAsOf: '2026-09-25T00:00:00.000Z', computedAt: '2026-09-28T10:00:00.000Z', corporateActionAdjustmentStatus: 'NOT_REQUIRED',
+      },
+      reasons: [],
+    }],
+  });
+  const contract = buildStockUniverseSummary(recommendation, 1);
+  assert.deepEqual(contract.stocks[0].historicalCoverage, {
+    observationCount: 245,
+    firstDate: '2025-09-29T00:00:00.000Z',
+    lastDate: '2026-09-25T00:00:00.000Z',
+    dataAsOf: '2026-09-25T00:00:00.000Z',
+    computedAt: '2026-09-28T10:00:00.000Z',
+    corporateActionAdjustmentStatus: 'NOT_REQUIRED',
+  });
 });
 
 test('status is AVAILABLE when eligible stocks exist and the full universe was evaluated', () => {

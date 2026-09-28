@@ -27,9 +27,25 @@ const NO_KEEPALIVE_AGENT = new https.Agent({ keepAlive: false });
 /**
  * Confirmed-real exceptions where a SUPPORTED_STOCKS symbol does not match
  * the BSE master's scrip_id directly (renames/demergers/spelling), resolved
- * by looking up the real company name in the master (Sep 2026). Two symbols
- * (LTIM, GUJGASLTD) could not be found in this endpoint's "Active Equity"
- * segment and are intentionally left unmapped rather than guessed.
+ * by looking up the real company name in the master (Sep 2026).
+ *
+ * LTIM and GUJGASLTD were previously left unmapped here (2026-09-26 note:
+ * "could not be found ... intentionally left unmapped rather than guessed")
+ * because a direct ticker match failed. Re-investigated 2026-09-28 per an
+ * explicit "do not guess -- use verified identifiers" instruction: both are
+ * real, sourced corporate renames, not unresolvable gaps --
+ *  - LTIMindtree Limited's NSE/BSE trading symbol changed from LTIM to LTM
+ *    effective 2026-02-27 (confirmed against BSE/NSE corporate-filing PDFs
+ *    and the company's own stock-exchange intimation letters).
+ *  - Gujarat Gas Limited (GUJGASLTD) merged with Gujarat State Petroleum
+ *    Corporation, Gujarat State Petronet and GSPC Energy effective
+ *    2026-05-01 and was renamed Gujarat Energy Limited (ticker GUJENERGY)
+ *    effective 2026-07-01 (confirmed against the company's own NSE/BSE
+ *    scheme-of-arrangement and SE-intimation filings).
+ * Both new tickers are confirmed present in this project's own BSE
+ * scrip-master fetch (scripCode 540005 / ISIN INE214T01019 for LTM;
+ * scripCode 539336 / ISIN INE844O01030 for GUJENERGY) -- reused verbatim
+ * here, not re-derived or guessed a second time.
  */
 export const SCRIP_ID_OVERRIDES = {
   REC: 'RECLTD',
@@ -44,6 +60,8 @@ export const SCRIP_ID_OVERRIDES = {
   ZOMATO: 'ETERNAL',
   PBFINTECH: 'POLICYBZR',
   INFOEDGE: 'NAUKRI',
+  LTIM: 'LTM',
+  GUJGASLTD: 'GUJENERGY',
   GMRINFRA: 'GMRAIRPORT',
 };
 

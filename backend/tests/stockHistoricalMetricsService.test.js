@@ -144,6 +144,28 @@ test('a symbol already fully computed and then re-run with the identical series 
   assert.equal(count, 1);
 });
 
+test('a new trading day\'s price row lands, then recomputing reflects it: lastDate/lastClose/observationCount and the return figure all advance -- never frozen at the first computation', async (t) => {
+  t.after(cleanup);
+  await cleanup();
+  await StockPriceHistorySnapshot.insertMany(buildRows(252));
+  const before = await computeAndPersistMetricsForSymbol(TEST_SYMBOL);
+
+  // A new trading day's bhavcopy row lands (correct ordering: this must happen before recomputation, exactly as scripts/productionBootstrap.js's STAGES sequence -- nse-bhavcopy before historical-metrics -- already enforces).
+  const priorRows = await StockPriceHistorySnapshot.find({ symbol: TEST_SYMBOL }).sort({ tradingDate: 1 }).lean();
+  const lastClose = priorRows[priorRows.length - 1].close;
+  const [newRow] = buildRows(1, { lastDate: new Date(before.lastDate.getTime() + 24 * 60 * 60 * 1000), closes: [lastClose * 1.05] });
+  await StockPriceHistorySnapshot.create(newRow);
+
+  const after = await computeAndPersistMetricsForSymbol(TEST_SYMBOL);
+  assert.equal(after.observationCount, before.observationCount + 1);
+  assert.ok(after.lastDate.getTime() > before.lastDate.getTime());
+  assert.equal(after.lastClose, lastClose * 1.05);
+  assert.notEqual(after.oneYearReturn, before.oneYearReturn, 'the return figure must move when a new closing price lands, never stay frozen at the prior computation');
+
+  const count = await StockHistoricalMetricsSnapshot.countDocuments({ symbol: TEST_SYMBOL });
+  assert.equal(count, 1, 'still one snapshot document, updated in place');
+});
+
 test('recomputeMetricsForSymbols never throws for one bad symbol and reports computed/skipped counts accurately', async (t) => {
   t.after(cleanup);
   await cleanup();

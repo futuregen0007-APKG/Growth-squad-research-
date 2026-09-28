@@ -37,9 +37,19 @@ if (mongoose.connection.readyState === 0) {
 const RANGE = { from: '2024-03-04', to: '2024-03-08' }; // Mon 3/4 .. Fri 3/8, 2024 -- 5 weekdays, no weekend in between
 const RANGE_DATES = ['2024-03-04', '2024-03-05', '2024-03-06', '2024-03-07', '2024-03-08'];
 
+// Covers every date any test in this file touches (the circuit-breaker and
+// streak-reset tests range up to 2024-03-13) -- a narrower window here was a
+// real isolation gap: 2024-03-11..13 were never cleared between runs, so a
+// leftover COMPLETED/FAILED_RETRYABLE status document from an earlier
+// invocation of this same file (e.g. one interrupted by an external kill,
+// or simply run twice) could silently satisfy runStockHistoryBackfill's
+// --resume-unaware upsert and be miscounted by a later test's own query
+// over the same range.
+const TEST_DATE_FLOOR = new Date('2024-03-01');
+const TEST_DATE_CEILING = new Date('2024-03-14');
 const cleanup = async () => {
-  await StockPriceHistorySnapshot.deleteMany({ tradingDate: { $gte: new Date('2024-03-01'), $lte: new Date('2024-03-10') } });
-  await BhavcopyIngestionStatus.deleteMany({ tradingDate: { $gte: new Date('2024-03-01'), $lte: new Date('2024-03-10') } });
+  await StockPriceHistorySnapshot.deleteMany({ tradingDate: { $gte: TEST_DATE_FLOOR, $lte: TEST_DATE_CEILING } });
+  await BhavcopyIngestionStatus.deleteMany({ tradingDate: { $gte: TEST_DATE_FLOOR, $lte: TEST_DATE_CEILING } });
 };
 
 const zipOf = (csvText) => {
@@ -89,11 +99,11 @@ test('a clean run over 5 weekdays ingests each date once, and re-running with --
   assert.equal(first.failed, 0);
   assert.equal(first.rowsIngested, 5);
 
-  const statusDocs = await BhavcopyIngestionStatus.find({ tradingDate: { $gte: new Date('2024-03-01'), $lte: new Date('2024-03-10') } }).lean();
+  const statusDocs = await BhavcopyIngestionStatus.find({ tradingDate: { $gte: TEST_DATE_FLOOR, $lte: TEST_DATE_CEILING } }).lean();
   assert.equal(statusDocs.length, 5);
   assert.ok(statusDocs.every((d) => d.status === 'COMPLETED'));
 
-  const priceDocs = await StockPriceHistorySnapshot.find({ symbol: 'TCS', tradingDate: { $gte: new Date('2024-03-01'), $lte: new Date('2024-03-10') } }).lean();
+  const priceDocs = await StockPriceHistorySnapshot.find({ symbol: 'TCS', tradingDate: { $gte: TEST_DATE_FLOOR, $lte: TEST_DATE_CEILING } }).lean();
   assert.equal(priceDocs.length, 5);
 
   // Now make any further network call fail loudly -- if --resume incorrectly re-fetches a completed date, this proves it.
@@ -102,7 +112,7 @@ test('a clean run over 5 weekdays ingests each date once, and re-running with --
   assert.equal(second.completed, 5);
   assert.equal(second.failed, 0);
 
-  const priceDocsAfterResume = await StockPriceHistorySnapshot.find({ symbol: 'TCS', tradingDate: { $gte: new Date('2024-03-01'), $lte: new Date('2024-03-10') } }).lean();
+  const priceDocsAfterResume = await StockPriceHistorySnapshot.find({ symbol: 'TCS', tradingDate: { $gte: TEST_DATE_FLOOR, $lte: TEST_DATE_CEILING } }).lean();
   assert.equal(priceDocsAfterResume.length, 5, 'resuming a fully-completed range must never duplicate rows');
 });
 
@@ -159,7 +169,7 @@ test('circuit breaker: 5 consecutive transient failures stop the whole run rathe
   assert.equal(result.failedDates.length, 5);
   assert.ok(messages.some((m) => /Circuit breaker tripped/.test(m)));
 
-  const statusDocs = await BhavcopyIngestionStatus.find({ tradingDate: { $gte: new Date('2024-03-01'), $lte: new Date('2024-03-14') } }).lean();
+  const statusDocs = await BhavcopyIngestionStatus.find({ tradingDate: { $gte: TEST_DATE_FLOOR, $lte: TEST_DATE_CEILING } }).lean();
   assert.equal(statusDocs.length, 5, 'the 3 dates after the trip must never have been attempted at all');
   assert.ok(statusDocs.every((d) => d.status === 'FAILED_RETRYABLE'));
 });
