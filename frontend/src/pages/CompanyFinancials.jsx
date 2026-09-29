@@ -207,7 +207,11 @@ export default function CompanyFinancials() {
       })
       .finally(() => { if (active) setExplainLoading(false); });
     return () => { active = false; controller.abort(); };
-  }, [result?.data?.symbol, retryToken]);
+    // `result` (not just its symbol) is the real dependency -- it's a fresh
+    // object on every resolved fetch, so this only re-runs on a genuinely
+    // new result, same as before, while satisfying exhaustive-deps for the
+    // companyName/sections fields actually read above.
+  }, [result, retryToken]);
 
   const handleSearchSubmit = (e) => {
     e.preventDefault();
