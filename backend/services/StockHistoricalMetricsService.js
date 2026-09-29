@@ -33,7 +33,13 @@ export const DISCONTINUITY_THRESHOLD_PCT = 20; // abs single-day close-to-close 
 
 const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 
-/** Detects single-day discontinuities in a date-ascending row series -- a real split/bonus/demerger will show up as an abrupt jump the raw close series can't explain on its own. */
+/**
+ * Detects single-day discontinuities in a date-ascending row series -- a
+ * real split/bonus/demerger will show up as an abrupt jump the raw close
+ * series can't explain on its own. `rowIndex` (the index into `rows` of the
+ * post-jump row) is kept so callers can exclude exactly the one day-over-day
+ * return this discontinuity corrupts, rather than a guessed wider window.
+ */
 const detectDiscontinuities = (rows) => {
   const discontinuities = [];
   for (let i = 1; i < rows.length; i += 1) {
@@ -43,7 +49,7 @@ const detectDiscontinuities = (rows) => {
     const changePercent = ((current.close - prior.close) / prior.close) * 100;
     if (Math.abs(changePercent) >= DISCONTINUITY_THRESHOLD_PCT) {
       discontinuities.push({
-        date: current.tradingDate, priorClose: prior.close, close: current.close, changePercent: Number(changePercent.toFixed(2)),
+        date: current.tradingDate, priorClose: prior.close, close: current.close, changePercent: Number(changePercent.toFixed(2)), rowIndex: i,
       });
     }
   }
@@ -101,13 +107,39 @@ export const computeAndPersistMetricsForSymbol = async (symbol) => {
   const threeYearCagr = null;
   missingMetrics.push('threeYearCagr');
 
+  // A detected discontinuity is a real corporate action (a 5:1 split shows
+  // up identically to an 80% "crash" in the raw close series) that this
+  // project has no verified adjustment factor for -- but unlike
+  // oneYearReturn/maximumDrawdown, volatility is not defined by two specific
+  // endpoints, so it does not need to be withheld wholesale: the single day-
+  // over-day return each discontinuity corrupts is objectively identified
+  // (detectDiscontinuities' own threshold, not a guess) and excluded here,
+  // keeping every other genuine daily move in the sample. Confirmed live
+  // against real data this was necessary, not theoretical: KOTAKBANK's
+  // 2026-01-14 return (-80.26%, an actual ~5:1 split) alone inflated its
+  // reported volatility to 80%+ -- implausible for a large-cap bank -- before
+  // this exclusion.
   let annualizedVolatility = null;
   if (observationCount >= MIN_OBSERVATIONS_FOR_VOLATILITY) {
-    const closes = rows.map((r) => r.close).filter((c) => c > 0);
-    const returns = closes.slice(1).map((c, i) => (c / closes[i]) - 1);
-    const mean = returns.reduce((sum, r) => sum + r, 0) / Math.max(returns.length, 1);
-    const variance = returns.reduce((sum, r) => sum + (r - mean) ** 2, 0) / Math.max(returns.length - 1, 1);
-    annualizedVolatility = Number((Math.sqrt(variance) * Math.sqrt(252) * 100).toFixed(2));
+    const discontinuityRowIndices = new Set(discontinuities.map((d) => d.rowIndex));
+    const returns = [];
+    for (let i = 1; i < rows.length; i += 1) {
+      if (discontinuityRowIndices.has(i)) continue;
+      const priorClose = rows[i - 1].close;
+      const currentClose = rows[i].close;
+      if (!(priorClose > 0) || !(currentClose > 0)) continue;
+      returns.push((currentClose / priorClose) - 1);
+    }
+    // Still require a genuine sample after exclusion -- a symbol whose
+    // history is mostly discontinuities must not report a false-precision
+    // volatility computed from a handful of leftover returns.
+    if (returns.length >= MIN_OBSERVATIONS_FOR_VOLATILITY - 1) {
+      const mean = returns.reduce((sum, r) => sum + r, 0) / returns.length;
+      const variance = returns.reduce((sum, r) => sum + (r - mean) ** 2, 0) / Math.max(returns.length - 1, 1);
+      annualizedVolatility = Number((Math.sqrt(variance) * Math.sqrt(252) * 100).toFixed(2));
+    } else {
+      missingMetrics.push('annualizedVolatility');
+    }
   } else {
     missingMetrics.push('annualizedVolatility');
   }

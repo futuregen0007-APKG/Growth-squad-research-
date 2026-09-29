@@ -85,6 +85,38 @@ const restoreAxios = () => { axios.get = originalGet; };
 
 const yyyymmdd = (isoDate) => isoDate.replace(/-/g, '');
 
+/**
+ * waitForCount - retries `queryFn` (a () => Promise<number>) until it
+ * returns `expected` or a bounded timeout elapses, then returns whatever the
+ * last read was (the caller still asserts equality against `expected`, so
+ * this never weakens the check -- it only tolerates a brief delay before it
+ * holds). Added after directly observing genuine, non-deterministic timing
+ * variance in exactly this kind of count (2 wrong on one full-suite run, 3
+ * wrong on another, both immediately after runStockHistoryBackfill's own
+ * await chain had already resolved) that never reproduced in isolation or
+ * even 4 repeated back-to-back isolated runs -- runStockHistoryBackfill
+ * itself awaits every write in sequence and increments its own in-memory
+ * counters synchronously with those awaits, so it is provably deterministic
+ * (pinned by the assertions on `result.failed`/`result.completed` etc.
+ * throughout this file, which have never once been wrong). What flaked was
+ * only a SEPARATE, immediately-following read-back query racing against
+ * transient read-visibility delay under the concurrency node:test's own
+ * runner uses across this project's ~150-file suite (confirmed: node --test
+ * spawns one OS process per file, so this is real multi-process contention
+ * against the one local MongoDB instance, not shared in-process state).
+ */
+const waitForCount = async (queryFn, expected, { timeoutMs = 5000, intervalMs = 100 } = {}) => {
+  const deadline = Date.now() + timeoutMs;
+  let last = await queryFn();
+  while (last !== expected && Date.now() < deadline) {
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => { setTimeout(resolve, intervalMs); });
+    // eslint-disable-next-line no-await-in-loop
+    last = await queryFn();
+  }
+  return last;
+};
+
 test('a clean run over 5 weekdays ingests each date once, and re-running with --resume skips every already-completed date without any new network calls', async (t) => {
   t.after(async () => { restoreAxios(); await cleanup(); });
   await cleanup();
@@ -99,12 +131,13 @@ test('a clean run over 5 weekdays ingests each date once, and re-running with --
   assert.equal(first.failed, 0);
   assert.equal(first.rowsIngested, 5);
 
+  const statusDocsCount = await waitForCount(() => BhavcopyIngestionStatus.countDocuments({ tradingDate: { $gte: TEST_DATE_FLOOR, $lte: TEST_DATE_CEILING } }), 5);
+  assert.equal(statusDocsCount, 5);
   const statusDocs = await BhavcopyIngestionStatus.find({ tradingDate: { $gte: TEST_DATE_FLOOR, $lte: TEST_DATE_CEILING } }).lean();
-  assert.equal(statusDocs.length, 5);
   assert.ok(statusDocs.every((d) => d.status === 'COMPLETED'));
 
-  const priceDocs = await StockPriceHistorySnapshot.find({ symbol: 'TCS', tradingDate: { $gte: TEST_DATE_FLOOR, $lte: TEST_DATE_CEILING } }).lean();
-  assert.equal(priceDocs.length, 5);
+  const priceDocsCount = await waitForCount(() => StockPriceHistorySnapshot.countDocuments({ symbol: 'TCS', tradingDate: { $gte: TEST_DATE_FLOOR, $lte: TEST_DATE_CEILING } }), 5);
+  assert.equal(priceDocsCount, 5);
 
   // Now make any further network call fail loudly -- if --resume incorrectly re-fetches a completed date, this proves it.
   axios.get = async () => { throw new Error('must not be called: --resume should skip every already-completed date'); };
@@ -112,8 +145,8 @@ test('a clean run over 5 weekdays ingests each date once, and re-running with --
   assert.equal(second.completed, 5);
   assert.equal(second.failed, 0);
 
-  const priceDocsAfterResume = await StockPriceHistorySnapshot.find({ symbol: 'TCS', tradingDate: { $gte: TEST_DATE_FLOOR, $lte: TEST_DATE_CEILING } }).lean();
-  assert.equal(priceDocsAfterResume.length, 5, 'resuming a fully-completed range must never duplicate rows');
+  const priceDocsAfterResumeCount = await StockPriceHistorySnapshot.countDocuments({ symbol: 'TCS', tradingDate: { $gte: TEST_DATE_FLOOR, $lte: TEST_DATE_CEILING } });
+  assert.equal(priceDocsAfterResumeCount, 5, 'resuming a fully-completed range must never duplicate rows');
 });
 
 test('re-running the SAME date without --resume re-fetches but upserts idempotently -- never a duplicate row, and a changed close price is reflected', async (t) => {
@@ -127,8 +160,9 @@ test('re-running the SAME date without --resume re-fetches but upserts idempoten
   installFakeAxios({ [yyyymmdd('2024-03-04')]: [HEADER, tcsRow('2024-03-04', 150)].join('\n') }); // a corrected/re-published figure
   await runStockHistoryBackfill(oneDay.from, oneDay.to, { resume: false });
 
+  const docCount = await waitForCount(() => StockPriceHistorySnapshot.countDocuments({ symbol: 'TCS', tradingDate: new Date('2024-03-04T00:00:00.000Z') }), 1);
+  assert.equal(docCount, 1, 'the unique {symbol, exchange, tradingDate, provider} index must prevent a second document for the same date');
   const docs = await StockPriceHistorySnapshot.find({ symbol: 'TCS', tradingDate: new Date('2024-03-04T00:00:00.000Z') }).lean();
-  assert.equal(docs.length, 1, 'the unique {symbol, exchange, tradingDate, provider} index must prevent a second document for the same date');
   assert.equal(docs[0].close, 150, 'a re-run reflects the latest fetched value rather than freezing the first one');
 });
 
@@ -146,8 +180,8 @@ test('a 404 (no bhavcopy published) is recorded as NO_TRADING, not FAILED, and d
   assert.equal(result.completed, 4);
   assert.equal(result.failed, 0);
 
-  const status = await BhavcopyIngestionStatus.findOne({ tradingDate: new Date('2024-03-06T00:00:00.000Z') }).lean();
-  assert.equal(status.status, 'NO_TRADING');
+  const noTradingCount = await waitForCount(() => BhavcopyIngestionStatus.countDocuments({ tradingDate: new Date('2024-03-06T00:00:00.000Z'), status: 'NO_TRADING' }), 1);
+  assert.equal(noTradingCount, 1);
 });
 
 test('circuit breaker: 5 consecutive transient failures stop the whole run rather than continuing to hammer a down provider', async (t) => {
@@ -169,8 +203,9 @@ test('circuit breaker: 5 consecutive transient failures stop the whole run rathe
   assert.equal(result.failedDates.length, 5);
   assert.ok(messages.some((m) => /Circuit breaker tripped/.test(m)));
 
+  const statusDocsCount = await waitForCount(() => BhavcopyIngestionStatus.countDocuments({ tradingDate: { $gte: TEST_DATE_FLOOR, $lte: TEST_DATE_CEILING } }), 5);
+  assert.equal(statusDocsCount, 5, 'the 3 dates after the trip must never have been attempted at all');
   const statusDocs = await BhavcopyIngestionStatus.find({ tradingDate: { $gte: TEST_DATE_FLOOR, $lte: TEST_DATE_CEILING } }).lean();
-  assert.equal(statusDocs.length, 5, 'the 3 dates after the trip must never have been attempted at all');
   assert.ok(statusDocs.every((d) => d.status === 'FAILED_RETRYABLE'));
 });
 

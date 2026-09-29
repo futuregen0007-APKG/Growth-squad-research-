@@ -88,8 +88,20 @@ test('every value evaluateDatasetStatus can return is a member of the documented
 // buildProviderStatus (real Mongo, isolated fixtures)
 // ---------------------------------------------------------------------------
 
+// Scoped to the last 35 days (comfortably covers this file's own fixtures --
+// `new Date()` and `oldDate` = now-30d, below) rather than a blanket
+// `>= 2020-01-01` wipe. That wider window was a real cross-file isolation
+// bug: node's test runner runs different test FILES concurrently as
+// separate processes against the same shared local MongoDB, and
+// backfillStockHistory.test.js's circuit-breaker test writes fixed-date
+// BhavcopyIngestionStatus rows in 2024-03 -- which `>= 2020-01-01` matched
+// and deleted mid-run, producing a nondeterministic short count (observed
+// live as both 2 and 3, never the same value twice) that no amount of
+// read-retry could fix since the rows were genuinely gone, not just not-yet-
+// visible.
+const RECENT_CLEANUP_FLOOR = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000);
 const cleanup = async () => {
-  await BhavcopyIngestionStatus.deleteMany({ tradingDate: { $gte: new Date('2020-01-01') } });
+  await BhavcopyIngestionStatus.deleteMany({ tradingDate: { $gte: RECENT_CLEANUP_FLOOR } });
   await BootstrapRunLog.deleteMany({ stage: { $in: ['nse-bhavcopy', 'historical-metrics', 'bse-profile-sync', 'stock-fundamentals', 'investment-products'] } });
   await StockHistoricalMetricsSnapshot.deleteMany({ symbol: /^ZZPSTEST/ });
   await StockFundamentalsSnapshot.deleteMany({ symbol: /^ZZPSTEST/ });

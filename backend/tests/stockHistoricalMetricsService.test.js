@@ -117,7 +117,7 @@ test('exactly at each threshold boundary: volatility/drawdown/return each turn o
   assert.equal(typeof snapshot.oneYearReturn, 'number');
 });
 
-test('an unresolved corporate-action discontinuity excludes return/drawdown but not volatility, which is computed from the full raw series', async (t) => {
+test('an unresolved corporate-action discontinuity excludes return/drawdown, and excludes the ONE corrupted day-over-day return from volatility rather than withholding it entirely or letting it dominate the calculation', async (t) => {
   t.after(cleanup);
   await cleanup();
   // 252 close prices with one permanent 5x step partway through (every later close scaled up) --
@@ -130,7 +130,54 @@ test('an unresolved corporate-action discontinuity excludes return/drawdown but 
   assert.equal(snapshot.discontinuitiesDetected.length, 1);
   assert.equal(snapshot.oneYearReturn, null, 'a return spanning an unresolved discontinuity must never be reported');
   assert.equal(snapshot.maximumDrawdown, null, 'drawdown spanning an unresolved discontinuity must never be reported');
-  assert.equal(typeof snapshot.annualizedVolatility, 'number', 'volatility is not defined by two specific endpoints the way return/drawdown are, so it still computes');
+  assert.equal(typeof snapshot.annualizedVolatility, 'number');
+
+  // Confirmed live against real production data before this fix: KOTAKBANK's
+  // one ~5:1-split day (-80.26%) alone inflated its reported volatility past
+  // 80% -- implausible for a large-cap bank. Pin the same shape here: the
+  // ~400% jump this fixture's discontinuity represents would dominate a
+  // naive (uncorrected) calculation into an extreme outlier; the actual,
+  // corrected figure must be a normal single-digit/low-double-digit number,
+  // computed from the smooth day-to-day series with only the one corrupted
+  // return removed.
+  const naiveReturns = closes.slice(1).map((c, i) => (c / closes[i]) - 1);
+  const naiveMean = naiveReturns.reduce((s, r) => s + r, 0) / naiveReturns.length;
+  const naiveVariance = naiveReturns.reduce((s, r) => s + (r - naiveMean) ** 2, 0) / (naiveReturns.length - 1);
+  const naiveVolatility = Math.sqrt(naiveVariance) * Math.sqrt(252) * 100;
+
+  assert.ok(naiveVolatility > 200, 'sanity check on the fixture itself: the uncorrected calculation must be a wild outlier, or this test proves nothing');
+  assert.ok(snapshot.annualizedVolatility < 20, `corrected volatility must reflect the smooth underlying series, not the split artifact (got ${snapshot.annualizedVolatility}%, naive would have been ${naiveVolatility.toFixed(1)}%)`);
+});
+
+test('multiple discontinuities each exclude only their own single corrupted return -- volatility still computes from every other genuine daily move', async (t) => {
+  t.after(cleanup);
+  await cleanup();
+  const closes = Array.from({ length: 252 }, (_, i) => {
+    let base = 100 + i * 0.1;
+    if (i >= 100) base *= 2; // discontinuity 1
+    if (i >= 200) base *= 3; // discontinuity 2
+    return base;
+  });
+  await StockPriceHistorySnapshot.insertMany(buildRows(252, { closes }));
+  const snapshot = await computeAndPersistMetricsForSymbol(TEST_SYMBOL);
+
+  assert.equal(snapshot.discontinuitiesDetected.length, 2);
+  assert.equal(typeof snapshot.annualizedVolatility, 'number');
+  assert.ok(snapshot.annualizedVolatility < 20, `both corrupted returns must be excluded, not just the first (got ${snapshot.annualizedVolatility}%)`);
+});
+
+test('a symbol whose history is almost entirely discontinuities withholds volatility rather than reporting a false-precision figure from a handful of leftover returns', async (t) => {
+  t.after(cleanup);
+  await cleanup();
+  // 30 observations, a jump on every single day after the first -- after
+  // excluding every discontinuity-corrupted return, essentially nothing real is left.
+  const closes = Array.from({ length: 30 }, (_, i) => 100 * (2 ** i));
+  await StockPriceHistorySnapshot.insertMany(buildRows(30, { closes }));
+  const snapshot = await computeAndPersistMetricsForSymbol(TEST_SYMBOL);
+
+  assert.ok(snapshot.discontinuitiesDetected.length >= 20);
+  assert.equal(snapshot.annualizedVolatility, null, 'too few genuine observations remain after exclusion -- must be withheld, never a false-precision number');
+  assert.ok(snapshot.missingMetrics.includes('annualizedVolatility'));
 });
 
 test('a symbol already fully computed and then re-run with the identical series is idempotent (no duplicate snapshot documents, same values)', async (t) => {
