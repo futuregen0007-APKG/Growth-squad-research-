@@ -78,7 +78,11 @@ test('/health reports nothing about dependencies at all -- it has no opinion to 
   const { baseUrl, close } = await listen(buildHealthApp());
   try {
     const body = JSON.parse((await request(baseUrl, '/health')).raw);
-    assert.deepEqual(Object.keys(body).sort(), ['status', 'success', 'uptime']);
+    // 'version' (the deployed commit SHA, from Render's auto-injected
+    // RENDER_GIT_COMMIT) is a build identifier, not a dependency signal --
+    // it carries no Mongo/Redis/connection state, so it belongs on the
+    // "nothing about dependencies" list this test guards.
+    assert.deepEqual(Object.keys(body).sort(), ['status', 'success', 'uptime', 'version']);
   } finally {
     await close();
   }

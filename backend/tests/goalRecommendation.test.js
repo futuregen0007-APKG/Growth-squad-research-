@@ -44,6 +44,42 @@ test('risk ordering, horizon adjustment, and glidepath reduce equity near the go
   assert.ok(glidepath[0].equityMutualFundsPct > glidepath.at(-1).equityMutualFundsPct);
 });
 
+test('an emergency-fund goal carries zero direct-equity and equity-mutual-fund allocation at any risk level or horizon, with the freed percentage redistributed to debt/liquid and the total still 100', () => {
+  const cases = [
+    { riskLevel: 'CONSERVATIVE', horizonYears: 1 },
+    { riskLevel: 'MODERATE', horizonYears: 1 },
+    { riskLevel: 'AGGRESSIVE', horizonYears: 1 },
+    // An emergency fund tagged with an inconsistently long horizon must still
+    // carry zero equity -- the goalType exclusion applies regardless of
+    // whatever horizonYears applyHorizonAdjustment would otherwise use to
+    // increase equity for a >10yr goal.
+    { riskLevel: 'AGGRESSIVE', horizonYears: 15 },
+  ];
+  for (const { riskLevel, horizonYears } of cases) {
+    const result = buildGoalAssetAllocation({
+      targetAmount: 300000, currentAmount: 50000, monthlyContribution: 10000, horizonYears, riskLevel, goalType: 'emergency',
+    });
+    assert.equal(result.allocation.equityMutualFundsPct, 0, `${riskLevel}/${horizonYears}y: equityMutualFundsPct must be exactly 0`);
+    assert.equal(result.allocation.directEquityPct, 0, `${riskLevel}/${horizonYears}y: directEquityPct must be exactly 0`);
+    assert.equal(allocationTotal(result.allocation), 100, `${riskLevel}/${horizonYears}y: allocation must still sum to exactly 100`);
+    assert.ok(result.allocation.debtPct + result.allocation.liquidPct > 0, `${riskLevel}/${horizonYears}y: the freed equity percentage must land in debt/liquid, not vanish`);
+    // Every glidepath row inherits the zeroed equity -- there is no year in
+    // which an emergency fund's plan calls for equity exposure.
+    for (const row of result.glidepath) {
+      assert.equal(row.directEquityPct, 0);
+      assert.equal(row.equityMutualFundsPct, 0);
+      assert.equal(allocationTotal({
+        equityMutualFundsPct: row.equityMutualFundsPct, directEquityPct: row.directEquityPct, debtPct: row.debtPct, goldPct: row.goldPct, liquidPct: row.liquidPct,
+      }), 100);
+    }
+  }
+});
+
+test('a non-emergency short-horizon goal (e.g. a 1-year car purchase) is unaffected by the emergency-fund exclusion -- it keeps its normal small residual equity sleeve', () => {
+  const carGoal = buildGoalAssetAllocation({ targetAmount: 300000, currentAmount: 50000, monthlyContribution: 10000, horizonYears: 1, riskLevel: 'AGGRESSIVE', goalType: 'car' });
+  assert.ok(carGoal.allocation.equityMutualFundsPct + carGoal.allocation.directEquityPct > 0, 'only goalType "emergency" forces equity to zero -- other short-horizon goals keep applyHorizonAdjustment\'s own reduction');
+});
+
 test('zero-rate future value and required contribution are safe', () => {
   assert.equal(futureValue({ currentAmount: 1000, monthlyContribution: 200, annualRate: 0, months: 12 }), 3400);
   assert.equal(requiredMonthlyContribution({ targetAmount: 3400, currentAmount: 1000, annualRate: 0, months: 12 }), 200);

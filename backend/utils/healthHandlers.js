@@ -71,9 +71,21 @@ export const publicErrorDetail = (rawError, { isProduction = process.env.NODE_EN
   return 'dependency unavailable — see server logs';
 };
 
+// Render auto-injects RENDER_GIT_COMMIT (the full SHA it deployed from) into
+// every service's environment -- no configuration needed, and it is not a
+// secret (it is already public in the git history). Exposed here because a
+// GitHub Actions run only proves what the RUNNER checked out fresh; it says
+// nothing about which commit the separately-hosted Render web service is
+// actually running. This is the one place that distinction can be verified
+// directly against the live process. Reads as null outside Render (e.g.
+// local dev), never fabricated.
+const deployedVersion = () => process.env.RENDER_GIT_COMMIT || null;
+
 /** Liveness: must respond the instant Express is listening, regardless of any other dependency's state. */
 export const livenessHandler = (req, res) => {
-  res.status(200).json({ success: true, status: 'ok', uptime: process.uptime() });
+  res.status(200).json({
+    success: true, status: 'ok', uptime: process.uptime(), version: deployedVersion(),
+  });
 };
 
 /**

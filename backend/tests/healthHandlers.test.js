@@ -19,6 +19,23 @@ test('livenessHandler responds 200 immediately, independent of any dependency', 
   assert.equal(typeof res.body.uptime, 'number');
 });
 
+test('livenessHandler reports the deployed commit from RENDER_GIT_COMMIT (Render auto-injects it, no config needed), and null where it is absent (e.g. local dev) rather than a fabricated value', () => {
+  const original = process.env.RENDER_GIT_COMMIT;
+  try {
+    delete process.env.RENDER_GIT_COMMIT;
+    const withoutRender = makeFakeRes();
+    livenessHandler({}, withoutRender);
+    assert.equal(withoutRender.body.version, null);
+
+    process.env.RENDER_GIT_COMMIT = 'abc123deployedsha';
+    const onRender = makeFakeRes();
+    livenessHandler({}, onRender);
+    assert.equal(onRender.body.version, 'abc123deployedsha');
+  } finally {
+    if (original === undefined) delete process.env.RENDER_GIT_COMMIT; else process.env.RENDER_GIT_COMMIT = original;
+  }
+});
+
 test('mongoStateLabel maps every mongoose readyState to a human label, and an unknown code to "unknown"', () => {
   assert.equal(mongoStateLabel(0), 'disconnected');
   assert.equal(mongoStateLabel(1), 'connected');

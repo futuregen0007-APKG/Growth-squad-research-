@@ -45,6 +45,39 @@ const normalizeAllocation = (allocation) => {
   return rounded;
 };
 
+// Emergency-fund money must be withdrawable intact on short notice -- it can
+// never carry direct-equity or equity-mutual-fund exposure, at any stated
+// horizon. applyHorizonAdjustment's own horizon<=2yr reduction alone still
+// leaves a small residual equity sleeve (correct for e.g. a 1-year car-
+// purchase goal, wrong for an emergency fund specifically), and a horizon
+// entered inconsistently long would otherwise increase it further. Applied
+// after the horizon adjustment so it always wins regardless of horizonYears;
+// redistributes the freed percentage using the SAME 70% debt / 30% liquid
+// split applyHorizonAdjustment already uses for its own equity reduction,
+// rather than inventing a new ratio.
+const EQUITY_EXCLUDED_GOAL_TYPES = new Set(['emergency']);
+
+const excludeEquityForGoalType = (allocation, goalType) => {
+  if (!EQUITY_EXCLUDED_GOAL_TYPES.has(goalType)) return allocation;
+  const equityTotal = allocation.equityMutualFundsPct + allocation.directEquityPct;
+  if (equityTotal <= 0) return allocation;
+  // Deliberately NOT routed through the generic normalizeAllocation -- its
+  // proportional total-based rescaling (a division then a multiplication) is
+  // a second rounding pass on top of applyHorizonAdjustment's own, and
+  // re-summing five independently-rounded floats after two such passes can
+  // reintroduce IEEE-754 noise (observed live: 99.99999999999999 instead of
+  // 100). goldPct passes through untouched and debtPct is rounded once;
+  // liquidPct absorbs the exact remainder against 100, the same
+  // residual-absorption idea normalizeAllocation uses but without the extra
+  // division pass, so the five fields always sum to exactly 100.
+  const debtPct = Number((allocation.debtPct + equityTotal * 0.7).toFixed(2));
+  const goldPct = Number(allocation.goldPct.toFixed(2));
+  const liquidPct = Number((100 - debtPct - goldPct).toFixed(2));
+  return {
+    equityMutualFundsPct: 0, directEquityPct: 0, debtPct, goldPct, liquidPct,
+  };
+};
+
 const applyHorizonAdjustment = (base, horizonYears, riskLevel) => {
   const adjusted = { ...base };
   if (horizonYears <= 2) {
@@ -121,7 +154,8 @@ export const buildGoalAssetAllocation = (input = {}) => {
   const requiredMonthly = requiredMonthlyContribution({ targetAmount, currentAmount, annualRate, months });
   const shortfallSurplus = monthlyContribution - requiredMonthly;
   const status = projectedValue >= targetAmount ? (monthlyContribution > requiredMonthly ? 'AHEAD' : 'ON_TRACK') : 'BEHIND';
-  const allocation = applyHorizonAdjustment(BASE_ALLOCATIONS[riskLevel], wholeYears, riskLevel);
+  const goalType = String(input.goalType || '').trim().toLowerCase();
+  const allocation = excludeEquityForGoalType(applyHorizonAdjustment(BASE_ALLOCATIONS[riskLevel], wholeYears, riskLevel), goalType);
   const split = monthlySplit(allocation, monthlyContribution);
   return {
     feasibility: { status, projectedValue: money(projectedValue), requiredMonthlyContribution: money(requiredMonthly), currentMonthlyContribution: money(monthlyContribution), monthlyShortfallSurplus: money(shortfallSurplus), fundingRatio: targetAmount ? money(projectedValue / targetAmount) : null },

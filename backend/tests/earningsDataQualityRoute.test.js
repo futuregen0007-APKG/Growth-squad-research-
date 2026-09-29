@@ -72,22 +72,39 @@ test('/data-quality does not 404 -- it reaches the earnings-intelligence router 
 test('/data-quality reports an unresolved reconciliation mismatch grouped by symbol, and excludes OK (MATCH/SUM_MATCH) checks', async (t) => {
   t.after(cleanup);
   await cleanup();
-  await ReconciliationCheck.create([
-    {
-      checkKey: `${TEST_SYMBOL}|SOURCE_VALUE|FY2025|REVENUE|Consolidated`, checkType: 'SOURCE_VALUE', symbol: TEST_SYMBOL, metric: 'REVENUE', period: 'FY2025', basis: 'Consolidated', status: 'VALUE_MISMATCH', detail: 'stored 100, filing says 105', lastCheckedAt: new Date(),
-    },
-    {
-      checkKey: `${TEST_SYMBOL}|QUARTER_SUM|FY2025|PAT|Standalone`, checkType: 'QUARTER_SUM', symbol: TEST_SYMBOL, metric: 'PAT', period: 'FY2025', basis: 'Standalone', status: 'MATCH', detail: null, lastCheckedAt: new Date(),
-    },
-  ]);
 
+  // unresolvedCount is a genuine GLOBAL count across the whole earnings
+  // universe (that's the point of the route -- a real dashboard needs the
+  // real total, not one scoped away from other symbols' real findings). This
+  // shared local/dev database already carries real, currently-unresolved
+  // mismatches from actual (non-test) reconciliation runs against real
+  // companies -- asserting unresolvedCount against a hardcoded absolute
+  // value fails as soon as that pre-existing count is anything but zero,
+  // which it legitimately is here. Asserting the DELTA (before vs after
+  // this test's own fixture) is immune to whatever else is genuinely
+  // unresolved, while still verifying the exact same property: one new
+  // unresolved check must add exactly 1, and the MATCH check must add 0.
+  // Never delete or touch those pre-existing records -- they are real
+  // findings, not test pollution.
   const { baseUrl, close } = await listen(buildApp());
   try {
-    const res = await request(baseUrl, '/api/earnings-intelligence/data-quality');
-    assert.equal(res.body.data.reconciliation.unresolvedCount, 1, 'the MATCH check must not be counted as unresolved');
-    assert.ok(res.body.data.reconciliation.bySymbol[TEST_SYMBOL]);
-    assert.equal(res.body.data.reconciliation.bySymbol[TEST_SYMBOL].length, 1);
-    assert.equal(res.body.data.reconciliation.bySymbol[TEST_SYMBOL][0].status, 'VALUE_MISMATCH');
+    const before = await request(baseUrl, '/api/earnings-intelligence/data-quality');
+    const baselineUnresolvedCount = before.body.data.reconciliation.unresolvedCount;
+
+    await ReconciliationCheck.create([
+      {
+        checkKey: `${TEST_SYMBOL}|SOURCE_VALUE|FY2025|REVENUE|Consolidated`, checkType: 'SOURCE_VALUE', symbol: TEST_SYMBOL, metric: 'REVENUE', period: 'FY2025', basis: 'Consolidated', status: 'VALUE_MISMATCH', detail: 'stored 100, filing says 105', lastCheckedAt: new Date(),
+      },
+      {
+        checkKey: `${TEST_SYMBOL}|QUARTER_SUM|FY2025|PAT|Standalone`, checkType: 'QUARTER_SUM', symbol: TEST_SYMBOL, metric: 'PAT', period: 'FY2025', basis: 'Standalone', status: 'MATCH', detail: null, lastCheckedAt: new Date(),
+      },
+    ]);
+
+    const after = await request(baseUrl, '/api/earnings-intelligence/data-quality');
+    assert.equal(after.body.data.reconciliation.unresolvedCount, baselineUnresolvedCount + 1, 'exactly one new unresolved check must be added -- the MATCH check must not be counted');
+    assert.ok(after.body.data.reconciliation.bySymbol[TEST_SYMBOL]);
+    assert.equal(after.body.data.reconciliation.bySymbol[TEST_SYMBOL].length, 1);
+    assert.equal(after.body.data.reconciliation.bySymbol[TEST_SYMBOL][0].status, 'VALUE_MISMATCH');
   } finally {
     await close();
   }
