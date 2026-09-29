@@ -23,6 +23,7 @@ import authRoutes from './routes/auth.js';
 import newsRoute from './routes/news.js';
 import { createGoalRoutes } from './routes/goals.js';
 import earningsIntelligenceRoute from './routes/earningsIntelligence.js';
+import companyFinancialsRoute from './routes/companyFinancials.js';
 import opsRoute from './routes/ops.js';
 import { initializeOtlpExporter, shutdownOtlpExporter } from './services/telemetry/otlpExporter.js';
 import { initializeSharedMetrics, shutdownSharedMetrics } from './services/telemetry/sharedMetrics.js';
@@ -211,6 +212,7 @@ const startServer = () => {
   app.use('/api/watchlist', createWatchlistRoutes(stockService));
   app.use('/api/earnings-intelligence', earningsIntelligenceRoute);
   app.use('/earnings-intelligence', earningsIntelligenceRoute);
+  app.use('/api/company-financials', companyFinancialsRoute);
   logger.info('Mounting route: /api/sector-rotation');
   app.use('/api/sector-rotation', sectorRotationRoute);
   logger.info('Mounted route: /api/sector-rotation');

@@ -13,6 +13,7 @@ import SectorIntelligence from "@/pages/SectorIntelligence";
 import EarningsIntelligence from "@/pages/EarningsIntelligence";
 import AIResearch from "@/pages/AIResearch";
 import StockDetail from "@/pages/StockDetail";
+import CompanyFinancials from "@/pages/CompanyFinancials";
 import SearchResults from "@/pages/SearchResults";
 import Portfolio from "@/pages/Portfolio";
 import Settings from "@/pages/Settings";
@@ -65,6 +66,8 @@ function App() {
             <Route path="/earnings/:symbol" element={<EarningsIntelligence />} />
             <Route path="/earnings-intelligence/:symbol" element={<EarningsIntelligence />} />
             <Route path="/stock/:ticker" element={<StockDetail />} />
+            <Route path="/company-financials" element={<CompanyFinancials />} />
+            <Route path="/company-financials/:symbol" element={<CompanyFinancials />} />
             <Route path="/search" element={<SearchResults />} />
           </Route>
           <Route element={<ProtectedRoute />}>
