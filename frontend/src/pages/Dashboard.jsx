@@ -12,7 +12,6 @@ import {
   CartesianGrid,
 } from "recharts";
 import { ArrowUpRight, Sparkles, Newspaper, AlertCircle, TrendingUp, TrendingDown } from "lucide-react";
-import KPITile from "@/components/widgets/KPITile";
 import PopularStocksRail from "@/components/widgets/PopularStocksRail";
 import { fetchAllStocks, fetchIndexQuotes, fetchHistoricalData, fetchSectorRotation } from "@/services/stockApi";
 import { fetchNewsWithStatus } from "@/services/newsApi";
@@ -101,7 +100,6 @@ export default function Dashboard() {
     map[index.symbol] = index;
     return map;
   }, {});
-  const indices = Object.values(dynamicIndexData);
 
   useEffect(() => {
     // Wait out a Render cold-start wake-up before firing the dashboard's
@@ -159,7 +157,10 @@ export default function Dashboard() {
         void loadNews(DASHBOARD_NEWS_SYMBOLS);
       });
 
-    fetchIndexQuotes(['NIFTY 50', 'NIFTYIT', 'SENSEX'], requestOptions)
+    // Only NIFTY 50 is rendered anywhere on this page now (the Nifty 50
+    // chart header below) -- NIFTYIT/SENSEX were fetched solely for the
+    // removed index-card row and would otherwise be a dead request.
+    fetchIndexQuotes(['NIFTY 50'], requestOptions)
       .then((data) => updateState(setIndexState, { loading: false, data, error: null }))
       .catch((error) => {
         if (!isActive || error?.code === 'ERR_CANCELED') return;
@@ -250,13 +251,6 @@ export default function Dashboard() {
             AI Synced · 13:42 IST
           </span>
         </div>
-      </div>
-
-      {/* Indices KPI grid */}
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 gs-stagger">
-        {indexState.loading ? <div className="col-span-full text-sm text-gs-textMuted">Loading market indices...</div>
-          : indices.length ? indices.map((idx) => <KPITile key={idx.symbol} {...idx} />)
-            : <div className="col-span-full"><SectionError message={indexState.error || 'No market index data available.'} /></div>}
       </div>
 
       <div className="space-y-4">
