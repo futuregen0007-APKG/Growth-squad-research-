@@ -7,6 +7,17 @@ const safeText = (value) => (value === null || value === undefined || value === 
 const safeNumber = (value) => (value === null || value === undefined || value === '' || Number.isNaN(Number(value)) ? null : Number(value));
 const formatCr = (value) => { const n = safeNumber(value); return n === null ? '—' : `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 2 })} Cr`; };
 const formatPct = (value) => { const n = safeNumber(value); return n === null ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`; };
+// A ratio value's unit is PERCENT or NUMBER as classified live by the
+// backend from Upstox's own raw string (whether it literally ended in
+// "%") -- never guessed from the ratio's name. No +/- prefix here (unlike
+// formatPct): this is a point-in-time ratio, not a period-over-period
+// change, so a negative sector comparator like NIM "-2.15%" should read
+// as exactly that, not be mistaken for a declared increase.
+const formatRatioValue = (value, unit) => {
+  const n = safeNumber(value);
+  if (n === null) return '—';
+  return unit === 'PERCENT' ? `${n.toFixed(2)}%` : n.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+};
 const formatFetchedAt = (iso) => {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -77,8 +88,8 @@ function RatiosTable({ section }) {
       {ratios.map((r) => (
         <div key={r.name} className="border border-gs-border p-2">
           <div className="text-[10px] text-gs-textDim">{r.name}</div>
-          <div className="font-mono text-sm text-gs-text">{safeText(safeNumber(r.companyValue))}</div>
-          <div className="text-[10px] text-gs-textDim">Sector: {safeText(safeNumber(r.sectorValue))}</div>
+          <div className="font-mono text-sm text-gs-text">{formatRatioValue(r.companyValue, r.companyValueUnit)}</div>
+          <div className="text-[10px] text-gs-textDim">Sector: {formatRatioValue(r.sectorValue, r.sectorValueUnit)}</div>
         </div>
       ))}
     </div>

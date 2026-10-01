@@ -28,7 +28,10 @@ const SECTIONS_FIXTURE = {
   },
   keyRatios: {
     symbol: 'TCS', isin: 'INE467B01029', provider: 'UPSTOX', fetchedAt: '2026-09-29T00:00:00.000Z',
-    ratios: [{ name: 'P/E', companyValue: 28.4, sectorValue: 24.1 }],
+    ratios: [
+      { name: 'P/E', companyValue: 28.4, companyValueUnit: 'NUMBER', sectorValue: 24.1, sectorValueUnit: 'NUMBER' },
+      { name: 'ROE', companyValue: 45.89, companyValueUnit: 'PERCENT', sectorValue: 8.65, sectorValueUnit: 'PERCENT' },
+    ],
     raw: {},
   },
   shareholding: null,
@@ -145,6 +148,30 @@ test('validateGroundedExplanation REJECTS a correctly-valued citation that claim
   const result = validateGroundedExplanation(parsed, SECTIONS_FIXTURE); // fixture's incomeStatement is CONSOLIDATED
   assert.equal(result.valid, false);
   assert.ok(result.reason.toLowerCase().includes('statement basis'));
+});
+
+test('required: validateGroundedExplanation REJECTS a correctly-valued ratio citation that claims the wrong unit -- closes the real HDFCBANK CASA bug class (a NUMBER ratio mislabeled as PERCENT, or vice versa)', () => {
+  const parsed = {
+    summary: "TCS's ROE was 45.89 in FY2026.",
+    observations: [{ statement: 'ROE was 45.89', citedLabel: 'ROE', citedFinancialYear: null, citedValue: 45.89, unit: 'NUMBER' }],
+    missingSectionsNote: null,
+  };
+  const result = validateGroundedExplanation(parsed, SECTIONS_FIXTURE); // fixture's ROE is PERCENT
+  assert.equal(result.valid, false);
+  assert.ok(result.reason.toLowerCase().includes('unit'));
+});
+
+test('validateGroundedExplanation ACCEPTS a ratio citation whose unit correctly matches (PERCENT with a "%" sign in the statement, NUMBER without one)', () => {
+  const parsed = {
+    summary: "TCS's ROE was 45.89% and P/E was 28.4 in FY2026.",
+    observations: [
+      { statement: 'ROE was 45.89%', citedLabel: 'ROE', citedFinancialYear: null, citedValue: 45.89, unit: 'PERCENT' },
+      { statement: 'P/E was 28.4', citedLabel: 'P/E', citedFinancialYear: null, citedValue: 28.4, unit: 'NUMBER' },
+    ],
+    missingSectionsNote: null,
+  };
+  const result = validateGroundedExplanation(parsed, SECTIONS_FIXTURE);
+  assert.equal(result.valid, true);
 });
 
 test('validateGroundedExplanation tolerates a purely qualitative observation that cites no number', () => {

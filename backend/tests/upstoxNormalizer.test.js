@@ -145,6 +145,58 @@ test('normalizeKeyRatios: company_value and sector_value stay clearly separate f
   assert.equal(roe.sectorValue, null);
 });
 
+test('normalizeKeyRatios: a percentage string is parsed to its numeric value with unit PERCENT, a plain-number string with unit NUMBER -- fixture copied verbatim from real TCS/INFY/HDFCBANK production responses', () => {
+  // Real raw shapes, captured live: percentage ratios ("27.45%") and plain
+  // ratios ("14.82") coexist in the SAME response. HDFCBANK's CASA is the
+  // key case proving unit detection must read the actual string, not the
+  // ratio name -- CASA is percentage-like by banking convention but
+  // Upstox reports it with no "%" at all.
+  const raw = {
+    data: [
+      { name: 'P/E', company_value: '14.82', sector_value: '64.68' },
+      { name: 'ROA', company_value: '27.45%', sector_value: '-2.15%' },
+      { name: 'ROE', company_value: '45.89%', sector_value: '8.65%' },
+      { name: 'ROCE', company_value: '40.54%', sector_value: '71.3%' },
+      { name: 'NIM', company_value: '3.28%', sector_value: '4.25%' },
+      { name: 'Net NPA', company_value: '0.38%', sector_value: '0.79%' },
+      { name: 'CASA', company_value: '34.0', sector_value: '30.48' },
+    ],
+  };
+  const result = normalizeKeyRatios(raw, { symbol: 'HDFCBANK', isin: 'INE040A01034', fetchedAt: '2026-10-01T00:00:00.000Z' });
+  const byName = Object.fromEntries(result.ratios.map((r) => [r.name, r]));
+
+  assert.equal(byName['P/E'].companyValue, 14.82);
+  assert.equal(byName['P/E'].companyValueUnit, 'NUMBER');
+  assert.equal(byName['P/E'].sectorValueUnit, 'NUMBER');
+
+  assert.equal(byName.ROA.companyValue, 27.45);
+  assert.equal(byName.ROA.companyValueUnit, 'PERCENT');
+  assert.equal(byName.ROA.sectorValue, -2.15, 'a negative percentage string parses to a negative number, not null');
+  assert.equal(byName.ROA.sectorValueUnit, 'PERCENT');
+
+  assert.equal(byName.ROE.companyValue, 45.89);
+  assert.equal(byName.ROCE.companyValue, 40.54);
+  assert.equal(byName.NIM.companyValue, 3.28);
+  assert.equal(byName['Net NPA'].companyValue, 0.38);
+
+  // The case this fix exists for: CASA is percentage-like by convention
+  // but Upstox's own string carries no "%" -- must NOT be fabricated as
+  // PERCENT just because the ratio name suggests one.
+  assert.equal(byName.CASA.companyValue, 34);
+  assert.equal(byName.CASA.companyValueUnit, 'NUMBER');
+  assert.equal(byName.CASA.sectorValue, 30.48);
+  assert.equal(byName.CASA.sectorValueUnit, 'NUMBER');
+});
+
+test('normalizeKeyRatios: a genuinely missing ratio value stays null with no unit, never fabricated', () => {
+  const raw = { data: [{ name: 'ROA', company_value: null, sector_value: 'NA' }] };
+  const result = normalizeKeyRatios(raw, { symbol: 'TCS', isin: 'INE467B01029', fetchedAt: '2026-10-01T00:00:00.000Z' });
+  assert.equal(result.ratios[0].companyValue, null);
+  assert.equal(result.ratios[0].companyValueUnit, null);
+  assert.equal(result.ratios[0].sectorValue, null);
+  assert.equal(result.ratios[0].sectorValueUnit, null);
+});
+
 test('normalizeShareholding: ownership % preserved per category and period', () => {
   const raw = { data: [{ category: 'promoters', history: [{ period: 'Sep 2025', value: 72.3 }] }] };
   const result = normalizeShareholding(raw, { symbol: 'TCS', isin: 'INE467B01029', fetchedAt: '2026-09-29T00:00:00.000Z' });

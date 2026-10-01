@@ -260,15 +260,44 @@ export const normalizeProfile = (raw, { symbol = null, isin, fetchedAt }) => {
   };
 };
 
-/** company_value/sector_value stay clearly separate fields -- company_value is genuinely company-level (unlike profile's sector market cap), sector_value is the sector comparator. */
+/**
+ * parseRatioValue - Upstox mixes percentage STRINGS ("45.89%", "-2.15%")
+ * and plain-number strings ("14.82") within the SAME key-ratios response --
+ * confirmed live: TCS ROE/ROA/ROCE and HDFCBANK NIM/ROA/ROE/Net NPA are all
+ * "%"-suffixed, while P/E, P/B, Quick Ratio, EV/EBITDA, and (notably)
+ * HDFCBANK's own CASA are plain numbers with NO "%" despite CASA being a
+ * percentage by banking convention -- Upstox simply doesn't format it that
+ * way. This is why unit detection must be driven by whatever the raw
+ * STRING actually contains, never by the ratio NAME (a name-based guess
+ * would have wrongly stripped CASA's non-existent "%", or wrongly assumed
+ * every ratio is a plain number). toNumberOrNull("45.89%") alone is NaN
+ * (the trailing "%" breaks Number() coercion) -- this strips it first,
+ * same fix as parseChangePct, then tags the real unit so nothing
+ * downstream has to re-guess.
+ */
+const parseRatioValue = (value) => {
+  if (value === null || value === undefined || value === '') return { value: null, unit: null };
+  const str = String(value).trim();
+  const isPercent = str.endsWith('%');
+  const num = toNumberOrNull(isPercent ? str.slice(0, -1).trim() : str);
+  return { value: num, unit: num === null ? null : (isPercent ? 'PERCENT' : 'NUMBER') };
+};
+
+/** company_value/sector_value stay clearly separate fields -- company_value is genuinely company-level (unlike profile's sector market cap), sector_value is the sector comparator. Each gets its own unit tag since nothing guarantees they always agree. */
 export const normalizeKeyRatios = (raw, { symbol = null, isin, fetchedAt }) => {
   const list = Array.isArray(raw?.data) ? raw.data : [];
   const ratios = list
-    .map((item) => ({
-      name: item?.name || null,
-      companyValue: toNumberOrNull(item?.company_value),
-      sectorValue: toNumberOrNull(item?.sector_value),
-    }))
+    .map((item) => {
+      const company = parseRatioValue(item?.company_value);
+      const sector = parseRatioValue(item?.sector_value);
+      return {
+        name: item?.name || null,
+        companyValue: company.value,
+        companyValueUnit: company.unit,
+        sectorValue: sector.value,
+        sectorValueUnit: sector.unit,
+      };
+    })
     .filter((ratio) => ratio.name);
   return {
     symbol, isin, provider: 'UPSTOX', fetchedAt, ratios, raw,
@@ -312,7 +341,7 @@ export const normalizeCorporateActions = (raw, { symbol = null, isin, fetchedAt 
   };
 };
 
-export { extractPeriodicMetrics, parseChangePct, VERIFIED_LABELS };
+export { extractPeriodicMetrics, parseChangePct, parseRatioValue, VERIFIED_LABELS };
 
 export default {
   UPSTOX_UNIT,

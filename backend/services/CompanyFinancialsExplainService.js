@@ -49,11 +49,19 @@ const statementDigest = (section) => {
     }));
 };
 
+// companyValueUnit/sectorValueUnit ("PERCENT" or "NUMBER") are classified
+// live from Upstox's own raw string, not guessed from the ratio name --
+// e.g. HDFCBANK's CASA is a plain NUMBER despite being percentage-like by
+// banking convention, because Upstox itself never appends "%" to it.
+// Included here so the model states e.g. "ROE was 45.89%" and never
+// "45.89" (misleadingly bare) or invents a "%" CASA doesn't actually have.
 const ratiosDigest = (section) => {
   if (!section?.ratios?.length) return [];
   return section.ratios
     .filter((r) => r.companyValue !== null || r.sectorValue !== null)
-    .map((r) => ({ name: r.name, companyValue: r.companyValue, sectorValue: r.sectorValue }));
+    .map((r) => ({
+      name: r.name, companyValue: r.companyValue, companyValueUnit: r.companyValueUnit, sectorValue: r.sectorValue, sectorValueUnit: r.sectorValueUnit,
+    }));
 };
 
 /** statementSectionDigest - wraps statementDigest with the section's own statementType tag (e.g. "CONSOLIDATED"), so the model always knows which statement basis a metric came from and can echo it back for grounding. `null` when the section itself is unavailable, never a guessed default. */
@@ -81,7 +89,7 @@ export const buildExplainPrompt = ({ symbol, companyName, sections }) => {
     .filter(([, value]) => !value)
     .map(([key]) => key);
 
-  return `You are explaining ${companyName || symbol}'s (${symbol}) recently fetched financial statements to a retail investor. All figures are sourced from Upstox and reported in INR Crore unless a ratio (unitless).
+  return `You are explaining ${companyName || symbol}'s (${symbol}) recently fetched financial statements to a retail investor. Statement figures (balance sheet, cash flow, income statement) are in INR Crore. Ratio figures each carry their own companyValueUnit/sectorValueUnit, either "PERCENT" (cite the value with a "%" sign, e.g. "45.89%") or "NUMBER" (cite it bare, with NO "%" sign, e.g. "34" -- some ratios that sound like percentages, such as a bank's CASA, are reported by Upstox as plain NUMBERs; never add a "%" that DATA doesn't actually have, and never drop one DATA does have).
 
 RULES:
 1. Use ONLY the figures in DATA below. Every numeric statement you make must restate a value that appears verbatim in DATA, tagged with the exact label and financial year (or ratio name) it came from.
@@ -91,6 +99,7 @@ RULES:
 5. This is not investment advice -- never issue a buy/sell/hold recommendation.
 6. incomeStatement metrics may carry a "verifiedLabel" that was cross-checked against Upstox's own detailed line-item breakdown for that exact period (one of "Revenue from operations", "Total income", "Profit before tax", "Profit after tax (consolidated)"). When a metric has a verifiedLabel, you MUST cite it using that EXACT verifiedLabel text as citedLabel (not the raw provider label), and set definitionVerified: true. When a metric has NO verifiedLabel (it is null or absent), cite its raw label as citedLabel, explicitly add the phrase "(Upstox-reported, exact definition not independently verified)" to that observation's statement text, and set definitionVerified: false.
 7. "Profit after tax (consolidated)" is the CONSOLIDATED profit-after-tax figure. It may differ from the profit attributable to the parent company's own shareholders where the company has minority/non-controlling interests elsewhere in the group -- you may note this plainly, but NEVER state or imply a specific attributable-to-owners split, since that figure is not present in DATA.
+8. For every observation, set "unit" to exactly the matched metric's unit: "INR_CRORE" for any balanceSheet/cashFlow/incomeStatement citation, or the ratio's own companyValueUnit ("PERCENT"/"NUMBER") for a keyRatios citation.
 
 DATA:
 ${JSON.stringify(digest)}
@@ -101,7 +110,8 @@ Respond with STRICT JSON only, no prose outside the JSON object, in exactly this
 {
   "summary": "2-4 sentence plain-English summary, grounded only in DATA",
   "observations": [
-    { "statement": "one grounded sentence", "citedLabel": "Total income", "citedFinancialYear": "FY2026", "citedValue": 12345.6, "statementType": "CONSOLIDATED", "definitionVerified": true }
+    { "statement": "one grounded sentence", "citedLabel": "Total income", "citedFinancialYear": "FY2026", "citedValue": 12345.6, "statementType": "CONSOLIDATED", "definitionVerified": true, "unit": "INR_CRORE" },
+    { "statement": "ROE was 45.89%", "citedLabel": "ROE", "citedFinancialYear": null, "citedValue": 45.89, "statementType": null, "definitionVerified": null, "unit": "PERCENT" }
   ],
   "missingSectionsNote": "one sentence naming what's missing, or null if nothing is missing"
 }`;
@@ -136,14 +146,14 @@ const buildSourceIndex = (sections) => {
       const labelKey = metric.verifiedLabel || metric.label;
       if (labelKey == null || metric.financialYear == null || metric.value == null) continue;
       statementIndex.set(`${labelKey}|${metric.financialYear}`, {
-        value: metric.value, changePct: metric.changePct, statementType,
+        value: metric.value, changePct: metric.changePct, statementType, unit: 'INR_CRORE',
       });
     }
   }
   const ratioIndex = new Map();
   for (const ratio of ratiosDigest(sections?.keyRatios)) {
     if (ratio.name == null || ratio.companyValue == null) continue;
-    ratioIndex.set(ratio.name, { value: ratio.companyValue, statementType: null });
+    ratioIndex.set(ratio.name, { value: ratio.companyValue, statementType: null, unit: ratio.companyValueUnit || null });
   }
   return { statementIndex, ratioIndex };
 };
@@ -206,6 +216,20 @@ export const validateGroundedExplanation = (parsed, sections) => {
       return {
         valid: false,
         reason: `Observation claims statement basis "${observation.statementType}" for "${citedLabel}", but the matched metric is actually ${entry.statementType}.`,
+        ungroundedObservation: observation,
+      };
+    }
+
+    // unit catches the real bug class this was added for: a ratio like
+    // HDFCBANK's CASA is a plain NUMBER (34), not a PERCENT, even though
+    // most of its neighboring ratios (ROE, NIM, Net NPA) are -- a model
+    // that appends "%" to a NUMBER ratio (or drops it from a real PERCENT
+    // one) gets caught here, not just on the number matching.
+    if (observation?.unit != null && entry.unit != null
+      && String(observation.unit).toUpperCase() !== String(entry.unit).toUpperCase()) {
+      return {
+        valid: false,
+        reason: `Observation claims unit "${observation.unit}" for "${citedLabel}", but the matched metric is actually ${entry.unit}.`,
         ungroundedObservation: observation,
       };
     }
