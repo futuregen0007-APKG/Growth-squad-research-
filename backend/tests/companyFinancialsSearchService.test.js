@@ -4,14 +4,11 @@ import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { CompanyResearchProfile } from '../models/CompanyResearchProfile.js';
 import { clearAliasCacheForTests } from '../services/CompanyAliasResolver.js';
-import { searchCompanyFinancials } from '../services/CompanyFinancialsSearchService.js';
+import { searchCompanyFinancials, _resetProviderForTests } from '../services/CompanyFinancialsSearchService.js';
 
 // Requires a live Mongo connection (CompanyFinancialsResolver reads
 // CompanyResearchProfile) -- run with the project's dnsfix NODE_OPTIONS per
-// this repo's Windows/Git-Bash test environment note. Deliberately does
-// NOT set UPSTOX_ANALYTICS_TOKEN, matching this environment's real current
-// state (no token until tomorrow) -- exercises the exact
-// unconfigured-provider degrade path the search endpoint must survive.
+// this repo's Windows/Git-Bash test environment note.
 dotenv.config();
 if (mongoose.connection.readyState === 0) {
   await mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/stock_market_ai');
@@ -48,8 +45,21 @@ test('required: a resolved symbol with no ISIN on file returns isinUnavailable:t
   assert.equal(result.symbol, `${TEST_PREFIX}NOISIN`);
 });
 
-test('required: with no UPSTOX_ANALYTICS_TOKEN configured (this environment\'s real current state), search degrades to 200 with every section UNAVAILABLE/CONFIGURATION_ERROR -- never a crash, never a 500', async () => {
-  assert.equal(process.env.UPSTOX_ANALYTICS_TOKEN, undefined, 'sanity: this environment has no real Upstox token yet');
+test('required: with no UPSTOX_ANALYTICS_TOKEN configured, search degrades to 200 with every section UNAVAILABLE/CONFIGURATION_ERROR -- never a crash, never a 500', async (t) => {
+  // Deliberately clears the token for this test rather than relying on the
+  // ambient environment lacking one -- a real token now lives in .env
+  // (added once the user obtained it), so asserting on process.env's
+  // incidental state would make this test fail forever afterward. Resets
+  // the shared provider singleton before and after so the cleared/restored
+  // token actually takes effect and no later test observes either mutation.
+  const originalToken = process.env.UPSTOX_ANALYTICS_TOKEN;
+  delete process.env.UPSTOX_ANALYTICS_TOKEN;
+  _resetProviderForTests();
+  t.after(() => {
+    if (originalToken === undefined) delete process.env.UPSTOX_ANALYTICS_TOKEN; else process.env.UPSTOX_ANALYTICS_TOKEN = originalToken;
+    _resetProviderForTests();
+  });
+
   await CompanyResearchProfile.create({ symbol: `${TEST_PREFIX}OK`, companyName: 'Zzfinsearch Resolvable Ltd.', isin: 'INEZZFINSEARCH3' });
 
   const result = await searchCompanyFinancials(`${TEST_PREFIX}OK`);

@@ -6,8 +6,9 @@ import { UPSTOX_ERROR_CODES } from '../providers/upstox/UpstoxErrorMapper.js';
 const TEST_ISIN = 'INE467B01029'; // TCS's real ISIN, used only as a realistic-looking fixture identifier
 
 // FIXTURE response -- hand-authored to match Upstox's documented v2
-// fundamentals shape, never live-verified data (no real
-// UPSTOX_ANALYTICS_TOKEN exists in this environment).
+// fundamentals shape, never live-verified data (these tests mock the HTTP
+// layer entirely and never touch a real token, regardless of whether one
+// is configured in this environment's .env).
 const PROFILE_FIXTURE = {
   data: {
     company_profile: 'A leading IT services company.',
