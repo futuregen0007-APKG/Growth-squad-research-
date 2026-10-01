@@ -373,7 +373,9 @@ export const getCompanyPromisesDebug = async (symbol, filters = {}) => {
   }));
 };
 
-const STATUS_VALUE = { ACHIEVED: 1, PARTIAL: 0.5, MISSED: 0 };
+// EXCEEDED added additively (a met-and-beaten target scores like ACHIEVED);
+// RESOLVED_STATUSES (utils/earningsIntelligenceValidation.js) includes it too.
+const STATUS_VALUE = { ACHIEVED: 1, EXCEEDED: 1, PARTIAL: 0.5, MISSED: 0 };
 const MIN_RESOLVED_FOR_SCORE = 3;
 
 export const faithScoreLabel = (score) => {
@@ -386,7 +388,7 @@ export const faithScoreLabel = (score) => {
 
 /**
  * Deterministic Faith Score. Never asks an LLM for the number.
- * statusValue: ACHIEVED=1.0, PARTIAL=0.5, MISSED=0.0; PENDING/INSUFFICIENT_EVIDENCE excluded.
+ * statusValue: ACHIEVED=1.0, EXCEEDED=1.0, PARTIAL=0.5, MISSED=0.0; PENDING/INSUFFICIENT_EVIDENCE/QUALITATIVE_ONLY excluded.
  * weightedResult = statusValue * evidenceConfidence
  * faithScore = round(sum(weightedResult) / sum(evidenceConfidence) * 100)
  * Requires >= 3 resolved, verified promises; otherwise returns null (never 0).
@@ -438,10 +440,11 @@ export const computeFaithScoreCoverage = (records = [], { coverageStatus, resear
   for (const r of resolved) for (const key of targetPeriodToQuarterKeys(r.promise?.targetPeriod)) quarterSet.add(key);
   const completedQuarters = Math.min(quarterSet.size, EXPECTED_QUARTERS_WINDOW);
 
-  const counts = { achieved: 0, partial: 0, missed: 0, pending: 0 };
+  const counts = { achieved: 0, exceeded: 0, partial: 0, missed: 0, pending: 0 };
   for (const r of records) {
     const status = r.outcome?.status;
     if (status === 'ACHIEVED') counts.achieved += 1;
+    else if (status === 'EXCEEDED') counts.exceeded += 1;
     else if (status === 'PARTIAL') counts.partial += 1;
     else if (status === 'MISSED') counts.missed += 1;
     else if (status === 'PENDING') counts.pending += 1;
@@ -468,6 +471,7 @@ export const computeFaithScoreCoverage = (records = [], { coverageStatus, resear
     promisesTotal: records.length,
     promisesResolved: resolved.length,
     achieved: counts.achieved,
+    exceeded: counts.exceeded,
     partial: counts.partial,
     missed: counts.missed,
     pending: counts.pending,
@@ -558,10 +562,14 @@ const toTimelineEntry = (record) => ({
   promiseDate: record.promise.promiseDate,
   target: {
     value: record.promise.targetValue ?? null,
+    // Additive (null on records that predate these optional fields).
+    valueMax: record.promise.targetValueMax ?? null,
     unit: record.promise.targetUnit ?? null,
     operator: record.promise.operator,
     type: record.promise.targetType,
   },
+  metric: record.promise.metric ?? null,
+  revisesPromiseId: record.promise.revisesPromiseId ?? null,
   status: record.outcome.status,
   outcome: {
     actualValue: record.outcome.actualValue ?? null,
@@ -608,10 +616,12 @@ export const getCompanyTimeline = async (symbol, filters = {}) => {
   const coverageScore = calculateCoverageScore(coverage, records);
   const faithCoverage = computeFaithScoreCoverage(records, { coverageStatus: coverage.coverageStatus, dataAsOf: coverage.lastVerifiedAt });
 
-  const counts = { achieved: 0, partial: 0, missed: 0, pending: 0, insufficientEvidence: 0 };
+  const counts = { achieved: 0, exceeded: 0, partial: 0, missed: 0, pending: 0, insufficientEvidence: 0, qualitativeOnly: 0 };
   for (const record of records) {
     switch (record.outcome?.status) {
       case 'ACHIEVED': counts.achieved++; break;
+      case 'EXCEEDED': counts.exceeded++; break;
+      case 'QUALITATIVE_ONLY': counts.qualitativeOnly++; break;
       case 'PARTIAL': counts.partial++; break;
       case 'MISSED': counts.missed++; break;
       case 'PENDING': counts.pending++; break;
@@ -635,10 +645,12 @@ export const getCompanyTimeline = async (symbol, filters = {}) => {
       totalPromises: records.length,
       resolvedPromises: faith.resolvedCount,
       achieved: counts.achieved,
+      exceeded: counts.exceeded,
       partial: counts.partial,
       missed: counts.missed,
       pending: counts.pending,
       insufficientEvidence: counts.insufficientEvidence,
+      qualitativeOnly: counts.qualitativeOnly,
       scoreBreakdown: faith.breakdown,
       // Task 4: Faith Score coverage state -- managementFaithScore is the
       // canonical name for this score (see rule: never confuse it with

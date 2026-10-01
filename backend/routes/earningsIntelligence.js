@@ -12,6 +12,7 @@ import {
   getCompanyTimeline,
 } from '../services/ManagementPromiseService.js';
 import * as CuratedEarningsIntelligenceService from '../services/CuratedEarningsIntelligenceService.js';
+import { getPromisesVsActuals } from '../services/PromisesVsActualsService.js';
 import ManagementPromise from '../models/ManagementPromise.js';
 import CompanyHistoricalFact from '../models/CompanyHistoricalFact.js';
 import ReconciliationCheck, { OK_STATUSES as RECONCILIATION_OK_STATUSES } from '../models/ReconciliationCheck.js';
@@ -231,6 +232,32 @@ router.get('/:symbol/timeline', async (req, res, next) => {
       });
     }
     next(error);
+  }
+});
+
+/**
+ * GET /:symbol/promises-vs-actuals - every management target with its
+ * verified actual, a freshly recomputed outcome (MET / EXCEEDED / MISSED /
+ * PENDING / INSUFFICIENT_EVIDENCE / QUALITATIVE_ONLY), evidence links, and
+ * the Management Delivery and Financial / Execution scores kept separate.
+ * Read-only: never triggers live research and never rewrites stored records.
+ */
+router.get('/:symbol/promises-vs-actuals', async (req, res, next) => {
+  try {
+    const data = await getPromisesVsActuals(req.params.symbol);
+    if (!data) return res.status(404).json({ success: false, message: `Unsupported or unknown symbol: ${req.params.symbol}` });
+    return res.json({ success: true, data });
+  } catch (error) {
+    console.error('[Earnings Intelligence] /:symbol/promises-vs-actuals error:', error);
+    if (error.name === 'MongooseError' || error.name === 'MongoError') {
+      return res.status(503).json({
+        success: false,
+        state: 'DATABASE_ERROR',
+        error: 'Database connection failed',
+        data: null
+      });
+    }
+    return next(error);
   }
 });
 

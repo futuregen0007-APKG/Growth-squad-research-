@@ -30,7 +30,7 @@ import { extractPdfPages, findRelevantPages } from './FactExtractionService.js';
 import { Semaphore } from '../utils/semaphore.js';
 import { calculatePromiseStatus } from './ManagementPromiseService.js';
 import { searchActualOutcomesLocalFirst } from './OutcomeEvidenceService.js';
-import { validateCandidatePromiseRecord } from '../utils/earningsIntelligenceValidation.js';
+import { validateCandidatePromiseRecord, CANDIDATE_STATUS_MAP } from '../utils/earningsIntelligenceValidation.js';
 
 // ---------------------------------------------------------------------------
 // Path 1 (Phase 5C, pre-existing, restored verbatim) -- deterministic,
@@ -297,7 +297,7 @@ const CATEGORY_MAP = {
 const mapCategory = (metric) => CATEGORY_MAP[String(metric || '').toUpperCase()] || 'OTHER';
 const CANDIDATE_UNIT_MAP = { INR_CRORE: 'INR_CRORE', INR_LAKH: 'INR_LAKH', USD_MILLION: 'USD_MILLION', USD_BILLION: 'USD_BILLION', PERCENTAGE: 'PERCENT', COUNT: 'COUNT', OTHER: 'OTHER' };
 const CANDIDATE_OPERATOR_MAP = { GTE: 'AT_LEAST', LTE: 'AT_MOST', EQ: 'EXACT', RANGE: 'RANGE' };
-const CANDIDATE_STATUS_MAP = { FULFILLED: 'ACHIEVED', EXCEEDED: 'ACHIEVED', PARTIALLY_FULFILLED: 'PARTIAL', MISSED: 'MISSED', PENDING: 'PENDING', INSUFFICIENT_EVIDENCE: 'INSUFFICIENT_EVIDENCE' };
+// CANDIDATE_STATUS_MAP is imported from utils/earningsIntelligenceValidation.js (the one shared copy).
 
 const toIsoDateOnly = (value) => {
   if (!value) return null;
@@ -340,7 +340,7 @@ export const buildPromiseCandidate = async (extracted, context, sequence, { outc
         metric: extracted.metric, targetPeriod: extracted.targetPeriod, targetUnit: extracted.targetUnit, actualUnit: match.actualUnit,
       });
       const mappedStatus = CANDIDATE_STATUS_MAP[verification.status];
-      if (mappedStatus && mappedStatus !== 'PENDING' && mappedStatus !== 'INSUFFICIENT_EVIDENCE') {
+      if (mappedStatus && !['PENDING', 'INSUFFICIENT_EVIDENCE', 'QUALITATIVE_ONLY'].includes(mappedStatus)) {
         outcome = {
           status: mappedStatus, actualValue: match.actualValue, actualUnit: targetUnit,
           evaluationDate: toIsoDateOnly(match.outcomeSourceDate) || promiseDate,
@@ -374,6 +374,9 @@ export const buildPromiseCandidate = async (extracted, context, sequence, { outc
       targetPeriod: extracted.targetPeriod,
       targetType,
       targetValue: extracted.targetValue,
+      // Additive: RANGE upper bound (when extracted) and the precise metric, used by scripts/reevaluatePromises.js.
+      targetValueMax: typeof extracted.targetValueMax === 'number' ? extracted.targetValueMax : null,
+      metric: extracted.metric ? String(extracted.metric).toUpperCase() : null,
       targetUnit,
       operator,
     },

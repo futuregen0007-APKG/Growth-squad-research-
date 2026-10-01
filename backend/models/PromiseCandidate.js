@@ -49,9 +49,21 @@ const promiseCandidateSchema = new mongoose.Schema({
     targetValue: { type: Number, default: null },
     targetUnit: { type: String, default: null },
     operator: { type: String, required: true },
+    // Additive, optional (null on every pre-existing candidate):
+    // - targetValueMax: RANGE upper bound (targetValue is the low bound).
+    // - metric: the precise extracted metric (e.g. EBITDA_MARGIN), which the
+    //   coarse `category` cannot recover; used by scripts/reevaluatePromises.js.
+    // - revisesPromiseId: id of the earlier promise (same metric + target
+    //   period) this one revises -- see services/PromisesVsActualsService.js.
+    targetValueMax: { type: Number, default: null },
+    metric: { type: String, default: null },
+    revisesPromiseId: { type: String, default: null },
   },
 
   outcome: {
+    // Valid values: utils/earningsIntelligenceValidation.js OUTCOME_STATUSES
+    // (ACHIEVED, EXCEEDED, PARTIAL [read-only legacy], MISSED, PENDING,
+    // INSUFFICIENT_EVIDENCE, QUALITATIVE_ONLY).
     status: { type: String, required: true },
     actualValue: { type: Number, default: null },
     actualUnit: { type: String, default: null },
@@ -92,6 +104,25 @@ const promiseCandidateSchema = new mongoose.Schema({
   // generator; these two fields are null until a human acts on the record.
   reviewedBy: { type: String, default: null },
   reviewedAt: { type: Date, default: null },
+
+  // Additive audit trail written ONLY by scripts/reevaluatePromises.js. For a
+  // PENDING_REVIEW candidate the job also updates `outcome` directly (it is
+  // not public yet and a human still reviews it). For an ACCEPTED candidate a
+  // human decision is never overwritten: the freshly computed result is
+  // stored here as `proposedOutcome` for the reviewer, and `outcome` is left
+  // untouched.
+  reevaluation: {
+    type: new mongoose.Schema({
+      lastRunAt: { type: Date, default: null },
+      result: { type: String, default: null }, // canonical outcome (MET/EXCEEDED/MISSED/PENDING/INSUFFICIENT_EVIDENCE/QUALITATIVE_ONLY)
+      reason: { type: String, default: null },
+      appliedToOutcome: { type: Boolean, default: false },
+      proposedOutcome: { type: mongoose.Schema.Types.Mixed, default: null },
+      proposedOutcomeEvidence: { type: mongoose.Schema.Types.Mixed, default: null },
+      runId: { type: String, default: null },
+    }, { _id: false }),
+    default: null,
+  },
 }, { timestamps: true });
 
 // A generation run over the same source documents must never create a

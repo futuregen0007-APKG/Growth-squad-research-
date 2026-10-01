@@ -77,7 +77,16 @@ const managementPromiseSchema = new mongoose.Schema({
     promiseDate: { type: Date, required: true },
     direction: { type: String, enum: ['AT_LEAST', 'AT_MOST', 'RANGE', 'EXACT', 'GROWTH', 'OTHER', 'HIGHER_IS_BETTER', 'LOWER_IS_BETTER', 'TARGET_RANGE'], default: null },
     operator: { type: String, enum: ['GTE', 'LTE', 'EQ', 'RANGE'], default: null },
-    importance: { type: String, required: true, enum: ['HIGH', 'MEDIUM', 'LOW'], default: 'MEDIUM' }
+    importance: { type: String, required: true, enum: ['HIGH', 'MEDIUM', 'LOW'], default: 'MEDIUM' },
+    // Additive, optional (null on every pre-existing record):
+    // - targetValueMax: upper bound of a RANGE target; targetValue is then the
+    //   low bound. Without it a RANGE can only be judged MISSED-below-floor.
+    // - revisesPromiseId: id of an earlier promise for the same metric and
+    //   target period that this one revises. Both stay visible; only the
+    //   latest version counts toward the target-hit rate (see
+    //   services/PromisesVsActualsService.js).
+    targetValueMax: { type: Number, default: null },
+    revisesPromiseId: { type: String, default: null }
   },
   
   // Outcome details
@@ -108,7 +117,10 @@ const managementPromiseSchema = new mongoose.Schema({
   // Verification details
   verification: {
     achievementPercentage: { type: Number, default: null },
-    status: { type: String, enum: ['FULFILLED', 'EXCEEDED', 'PARTIALLY_FULFILLED', 'MISSED', 'PENDING', 'INSUFFICIENT_EVIDENCE', 'CONFLICTING_EVIDENCE'], default: 'INSUFFICIENT_EVIDENCE' },
+    // QUALITATIVE_ONLY added additively (a promise with no numeric target --
+    // never scored). PARTIALLY_FULFILLED is retained for reading old records
+    // only; calculatePromiseStatus no longer produces it.
+    status: { type: String, enum: ['FULFILLED', 'EXCEEDED', 'PARTIALLY_FULFILLED', 'MISSED', 'PENDING', 'INSUFFICIENT_EVIDENCE', 'CONFLICTING_EVIDENCE', 'QUALITATIVE_ONLY'], default: 'INSUFFICIENT_EVIDENCE' },
     calculationExplanation: { type: String, default: null },
     confidence: { type: Number, default: null, min: 0, max: 1 },
     // Additive Phase 10/11 fields — optional, backward compatible with
@@ -203,7 +215,7 @@ const managementPromiseSchema = new mongoose.Schema({
   actualSourceExcerpt: { type: String, default: null },
   achievementPercentage: { type: Number, default: null },
   calculationExplanation: { type: String, default: null },
-  status: { type: String, enum: ['FULFILLED', 'EXCEEDED', 'PARTIALLY_FULFILLED', 'MISSED', 'PENDING', 'INSUFFICIENT_EVIDENCE'], default: 'INSUFFICIENT_EVIDENCE' },
+  status: { type: String, enum: ['FULFILLED', 'EXCEEDED', 'PARTIALLY_FULFILLED', 'MISSED', 'PENDING', 'INSUFFICIENT_EVIDENCE', 'QUALITATIVE_ONLY'], default: 'INSUFFICIENT_EVIDENCE' },
   importance: { type: String, enum: ['HIGH', 'MEDIUM', 'LOW'], default: 'MEDIUM' },
   sourceType: { type: String, default: null },
   sourceTitle: { type: String, default: null },

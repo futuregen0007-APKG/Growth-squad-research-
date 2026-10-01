@@ -96,8 +96,10 @@ test('calculateCompanyExecutionScore weights components deterministically', () =
   assert.ok(typeof result.executionScore === 'number');
   assert.ok(result.executionScore >= 75);
   assert.equal(result.ratingLabel, 'Strong');
-  assert.equal(result.weightsUsed.financialDelivery, 30);
-  assert.equal(result.weightsUsed.guidanceAccuracy, 25);
+  // Guidance accuracy is reported separately and is no longer a weighted component.
+  assert.equal(result.weightsUsed.financialDelivery, 40);
+  assert.equal(result.weightsUsed.guidanceAccuracy, undefined);
+  assert.equal(typeof result.guidanceAccuracyScore, 'number');
 });
 
 test('calculateCompanyExecutionScore reweights proportionally when guidance is missing without penalizing company', () => {

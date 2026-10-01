@@ -41,7 +41,10 @@
           "type": ["string", "null"],
           "enum": ["PERCENT", "INR_CRORE", "INR_LAKH", "USD_MILLION", "USD_BILLION", "COUNT", null]
         },
-        "operator": { "type": "string", "enum": ["AT_LEAST", "AT_MOST", "EXACT", "RANGE", "QUALITATIVE"] }
+        "operator": { "type": "string", "enum": ["AT_LEAST", "AT_MOST", "EXACT", "RANGE", "QUALITATIVE"] },
+        "targetValueMax": { "type": ["number", "null"], "description": "Optional. Upper bound of a RANGE target (targetValue is the lower bound)." },
+        "metric": { "type": ["string", "null"], "description": "Optional. Precise extracted metric (e.g. EBITDA_MARGIN); category alone is coarser." },
+        "revisesPromiseId": { "type": ["string", "null"], "description": "Optional. Id of an earlier promise for the same metric and target period that this one revises." }
       }
     },
     "outcome": {
@@ -51,7 +54,8 @@
       "properties": {
         "status": {
           "type": "string",
-          "enum": ["ACHIEVED", "PARTIAL", "MISSED", "PENDING", "INSUFFICIENT_EVIDENCE"]
+          "enum": ["ACHIEVED", "EXCEEDED", "PARTIAL", "MISSED", "PENDING", "INSUFFICIENT_EVIDENCE", "QUALITATIVE_ONLY"],
+          "description": "PARTIAL is retained for reading existing records only; new comparable outcomes are ACHIEVED/EXCEEDED/MISSED by direct comparison (backend/utils/promiseOutcome.js)."
         },
         "actualValue": { "type": ["number", "null"] },
         "actualUnit": {

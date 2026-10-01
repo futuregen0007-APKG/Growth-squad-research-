@@ -45,19 +45,22 @@ test('Phase 5C rejects historical metrics and unquantified outlook', () => {
   assert.deepEqual(promises, []);
 });
 
-test('GTE operator fulfills values at or above the target', () => {
-  assert.equal(calculatePromiseStatus({ targetValue: 1, actualValue: 1.2, targetUnit: 'PERCENTAGE', operator: 'GTE' }).status, 'FULFILLED');
+test('GTE operator fulfills values at or above the target (and >=110% is EXCEEDED)', () => {
+  assert.equal(calculatePromiseStatus({ targetValue: 1, actualValue: 1.05, targetUnit: 'PERCENTAGE', operator: 'GTE' }).status, 'FULFILLED');
+  assert.equal(calculatePromiseStatus({ targetValue: 1, actualValue: 1.2, targetUnit: 'PERCENTAGE', operator: 'GTE' }).status, 'EXCEEDED');
   assert.equal(calculatePromiseStatus({ targetValue: 1, actualValue: 0.8, targetUnit: 'PERCENTAGE', operator: 'GTE' }).status, 'MISSED');
 });
 
-test('LTE operator fulfills values at or below the target', () => {
-  assert.equal(calculatePromiseStatus({ targetValue: 10, actualValue: 9, operator: 'LTE' }).status, 'FULFILLED');
+test('LTE operator fulfills values at or below the target (and <=90% of the ceiling is EXCEEDED)', () => {
+  assert.equal(calculatePromiseStatus({ targetValue: 10, actualValue: 9.5, operator: 'LTE' }).status, 'FULFILLED');
+  assert.equal(calculatePromiseStatus({ targetValue: 10, actualValue: 9, operator: 'LTE' }).status, 'EXCEEDED');
   assert.equal(calculatePromiseStatus({ targetValue: 10, actualValue: 11, operator: 'LTE' }).status, 'MISSED');
 });
 
-test('EQ operator requires exact equality', () => {
+test('EQ operator requires equality within the documented 0.5% rounding tolerance', () => {
   assert.equal(calculatePromiseStatus({ targetValue: 10, actualValue: 10, operator: 'EQ' }).status, 'FULFILLED');
-  assert.equal(calculatePromiseStatus({ targetValue: 10, actualValue: 10.01, operator: 'EQ' }).status, 'MISSED');
+  assert.equal(calculatePromiseStatus({ targetValue: 10, actualValue: 10.01, operator: 'EQ' }).status, 'FULFILLED');
+  assert.equal(calculatePromiseStatus({ targetValue: 10, actualValue: 10.1, operator: 'EQ' }).status, 'MISSED');
 });
 
 test('schema accepts employee percentage metrics and evidence pages', () => {
@@ -126,10 +129,11 @@ test('importance defaults to MEDIUM when extraction provides none', () => {
   assert.equal(promise.validateSync(), undefined);
 });
 
-test('quantitative promise status uses metric thresholds', () => {
+test('quantitative promise status is a direct comparison, never a percentage band', () => {
   assert.equal(calculatePromiseStatus({ targetValue: 20, actualValue: 21, metricType: 'REVENUE_GROWTH' }).status, 'FULFILLED');
-  assert.equal(calculatePromiseStatus({ targetValue: 20, actualValue: 18, metricType: 'REVENUE_GROWTH' }).status, 'FULFILLED');
-  assert.equal(calculatePromiseStatus({ targetValue: 20, actualValue: 15, metricType: 'REVENUE_GROWTH' }).status, 'PARTIALLY_FULFILLED');
+  // 90% and 75% of a floor used to read FULFILLED / PARTIALLY_FULFILLED; both are misses of the stated target.
+  assert.equal(calculatePromiseStatus({ targetValue: 20, actualValue: 18, metricType: 'REVENUE_GROWTH' }).status, 'MISSED');
+  assert.equal(calculatePromiseStatus({ targetValue: 20, actualValue: 15, metricType: 'REVENUE_GROWTH' }).status, 'MISSED');
   assert.equal(calculatePromiseStatus({ targetValue: 20, actualValue: 6, metricType: 'REVENUE_GROWTH' }).status, 'MISSED');
 });
 
@@ -156,9 +160,9 @@ test('debt metrics use lower-is-better comparison', () => {
 });
 
 test('debt reduction target exceeding expectation calculates properly', () => {
-  // Target: reduce debt to 500 Cr, Actual debt reduced to 300 Cr (target 500 / actual 300 * 100 = 166.67%)
+  // Target: reduce debt to 500 Cr, Actual debt reduced to 300 Cr (target 500 / actual 300 * 100 = 166.67%) -- well under 90% of the ceiling.
   const result = calculatePromiseStatus({ targetValue: 500, actualValue: 300, direction: 'LOWER_IS_BETTER' });
-  assert.equal(result.status, 'FULFILLED');
+  assert.equal(result.status, 'EXCEEDED');
   assert.ok(result.achievementPercentage >= 100);
 });
 
@@ -195,7 +199,8 @@ test('future target periods are marked as PENDING when actual value is not yet a
     targetValue: 1000,
     actualValue: null,
     targetPeriod: 'FY2026',
-    metric: 'ORDER_BOOK'
+    metric: 'ORDER_BOOK',
+    asOf: new Date('2026-01-15T00:00:00Z'), // FY2026 (Apr 2025 - Mar 2026) still open
   });
   assert.equal(result.status, 'PENDING');
   assert.equal(result.achievementPercentage, null);

@@ -16,7 +16,8 @@ import {
 } from './ExecutionScoreService.js';
 import openai from './openaiClient.js';
 import { logger } from '../utils/logger.js';
-import { periodsMatch, normalizeFinancialValue, financialUnitFamily } from '../utils/financialNormalization.js';
+import { periodsMatch, normalizeFinancialValue } from '../utils/financialNormalization.js';
+import { evaluatePromiseOutcome, toLegacyVerificationStatus } from '../utils/promiseOutcome.js';
 import { PUBLIC_SAFE_EVIDENCE_QUERY } from '../utils/earningsIntelligenceValidation.js';
 import { searchActualOutcomesFromIndianApi } from './OutcomeEvidenceService.js';
 import { getCompanyResearchBundle } from './CompanyResearchService.js';
@@ -85,136 +86,70 @@ export { periodsMatch, normalizeFinancialValue };
 
 /**
  * Deterministic Promise Verification Algorithm
- * Compares target value against actual value based on direction and metric.
+ * =============================================
+ * Thin, backward-compatible wrapper over utils/promiseOutcome.js's
+ * evaluatePromiseOutcome -- the ONE rule set for "was this target met".
+ *
+ * The pre-fix version fell back to percentage bands whenever a promise had
+ * no explicit operator (>=110% EXCEEDED, >=90% FULFILLED, >=60%
+ * PARTIALLY_FULFILLED), which reported explicit sub-target results as
+ * non-misses (live example: TCS "at least 26% margin" vs actual 25%). The
+ * comparison is now always direct and binary per comparison type (MINIMUM /
+ * MAXIMUM / EXACT / RANGE); see promiseOutcome.js for the full rules,
+ * tolerances, and the like-for-like evidence checks that yield
+ * INSUFFICIENT_EVIDENCE instead of a forced comparison.
+ *
+ * Returns the legacy shape ({ achievementPercentage, status,
+ * calculationExplanation }) where `status` uses the existing
+ * ManagementPromise.verification.status literals (MET -> FULFILLED), plus the
+ * canonical `outcome` and the extra detail fields. PARTIALLY_FULFILLED is
+ * never produced any more; it stays in the enum only so old records still read.
  */
-export const calculatePromiseStatus = ({ 
-  targetValue, 
-  actualValue, 
+export const calculatePromiseStatus = ({
+  targetValue,
+  targetValueMax = null,
+  actualValue,
   operator = null,
-  direction = null, 
-  metric = '', 
+  direction = null,
+  metric = '',
   metricType = '',
+  targetType = null,
   targetPeriod = '',
+  actualPeriod = null,
   targetUnit = 'INR_CRORE',
   actualUnit = targetUnit,
+  targetBasis = {},
+  actualBasis = {},
+  asOf = new Date(),
+  evidenceUnavailableReason = null,
 }) => {
-  const normMetric = String(metric || metricType || '').toUpperCase().trim();
-  
-  // Infer direction if not explicitly given
-  let resolvedDirection = direction;
-  if (!resolvedDirection) {
-    if (normMetric === 'DEBT' || normMetric === 'DEBT_REDUCTION' || normMetric.includes('COST')) {
-      resolvedDirection = 'LOWER_IS_BETTER';
-    } else {
-      resolvedDirection = 'HIGHER_IS_BETTER';
-    }
-  }
-
-  // If actualValue is not provided or targetValue is invalid
-  if (actualValue === null || actualValue === undefined || !Number.isFinite(Number(actualValue))) {
-    // Check if targetPeriod is in future / ongoing
-    const isFutureOrOngoing = targetPeriod && (
-      targetPeriod === 'GOING_FORWARD' ||
-      targetPeriod.includes('2026') || 
-      targetPeriod.includes('2027') || 
-      targetPeriod.includes('FY26') || 
-      targetPeriod.includes('FY27')
-    );
-
-    if (isFutureOrOngoing) {
-      return {
-        achievementPercentage: null,
-        status: 'PENDING',
-        calculationExplanation: `Target period (${targetPeriod}) is ongoing or in the future. Outcome is pending official reporting.`
-      };
-    }
-
-    return { 
-      achievementPercentage: null, 
-      status: 'INSUFFICIENT_EVIDENCE', 
-      calculationExplanation: 'Cannot calculate achievement: verified actual outcome value is not available in public records.' 
-    };
-  }
-
-  if (!Number.isFinite(Number(targetValue)) || Number(targetValue) === 0) {
-    return {
-      achievementPercentage: null,
-      status: 'INSUFFICIENT_EVIDENCE',
-      calculationExplanation: 'Cannot calculate achievement: target value is invalid or zero.'
-    };
-  }
-
-  const normalizedTarget = normalizeFinancialValue(targetValue, targetUnit);
-  const normalizedActual = normalizeFinancialValue(actualValue, actualUnit);
-  if (normalizedTarget === null || normalizedActual === null
-    || financialUnitFamily(targetUnit) !== financialUnitFamily(actualUnit)) {
-    return { achievementPercentage: null, status: 'INSUFFICIENT_EVIDENCE', calculationExplanation: 'Cannot calculate achievement: financial values could not be normalized.' };
-  }
-
-  const target = normalizedTarget;
-  const actual = normalizedActual;
-  let achievementPercentage;
-  let calculationExplanation;
-  const comparisonDirection = operator === 'RANGE' ? 'TARGET_RANGE' : resolvedDirection;
-
-  if (operator === 'GTE') {
-    achievementPercentage = Number(((actual / target) * 100).toFixed(2));
-    calculationExplanation = `Target: ${target}, Actual: ${actual}. Operator: GTE. Achievement = (${actual} / ${target}) x 100 = ${achievementPercentage}%.`;
-    return {
-      achievementPercentage,
-      status: actual >= target ? 'FULFILLED' : 'MISSED',
-      calculationExplanation
-    };
-  }
-
-  if (operator === 'LTE') {
-    achievementPercentage = actual === 0 ? 100 : Number(((target / actual) * 100).toFixed(2));
-    calculationExplanation = `Target: ${target}, Actual: ${actual}. Operator: LTE.`;
-    return {
-      achievementPercentage,
-      status: actual <= target ? 'FULFILLED' : 'MISSED',
-      calculationExplanation
-    };
-  }
-
-  if (operator === 'EQ') {
-    achievementPercentage = target === actual ? 100 : Number(((actual / target) * 100).toFixed(2));
-    calculationExplanation = `Target: ${target}, Actual: ${actual}. Operator: EQ.`;
-    return {
-      achievementPercentage,
-      status: actual === target ? 'FULFILLED' : 'MISSED',
-      calculationExplanation
-    };
-  }
-
-  // Deterministic calculation based on direction
-  if (comparisonDirection === 'HIGHER_IS_BETTER') {
-    achievementPercentage = Number(((actual / target) * 100).toFixed(2));
-    calculationExplanation = `Target: ${target}, Actual: ${actual}. Direction: HIGHER_IS_BETTER. Achievement = (${actual} / ${target}) × 100 = ${achievementPercentage}%.`;
-  } else if (comparisonDirection === 'LOWER_IS_BETTER') {
-    achievementPercentage = Number(((target / actual) * 100).toFixed(2));
-    calculationExplanation = `Target: ${target}, Actual: ${actual}. Direction: lower-is-better comparison. Achievement = (${target} / ${actual}) × 100 = ${achievementPercentage}%.`;
-  } else if (comparisonDirection === 'TARGET_RANGE') {
-    achievementPercentage = Number(((actual / target) * 100).toFixed(2));
-    calculationExplanation = `Target: ${target}, Actual: ${actual}. Direction: TARGET_RANGE. Achievement = ${achievementPercentage}%.`;
-  } else {
-    achievementPercentage = Number(((actual / target) * 100).toFixed(2));
-    calculationExplanation = `Target: ${target}, Actual: ${actual}. Achievement = (${actual} / ${target}) × 100 = ${achievementPercentage}%.`;
-  }
-
-  // Deterministic status thresholds
-  let status;
-  if (achievementPercentage >= 110 && comparisonDirection === 'HIGHER_IS_BETTER') {
-    status = 'EXCEEDED';
-  } else if (achievementPercentage >= 90) {
-    status = 'FULFILLED';
-  } else if (achievementPercentage >= 60) {
-    status = 'PARTIALLY_FULFILLED';
-  } else {
-    status = 'MISSED';
-  }
-
-  return { achievementPercentage, status, calculationExplanation };
+  const result = evaluatePromiseOutcome({
+    targetValue,
+    targetValueMax,
+    targetUnit,
+    actualValue,
+    actualUnit,
+    operator,
+    direction,
+    metric: metric || metricType,
+    targetType,
+    targetPeriod,
+    actualPeriod,
+    targetBasis,
+    actualBasis,
+    asOf,
+    evidenceUnavailableReason,
+  });
+  return {
+    achievementPercentage: result.achievementPercentage,
+    status: toLegacyVerificationStatus(result.outcome),
+    outcome: result.outcome,
+    comparisonType: result.comparisonType,
+    achievementReason: result.achievementReason,
+    shortfall: result.shortfall,
+    reason: result.reason,
+    calculationExplanation: result.calculationExplanation,
+  };
 };
 
 /**
@@ -1492,6 +1427,9 @@ export const getCompanySummary = async (symbol, { annualFinancials = null } = {}
     financialDataStatus: annualFinancials ? { ...annualFinancials, facts: undefined } : { provider: 'STORED_FILINGS' },
     financialIntelligence,
     guidanceSuccessRate: executionScoreResult.guidanceSuccessRate,
+    guidanceAccuracyScore: executionScoreResult.guidanceAccuracyScore ?? null,
+    targetHitRate: executionScoreResult.targetHitRate ?? null,
+    executionScoreMethodology: executionScoreResult.methodology ?? null,
     confidence: confidence.level,
     confidenceReason: annualFinancials && executionScoreResult.financialSnapshot.quality.historicalExcludedFactsCount > 0 ? 'Legacy financial extracts failed annual selection checks; historical research needs review. Upstox financial coverage is reported separately.' : confidence.reason,
     coverage: coverageYears,
@@ -1612,6 +1550,18 @@ export const getCompanyReport = async (symbol) => {
     : computeFaithScoreCoverage([], { coverageStatus: 'RESEARCH_PENDING', researchFailed });
   const managementFaithScore = curatedTimeline?.summary.managementFaithScore ?? null;
 
+  // Management Guidance tab badge count. The tab BODY renders GET
+  // /:symbol/timeline, which serves the curated dataset whenever it is
+  // CURATED_VERIFIED and only falls back to the legacy live-research
+  // collection otherwise -- so the badge must count from that SAME source,
+  // in that SAME order. (Previously the badge used `promises.length` -- the
+  // legacy, evidence-integrity-filtered ManagementPromise query, almost
+  // always empty -- so it read "(0)" while the tab itself listed real
+  // curated promises.)
+  const curatedIsSource = curatedTimeline?.dataMode === 'CURATED_VERIFIED';
+  const guidanceCount = curatedIsSource ? (curatedTimeline.summary.promisesTotal ?? curatedTimeline.timeline?.length ?? 0) : promises.length;
+  const guidanceCountSource = curatedIsSource ? 'CURATED' : 'LEGACY';
+
   return {
     company: {
       symbol: normalized,
@@ -1626,6 +1576,8 @@ export const getCompanyReport = async (symbol) => {
     managementFaithScore,
     ratingLabel: summary.ratingLabel,
     guidanceSuccessRate: summary.guidanceSuccessRate,
+    guidanceAccuracyScore: summary.guidanceAccuracyScore,
+    executionScoreMethodology: summary.executionScoreMethodology,
     scoreBreakdown: summary.scoreBreakdown,
     weightsUsed: summary.weightsUsed,
     scoreMissingReasons: summary.scoreMissingReasons,
@@ -1644,6 +1596,8 @@ export const getCompanyReport = async (symbol) => {
     // in place of the two specific counts.
     financialFactsCount: facts.length,
     promisesCount: promises.length,
+    guidanceCount,
+    guidanceCountSource,
     totalEvidenceItems: facts.length + promises.length,
     coverage: summary.coverage,
     // Never label a partial window as the full 5-year snapshot: completedYears

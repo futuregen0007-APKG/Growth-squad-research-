@@ -34,7 +34,7 @@ import { collectDocuments } from '../research/DocumentResearchService.js';
 import { getCompanyResearchProfile } from '../research/CompanyResearchProfiles.js';
 import { extractPromisesFromSources, calculatePromiseStatus } from './ManagementPromiseService.js';
 import { searchActualOutcomesLocalFirst } from './OutcomeEvidenceService.js';
-import { validateCandidatePromiseRecord } from '../utils/earningsIntelligenceValidation.js';
+import { validateCandidatePromiseRecord, CANDIDATE_STATUS_MAP } from '../utils/earningsIntelligenceValidation.js';
 import { SUPPORTED_STOCKS } from '../utils/constants.js';
 import PromiseCandidate from '../models/PromiseCandidate.js';
 
@@ -62,7 +62,8 @@ const mapCategory = (legacyMetric) => CATEGORY_MAP[String(legacyMetric || '').to
 
 const UNIT_MAP = { INR_CRORE: 'INR_CRORE', INR_LAKH: 'INR_LAKH', USD_MILLION: 'USD_MILLION', USD_BILLION: 'USD_BILLION', PERCENTAGE: 'PERCENT', COUNT: 'COUNT' };
 const OPERATOR_MAP = { GTE: 'AT_LEAST', LTE: 'AT_MOST', EQ: 'EXACT', RANGE: 'RANGE' };
-const STATUS_MAP = { FULFILLED: 'ACHIEVED', EXCEEDED: 'ACHIEVED', PARTIALLY_FULFILLED: 'PARTIAL', MISSED: 'MISSED', PENDING: 'PENDING', INSUFFICIENT_EVIDENCE: 'INSUFFICIENT_EVIDENCE' };
+// Legacy -> curated outcome status: the one shared map (EXCEEDED kept distinct).
+const STATUS_MAP = CANDIDATE_STATUS_MAP;
 
 // DocumentResearchService.DOCUMENT_TYPES -> curated EVIDENCE_SOURCE_TYPES.
 // Tier 3/4-only types (FINANCIAL_PUBLICATION, MANAGEMENT_INTERVIEW,
@@ -151,7 +152,7 @@ const buildCandidateRecord = async (symbol, profile, extracted, tier12Docs, sequ
       });
 
       const mappedStatus = STATUS_MAP[verification.status];
-      if (mappedStatus && mappedStatus !== 'PENDING' && mappedStatus !== 'INSUFFICIENT_EVIDENCE') {
+      if (mappedStatus && !['PENDING', 'INSUFFICIENT_EVIDENCE', 'QUALITATIVE_ONLY'].includes(mappedStatus)) {
         outcome = {
           status: mappedStatus,
           actualValue: match.actualValue,
@@ -187,6 +188,11 @@ const buildCandidateRecord = async (symbol, profile, extracted, tier12Docs, sequ
       targetPeriod,
       targetType,
       targetValue: extracted.targetValue,
+      // Additive: the RANGE upper bound when the extraction gave one, and the
+      // precise extracted metric (category alone is too coarse for a later
+      // outcome re-evaluation -- see scripts/reevaluatePromises.js).
+      targetValueMax: typeof extracted.targetValueMax === 'number' ? extracted.targetValueMax : null,
+      metric: extracted.metric ? String(extracted.metric).toUpperCase() : null,
       targetUnit,
       operator,
     },

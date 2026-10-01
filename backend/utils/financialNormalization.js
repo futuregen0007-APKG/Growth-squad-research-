@@ -17,8 +17,11 @@ export const periodsMatch = (targetPeriod, actualPeriod) => {
   return normalizePeriod(targetPeriod) === normalizePeriod(actualPeriod);
 };
 
+// Base unit: INR crore. 1 crore = 100 lakh, so 1 lakh = 0.01 crore (this was
+// 0.1 -- a 10x error for any lakh-denominated value; utils/
+// earningsIntelligenceValidation.js already used the correct 0.01).
 const UNIT_MULTIPLIERS = {
-  INR_LAKH: 0.1,
+  INR_LAKH: 0.01,
   INR_CRORE: 1,
   INR_MILLION: 0.1,
   INR_BILLION: 100,

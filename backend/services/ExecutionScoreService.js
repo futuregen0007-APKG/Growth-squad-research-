@@ -5,6 +5,7 @@
 
 import { logger } from '../utils/logger.js';
 import { selectAnnualFacts } from './AnnualFinancialEvidence.js';
+import { resolveRecordOutcome } from '../utils/promiseOutcome.js';
 
 /**
  * Exact Mathematical Compound Annual Growth Rate (CAGR)
@@ -361,7 +362,7 @@ export const calculateGuidanceAccuracyScore = (promises = []) => {
 
     let achievement = p.verification?.achievementPercentage ?? p.achievementPercentage;
     if (achievement === null || achievement === undefined) {
-      if (status === 'FULFILLED') achievement = 100;
+      if (status === 'FULFILLED' || status === 'EXCEEDED') achievement = 100;
       else if (status === 'PARTIALLY_FULFILLED') achievement = 60;
       else achievement = 0;
     }
@@ -376,26 +377,54 @@ export const calculateGuidanceAccuracyScore = (promises = []) => {
 };
 
 /**
- * Guidance Success Percentage (0-100)
+ * calculateTargetHitRate - THE one authoritative "target-hit rate" in this
+ * codebase (Management Delivery). A transparent, unweighted ratio:
+ *
+ *   targetHitRate = (MET + EXCEEDED) / (MET + EXCEEDED + MISSED) * 100
+ *
+ * Only completed, evaluable targets are in the denominator: PENDING,
+ * INSUFFICIENT_EVIDENCE and QUALITATIVE_ONLY are excluded from BOTH sides and
+ * reported as separate counts. null (never 0) when nothing is evaluable. No
+ * confidence weighting (that is the curated Faith Score's job) and no
+ * percentage banding (a 95%-of-floor result is a miss, full stop).
+ *
+ * Each input is a stored promise record (any status vocabulary; its outcome
+ * is RECOMPUTED from the stored target/actual when both are numeric -- see
+ * utils/promiseOutcome.js resolveRecordOutcome), a record already carrying a
+ * `canonicalOutcome`, or a bare outcome string.
+ *
+ * Replaces the earlier calculateGuidanceSuccessRate body, which scored
+ * PARTIALLY_FULFILLED as 60% "success" and -- because EXCEEDED fell into its
+ * `else` branch -- scored an exceeded promise as 0%.
  */
-export const calculateGuidanceSuccessRate = (promises = []) => {
-  const verified = promises.filter(p => {
-    const status = p.verification?.status || p.status;
-    return status && status !== 'PENDING';
-  });
-
-  if (verified.length === 0) return null;
-
-  let totalSuccess = 0;
-  verified.forEach(p => {
-    const status = p.verification?.status || p.status;
-    if (status === 'FULFILLED') totalSuccess += 100;
-    else if (status === 'PARTIALLY_FULFILLED') totalSuccess += 60;
-    else totalSuccess += 0;
-  });
-
-  return Math.round(totalSuccess / verified.length);
+export const calculateTargetHitRate = (records = [], { asOf = new Date() } = {}) => {
+  const counts = { met: 0, exceeded: 0, missed: 0, pending: 0, insufficientEvidence: 0, qualitativeOnly: 0, unclassified: 0 };
+  for (const record of records) {
+    const { outcome } = resolveRecordOutcome(record, { asOf });
+    if (outcome === 'MET') counts.met += 1;
+    else if (outcome === 'EXCEEDED') counts.exceeded += 1;
+    else if (outcome === 'MISSED') counts.missed += 1;
+    else if (outcome === 'PENDING') counts.pending += 1;
+    else if (outcome === 'INSUFFICIENT_EVIDENCE') counts.insufficientEvidence += 1;
+    else if (outcome === 'QUALITATIVE_ONLY') counts.qualitativeOnly += 1;
+    else counts.unclassified += 1;
+  }
+  const hits = counts.met + counts.exceeded;
+  const completed = hits + counts.missed;
+  return {
+    targetHitRate: completed > 0 ? Number(((hits / completed) * 100).toFixed(1)) : null,
+    hits,
+    completed,
+    ...counts,
+  };
 };
+
+/**
+ * Guidance Success Percentage -- kept as a backward-compatible name for the
+ * SAME number as calculateTargetHitRate().targetHitRate (not a second,
+ * divergent formula).
+ */
+export const calculateGuidanceSuccessRate = (promises = [], options = {}) => calculateTargetHitRate(promises, options).targetHitRate;
 
 /**
  * 3. Strategic Execution Score (20%)
@@ -461,6 +490,25 @@ export const calculateCapitalAllocationScore = (snapshot, facts = []) => {
 };
 
 /**
+ * Base weights of the Financial / Execution score. Guidance accuracy is NOT a
+ * component: management's delivery against its own targets is reported
+ * separately (target-hit rate + curated Faith Score -- the "Management
+ * Delivery" score), so this score measures financial and operating
+ * execution only. These are the weights this function already used whenever
+ * guidance data was absent (40/25/20/15), so a company with no guidance sees
+ * no change; a component that is null is still dropped and its weight
+ * redistributed proportionally across the rest (see below).
+ */
+export const EXECUTION_SCORE_BASE_WEIGHTS = Object.freeze({
+  financialDelivery: 40,
+  strategicExecution: 25,
+  operationalDelivery: 20,
+  capitalAllocation: 15,
+});
+
+export const EXECUTION_SCORE_METHODOLOGY = 'Financial / Execution Score: weighted average of financial delivery (revenue/PAT growth, margin, debt trend), strategic execution, operational delivery and capital allocation, from verified annual financials and historical facts. Components without verified inputs are excluded and their weight redistributed. It does NOT include guidance-delivery accuracy -- see the Management Delivery Score (target-hit rate and Faith Score), which is reported separately.';
+
+/**
  * Overall Deterministic Company Execution Score (0-100)
  */
 export const calculateCompanyExecutionScore = ({ facts = [], promises = [], profile = {}, financialFacts = null }) => {
@@ -477,6 +525,13 @@ export const calculateCompanyExecutionScore = ({ facts = [], promises = [], prof
   const { selected } = selectAnnualFacts(facts);
   facts = facts.filter(f => f.metrics?.actualValue == null || !f.metrics?.metric).concat(selected);
 
+  // Management-delivery figures: computed and returned on their own, never
+  // blended into executionScore, and independent of whether the financial
+  // history below is sufficient.
+  const guidanceScore = calculateGuidanceAccuracyScore(promises);
+  const targetHitRate = calculateTargetHitRate(promises);
+  const guidanceSuccessRate = targetHitRate.targetHitRate;
+
   // Insufficient verified history threshold:
   // Must have at least 3 verified facts and multi-year financial history
   if (facts.length < 3 || financialSnapshot.annualSeries.length < 2 || (financialSnapshot.revenueCagr === null && financialSnapshot.patCagr === null && financialSnapshot.ebitdaCagr === null)) {
@@ -486,61 +541,35 @@ export const calculateCompanyExecutionScore = ({ facts = [], promises = [], prof
       isInsufficient: true,
       scoreBreakdown: {
         financialDelivery: null,
-        guidanceAccuracy: null,
+        guidanceAccuracy: guidanceScore,
         strategicExecution: null,
         operationalDelivery: null,
         capitalAllocation: null
       },
       weightsUsed: {},
       scoreMissingReasons: { financialDelivery: 'Insufficient verified comparable annual history to calculate a score.' },
+      methodology: EXECUTION_SCORE_METHODOLOGY,
       financialSnapshot,
-      guidanceSuccessRate: null
+      guidanceAccuracyScore: guidanceScore,
+      guidanceSuccessRate,
+      targetHitRate
     };
   }
 
   const financialScore = calculateFinancialDeliveryScore(financialSnapshot);
-  const guidanceScore = calculateGuidanceAccuracyScore(promises);
-  const guidanceSuccessRate = calculateGuidanceSuccessRate(promises);
   const strategicScore = financialFacts !== null && !facts.some(f => ['STRATEGY', 'EXPANSION', 'ACQUISITION', 'CONTRACT', 'PRODUCT'].includes(f.category)) ? null : calculateStrategicExecutionScore(facts);
   const operationalScore = financialFacts !== null && !facts.some(f => ['OPERATIONAL_PERFORMANCE', 'ORDER_BOOK', 'FINANCIAL_PERFORMANCE'].includes(f.category)) ? null : calculateOperationalDeliveryScore(facts);
   const capitalScore = financialFacts !== null && financialSnapshot.debtChangePercent === null && financialSnapshot.debtTrend !== 'Zero Debt' ? null : calculateCapitalAllocationScore(financialSnapshot, facts);
 
-  let overallScore;
-  let weightsUsed = {};
-
-  if (guidanceScore !== null) {
-    overallScore = (
-      financialScore * 0.30 +
-      guidanceScore * 0.25 +
-      strategicScore * 0.20 +
-      operationalScore * 0.15 +
-      capitalScore * 0.10
-    );
-    weightsUsed = {
-      financialDelivery: 30,
-      guidanceAccuracy: 25,
-      strategicExecution: 20,
-      operationalDelivery: 15,
-      capitalAllocation: 10
-    };
-  } else {
-    overallScore = (
-      financialScore * 0.40 +
-      strategicScore * 0.25 +
-      operationalScore * 0.20 +
-      capitalScore * 0.15
-    );
-    weightsUsed = {
-      financialDelivery: 40,
-      guidanceAccuracy: 0,
-      strategicExecution: 25,
-      operationalDelivery: 20,
-      capitalAllocation: 15
-    };
-  }
+  // guidanceAccuracy is deliberately absent from the weighting (see
+  // EXECUTION_SCORE_BASE_WEIGHTS): it is always treated as excluded, exactly
+  // like a null component, so its former 25% share is spread across the
+  // financial/operating components instead.
+  let weightsUsed = { ...EXECUTION_SCORE_BASE_WEIGHTS };
+  const components = { financialDelivery: financialScore, strategicExecution: strategicScore, operationalDelivery: operationalScore, capitalAllocation: capitalScore };
+  let overallScore = Object.entries(weightsUsed).reduce((sum, [key, weight]) => sum + (components[key] ?? 0) * weight / 100, 0);
 
   if (financialFacts !== null) {
-    const components = { financialDelivery: financialScore, guidanceAccuracy: guidanceScore, strategicExecution: strategicScore, operationalDelivery: operationalScore, capitalAllocation: capitalScore };
     const availableWeight = Object.entries(weightsUsed).reduce((sum, [key, weight]) => sum + (components[key] !== null ? weight : 0), 0);
     const baseWeights = { ...weightsUsed };
     weightsUsed = Object.fromEntries(Object.entries(baseWeights).map(([key, weight]) => [key, components[key] !== null ? Number((weight / availableWeight * 100).toFixed(2)) : 0]));
@@ -555,6 +584,9 @@ export const calculateCompanyExecutionScore = ({ facts = [], promises = [], prof
     ratingLabel,
     isInsufficient: false,
     guidanceSuccessRate,
+    targetHitRate,
+    // Reported for reference only -- NOT a component of executionScore.
+    guidanceAccuracyScore: guidanceScore,
     scoreBreakdown: {
       financialDelivery: financialScore,
       guidanceAccuracy: guidanceScore,
@@ -563,7 +595,8 @@ export const calculateCompanyExecutionScore = ({ facts = [], promises = [], prof
       capitalAllocation: capitalScore
     },
     weightsUsed,
-    scoreMissingReasons: Object.fromEntries(Object.entries({ financialDelivery: financialScore === null ? 'Insufficient comparable annual financial history.' : null, guidanceAccuracy: guidanceScore === null ? 'No verified guidance outcomes.' : null, strategicExecution: strategicScore === null ? 'No verified strategy or expansion evidence.' : null, operationalDelivery: operationalScore === null ? 'No verified operational delivery evidence.' : null, capitalAllocation: capitalScore === null ? 'No verified comparable debt or capital-allocation inputs.' : null }).filter(([, reason]) => reason)),
+    methodology: EXECUTION_SCORE_METHODOLOGY,
+    scoreMissingReasons: Object.fromEntries(Object.entries({ financialDelivery: financialScore === null ? 'Insufficient comparable annual financial history.' : null, strategicExecution: strategicScore === null ? 'No verified strategy or expansion evidence.' : null, operationalDelivery: operationalScore === null ? 'No verified operational delivery evidence.' : null, capitalAllocation: capitalScore === null ? 'No verified comparable debt or capital-allocation inputs.' : null }).filter(([, reason]) => reason)),
     financialSnapshot
   };
 };
@@ -615,9 +648,12 @@ export default {
   calculateFinancialDeliveryScore,
   calculateGuidanceAccuracyScore,
   calculateGuidanceSuccessRate,
+  calculateTargetHitRate,
   calculateStrategicExecutionScore,
   calculateOperationalDeliveryScore,
   calculateCapitalAllocationScore,
   calculateCompanyExecutionScore,
-  calculateConfidence
+  calculateConfidence,
+  EXECUTION_SCORE_BASE_WEIGHTS,
+  EXECUTION_SCORE_METHODOLOGY
 };

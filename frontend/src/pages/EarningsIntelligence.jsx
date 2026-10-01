@@ -26,7 +26,8 @@ import {
   Award,
   AlertOctagon,
   ShieldCheck,
-  Calculator
+  Calculator,
+  Target
 } from 'lucide-react';
 
 /**
@@ -618,6 +619,8 @@ function CuratedPromiseEntryCard({ entry }) {
 
   const statusStyles = {
     ACHIEVED: { icon: CheckCircle2, cls: 'border-emerald-500 text-emerald-300 bg-emerald-950/50' },
+    EXCEEDED: { icon: TrendingUp, cls: 'border-emerald-400 text-emerald-200 bg-emerald-900/50' },
+    QUALITATIVE_ONLY: { icon: FileText, cls: 'border-blue-700 text-blue-300 bg-blue-950/40' },
     PARTIAL: { icon: AlertTriangle, cls: 'border-amber-500 text-amber-300 bg-amber-950/50' },
     MISSED: { icon: XCircle, cls: 'border-rose-500 text-rose-300 bg-rose-950/50' },
     PENDING: { icon: Clock3, cls: 'border-amber-600 text-amber-300 bg-amber-950/50' },
@@ -855,7 +858,7 @@ function CuratedFaithScorePanel({ curated }) {
           <div className="flex items-center gap-2 text-gs-gold font-bold uppercase tracking-wider text-[11px]">
             <Calculator className="w-4 h-4" /> Faith Score Calculation Breakdown
           </div>
-          <div className="text-[10px] text-gs-textDim">weightedResult = statusValue (Achieved=1.0, Partial=0.5, Missed=0.0) × evidenceConfidence</div>
+          <div className="text-[10px] text-gs-textDim">weightedResult = statusValue (Achieved/Exceeded=1.0, Partial=0.5, Missed=0.0) × evidenceConfidence</div>
           <div className="overflow-x-auto">
             <table className="w-full text-[11px] text-left mt-1">
               <thead>
@@ -1074,6 +1077,393 @@ function PromiseRow({ promise }) {
 /**
  * Detailed Company Historical Intelligence Report Page
  */
+/**
+ * Promises vs Actuals (GET /api/earnings-intelligence/:symbol/promises-vs-actuals).
+ * Every outcome shown is recomputed by the backend from the stored target and
+ * actual with the current rules: an achievement percentage is ALWAYS shown
+ * with its outcome label next to it, so "80%" can never read as "succeeded".
+ */
+const PVA_OUTCOME_LABELS = {
+  MET: 'Met',
+  EXCEEDED: 'Exceeded',
+  MISSED: 'Missed',
+  PENDING: 'Pending',
+  INSUFFICIENT_EVIDENCE: 'Insufficient evidence',
+  QUALITATIVE_ONLY: 'Qualitative only',
+};
+const PVA_OUTCOME_STYLES = {
+  MET: { icon: CheckCircle2, cls: 'border-emerald-500 text-emerald-300 bg-emerald-950/50' },
+  EXCEEDED: { icon: TrendingUp, cls: 'border-emerald-400 text-emerald-200 bg-emerald-900/50' },
+  MISSED: { icon: XCircle, cls: 'border-rose-500 text-rose-300 bg-rose-950/50' },
+  PENDING: { icon: Clock3, cls: 'border-amber-600 text-amber-300 bg-amber-950/50' },
+  INSUFFICIENT_EVIDENCE: { icon: AlertTriangle, cls: 'border-zinc-600 text-zinc-300 bg-zinc-900/50' },
+  QUALITATIVE_ONLY: { icon: FileText, cls: 'border-blue-700 text-blue-300 bg-blue-950/40' },
+};
+const PVA_UNIT_SUFFIX = { PERCENT: '%', PERCENTAGE: '%', INR_CRORE: ' ₹ Cr', INR_LAKH: ' ₹ lakh', USD_MILLION: ' $ M', USD_BILLION: ' $ B', COUNT: '' };
+const PVA_OPERATOR_PREFIX = { AT_LEAST: '≥ ', GTE: '≥ ', AT_MOST: '≤ ', LTE: '≤ ', EXACT: '= ', EQ: '= ' };
+
+const formatPvaValue = (value, unit) => {
+  if (value === null || value === undefined) return null;
+  const suffix = PVA_UNIT_SUFFIX[unit] ?? (unit ? ` ${unit}` : '');
+  return `${Number(value).toLocaleString('en-IN')}${suffix}`;
+};
+
+const formatPvaTarget = (target = {}) => {
+  if (target.value === null || target.value === undefined) return 'Qualitative';
+  if (target.operator === 'RANGE') {
+    return target.valueMax != null
+      ? `${formatPvaValue(target.value, null)}–${formatPvaValue(target.valueMax, target.unit)}`
+      : `≥ ${formatPvaValue(target.value, target.unit)} (range, upper bound not recorded)`;
+  }
+  return `${PVA_OPERATOR_PREFIX[target.operator] || ''}${formatPvaValue(target.value, target.unit)}`;
+};
+
+function PvaOutcomeBadge({ outcome }) {
+  const { icon: Icon, cls } = PVA_OUTCOME_STYLES[outcome] || PVA_OUTCOME_STYLES.INSUFFICIENT_EVIDENCE;
+  return (
+    <Badge variant="outline" className={`text-[10px] font-mono inline-flex items-center gap-1 whitespace-nowrap ${cls}`}>
+      <Icon className="w-3 h-3" /> {PVA_OUTCOME_LABELS[outcome] || outcome}
+    </Badge>
+  );
+}
+
+function PvaEvidenceLink({ url, children }) {
+  if (!url) return null;
+  return (
+    <a href={url} target="_blank" rel="noreferrer" className="text-gs-gold hover:underline inline-flex items-center gap-1 text-[11px]">
+      {children} <ExternalLink className="w-3 h-3" />
+    </a>
+  );
+}
+
+function PromisesVsActualsRow({ row, allRows }) {
+  const [expanded, setExpanded] = useState(false);
+  const versions = row.versionLabel
+    ? allRows.filter((other) => other.id !== row.id && (other.revisionOf === row.id || other.supersededBy === row.id || row.revisionOf === other.id || row.supersededBy === other.id))
+    : [];
+  const recomputedDiffers = row.storedStatus && !(
+    (row.storedStatus === 'ACHIEVED' && row.outcome === 'MET') || (row.storedStatus === 'FULFILLED' && row.outcome === 'MET') || row.storedStatus === row.outcome
+  );
+
+  return (
+    <>
+      <tr className={`border-b border-gs-border/30 align-top ${row.countsTowardScore ? '' : 'opacity-70'}`} data-testid={`pva-row-${row.id}`}>
+        <td className="py-2 pr-3 text-gs-text whitespace-nowrap">{row.year}</td>
+        <td className="py-2 pr-3 text-gs-text">
+          {row.metricLabel}
+          {row.versionLabel && (
+            <span className="ml-1 text-[9px] px-1 py-0.5 rounded border border-gs-gold/40 text-gs-gold uppercase">{row.versionLabel === 'ORIGINAL' ? 'Original' : 'Revised'}</span>
+          )}
+        </td>
+        <td className="py-2 pr-3 text-gs-text whitespace-nowrap">{formatPvaTarget(row.target)}</td>
+        <td className="py-2 pr-3 text-gs-gold whitespace-nowrap">{formatPvaValue(row.actual?.value, row.actual?.unit) ?? <span className="text-gs-textDim">—</span>}</td>
+        <td className="py-2 pr-3 whitespace-nowrap">
+          {row.achievementPercentage != null ? (
+            <span>
+              {row.achievementPercentage}% <span className="text-[10px] text-gs-textDim">of target · {PVA_OUTCOME_LABELS[row.outcome]}</span>
+            </span>
+          ) : (
+            <span className="text-gs-textDim" title={row.achievementReason || ''}>Withheld</span>
+          )}
+        </td>
+        <td className="py-2 pr-3"><PvaOutcomeBadge outcome={row.outcome} /></td>
+        <td className="py-2 text-right">
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            aria-expanded={expanded}
+            aria-label={`${expanded ? 'Hide' : 'Show'} evidence for ${row.metricLabel} ${row.year}`}
+            className="text-gs-textDim hover:text-gs-gold text-xs font-mono inline-flex items-center gap-0.5"
+          >
+            {expanded ? 'Less' : 'Evidence'}
+            <ChevronDown className={`w-3.5 h-3.5 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+          </button>
+        </td>
+      </tr>
+      {expanded && (
+        <tr className="border-b border-gs-border/30">
+          <td colSpan={7} className="py-3">
+            <div className="space-y-3 text-[11px] font-mono" data-testid={`pva-detail-${row.id}`}>
+              {(row.outcome === 'PENDING' || row.outcome === 'INSUFFICIENT_EVIDENCE' || row.outcome === 'QUALITATIVE_ONLY') && row.reason && (
+                <div className="p-2 rounded border border-amber-600/40 bg-amber-950/20 text-amber-200">
+                  <span className="uppercase text-[10px] block text-amber-400">Why {PVA_OUTCOME_LABELS[row.outcome].toLowerCase()}</span>
+                  {row.reason}
+                </div>
+              )}
+
+              <div className="bg-gs-bg/80 p-3 rounded border border-gs-border/40 space-y-1">
+                <div className="uppercase text-[10px] text-gs-textDim">Original statement · announced {formatDate(row.announcementDate)}</div>
+                <div className="text-gs-text">"{row.originalStatement}"</div>
+                {row.shortfall && (
+                  <div className="text-rose-300">
+                    Shortfall: {formatPvaValue(row.shortfall.value, row.shortfall.unit)}{row.shortfall.percentage != null ? ` (${row.shortfall.percentage}% ${row.shortfall.direction === 'ABOVE_CEILING' || row.shortfall.direction === 'ABOVE_RANGE' ? 'above' : 'short of'} target)` : ''}
+                  </div>
+                )}
+              </div>
+
+              {row.versionLabel && (
+                <div className="bg-gs-bg/80 p-3 rounded border border-gs-border/40 space-y-1">
+                  <div className="uppercase text-[10px] text-gs-textDim">Guidance history</div>
+                  <div className="text-gs-text">
+                    This is the {row.versionLabel === 'ORIGINAL' ? 'original' : 'revised'} guidance for {row.metricLabel} ({row.targetPeriod}).{' '}
+                    {row.countsTowardScore ? 'It is the latest version and counts toward the target-hit rate.' : 'It was later revised, so it is shown for history and not counted toward the target-hit rate.'}
+                  </div>
+                  {versions.map((other) => (
+                    <div key={other.id} className="text-gs-textDim">
+                      {other.versionLabel === 'ORIGINAL' ? 'Original' : 'Revised'} ({formatDate(other.announcementDate)}): {formatPvaTarget(other.target)} → {PVA_OUTCOME_LABELS[other.outcome]}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="bg-gs-bg/80 p-3 rounded border border-gs-border/40 space-y-1">
+                  <div className="uppercase text-[10px] text-gs-textDim">Target source</div>
+                  <div className="text-gs-text">{row.evidence?.targetDocTitle || 'Source document'}{row.evidence?.targetPage ? ` · Page ${row.evidence.targetPage}` : ''}</div>
+                  {row.evidence?.targetExcerpt && <div className="italic text-gs-textDim border-l-2 border-gs-gold pl-2">"{row.evidence.targetExcerpt}"</div>}
+                  <PvaEvidenceLink url={row.evidence?.targetSourceUrl}>Open target document</PvaEvidenceLink>
+                </div>
+                <div className="bg-gs-bg/80 p-3 rounded border border-gs-border/40 space-y-1">
+                  <div className="uppercase text-[10px] text-gs-textDim">Actual result source</div>
+                  {row.evidence?.actualSourceUrl ? (
+                    <>
+                      <div className="text-gs-text">{row.evidence.actualDocTitle || 'Source document'} · Reporting period: {row.evidence.actualReportingPeriod || '—'}</div>
+                      {row.evidence.actualExcerpt && <div className="italic text-gs-textDim border-l-2 border-emerald-500 pl-2">"{row.evidence.actualExcerpt}"</div>}
+                      <PvaEvidenceLink url={row.evidence.actualSourceUrl}>Open result document</PvaEvidenceLink>
+                    </>
+                  ) : (
+                    <div className="text-gs-textDim">{row.reason ? 'No verified actual-result source yet (see the reason above).' : 'No verified actual-result source is linked to this target.'}</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-gs-bg/80 p-3 rounded border border-gs-border/40 space-y-1">
+                <div className="uppercase text-[10px] text-gs-textDim flex items-center gap-1"><Calculator className="w-3 h-3" /> Calculation</div>
+                <div className="text-gs-text">{row.calculationExplanation}</div>
+                {row.achievementPercentage == null && row.achievementReason && <div className="text-gs-textDim">{row.achievementReason}</div>}
+                {recomputedDiffers && (
+                  <div className="text-gs-textDim">Stored verdict was {row.storedStatus}; the outcome above is recomputed from the stored target and actual with the current rules.</div>
+                )}
+                {row.evidenceConfidence != null && <div className="text-gs-textDim">Evidence confidence: {Math.round(row.evidenceConfidence * 100)}%</div>}
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function PromisesVsActualsPanel({ data }) {
+  const [yearFilter, setYearFilter] = useState('ALL');
+  const [metricFilter, setMetricFilter] = useState('ALL');
+  const [outcomeFilter, setOutcomeFilter] = useState('ALL');
+  const rows = data?.rows || [];
+
+  const years = useMemo(() => [...new Set(rows.map((r) => r.year))].sort().reverse(), [rows]);
+  const metrics = useMemo(() => [...new Map(rows.map((r) => [r.metric, r.metricLabel])).entries()], [rows]);
+  const filteredRows = useMemo(() => rows.filter((r) => (yearFilter === 'ALL' || r.year === yearFilter)
+    && (metricFilter === 'ALL' || r.metric === metricFilter)
+    && (outcomeFilter === 'ALL' || r.outcome === outcomeFilter)), [rows, yearFilter, metricFilter, outcomeFilter]);
+
+  const delivery = data?.summary?.managementDeliveryScore || {};
+  const financial = data?.summary?.financialPerformanceScore || {};
+  const coverage = delivery.evidenceCoverage || {};
+
+  let emptyMessage = null;
+  if (data?.emptyState === 'NO_GUIDANCE' || data?.emptyState === 'NO_MEASURABLE_GUIDANCE') {
+    emptyMessage = (
+      <div className="p-6 text-center bg-gs-panel/30 border border-gs-border rounded font-mono text-xs space-y-1" data-testid="pva-empty-state">
+        <div className="font-semibold text-gs-text">No measurable guidance found for this company</div>
+        <div className="text-gs-textDim">
+          {data.emptyState === 'NO_MEASURABLE_GUIDANCE'
+            ? 'Only qualitative management statements were found; they are listed below for context and never scored.'
+            : 'No numeric management target has been extracted and verified from official disclosures yet.'}
+        </div>
+      </div>
+    );
+  } else if (data?.emptyState === 'GUIDANCE_UNVERIFIED') {
+    emptyMessage = (
+      <div className="p-6 text-center bg-gs-panel/30 border border-amber-700/40 rounded font-mono text-xs space-y-1" data-testid="pva-empty-state">
+        <div className="font-semibold text-amber-300">Guidance found, outcome not yet verified</div>
+        <div className="text-gs-textDim">
+          {delivery.pendingCount || 0} target(s) still pending their reporting period and {delivery.insufficientEvidenceCount || 0} without a comparable verified actual. Expand a row for the specific reason.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {/* Management Delivery Score */}
+        <Card className="bg-gs-panel/60 border-gs-border p-4 space-y-3" data-testid="management-delivery-card">
+          <div className="gs-label text-[10px] text-gs-textDim uppercase tracking-wider">Management Delivery Score</div>
+          <div>
+            <div className="text-[11px] font-mono text-gs-textDim uppercase">Target-hit rate</div>
+            {delivery.targetHitRate != null ? (
+              <>
+                <div className="font-display text-3xl font-bold text-gs-gold">{delivery.targetHitRate}%</div>
+                <div className="text-xs font-mono text-gs-text">
+                  {delivery.targetHitRateNumerator} of {delivery.targetHitRateDenominator} completed targets met or exceeded
+                </div>
+              </>
+            ) : (
+              <div className="font-mono text-sm text-zinc-400 font-semibold mt-1">Score unavailable — no completed, evaluable targets yet</div>
+            )}
+            <div className="text-[10px] font-mono text-gs-textDim mt-1">
+              Confidence: <strong className="text-gs-text">{coverage.confidence || 'LOW'}</strong> — based on {delivery.completedCount || 0} completed target{delivery.completedCount === 1 ? '' : 's'} covering {coverage.completedQuarters ?? 0} of {coverage.expectedQuarters ?? 20} quarters. Pending, insufficient-evidence and qualitative targets are excluded from this rate.
+            </div>
+          </div>
+          <div className="pt-2 border-t border-gs-border/40">
+            <div className="text-[11px] font-mono text-gs-textDim uppercase">Faith Score (curated, confidence-weighted — a different measure)</div>
+            {delivery.faithScore != null ? (
+              <div className="font-mono text-sm text-gs-text"><strong className="text-gs-gold text-lg">{delivery.faithScore}</strong> / 100 · {delivery.faithScoreLabel}</div>
+            ) : (
+              <div className="font-mono text-xs text-zinc-400">{delivery.faithScoreLabel || 'Not available'} (needs at least 3 resolved, verified promises)</div>
+            )}
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-center text-[10px] font-mono" data-testid="management-delivery-counts">
+            {[
+              ['Met', delivery.metCount, 'text-emerald-400'],
+              ['Exceeded', delivery.exceededCount, 'text-emerald-300'],
+              ['Missed', delivery.missedCount, 'text-rose-400'],
+              ['Pending', delivery.pendingCount, 'text-amber-400'],
+              ['Insufficient evidence', delivery.insufficientEvidenceCount, 'text-zinc-300'],
+              ['Qualitative only', delivery.qualitativeOnlyCount, 'text-blue-300'],
+            ].map(([label, value, cls]) => (
+              <div key={label} className="p-1.5 bg-gs-bg/60 rounded border border-gs-border/40">
+                <div className="text-gs-textDim uppercase">{label}</div>
+                <div className={`font-bold text-base ${cls}`}>{value ?? 0}</div>
+              </div>
+            ))}
+          </div>
+          {delivery.supersededCount > 0 && (
+            <div className="text-[10px] font-mono text-gs-textDim">{delivery.supersededCount} earlier guidance version(s) were later revised; they are listed for history but not counted.</div>
+          )}
+        </Card>
+
+        {/* Financial Performance / Execution Score */}
+        <Card className="bg-gs-panel/60 border-gs-border p-4 space-y-3" data-testid="financial-performance-card">
+          <div className="gs-label text-[10px] text-gs-textDim uppercase tracking-wider">Financial Performance / Execution Score</div>
+          {financial.value != null ? (
+            <div className="font-display text-3xl font-bold text-gs-text">{financial.value} <span className="text-sm font-normal text-gs-textDim">/ 100{financial.ratingLabel ? ` · ${financial.ratingLabel}` : ''}</span></div>
+          ) : (
+            <div className="font-mono text-sm text-zinc-400 font-semibold">Score unavailable — {financial.unavailableReason || 'insufficient verified financial history'}</div>
+          )}
+          {Object.keys(financial.weightsUsed || {}).length > 0 && (
+            <div className="text-[11px] font-mono space-y-0.5">
+              <div className="text-gs-textDim uppercase text-[10px]">Weights used</div>
+              {Object.entries(financial.weightsUsed).map(([key, weight]) => (
+                <div key={key} className="flex justify-between gap-2">
+                  <span className="text-gs-textMuted">{key.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase())}</span>
+                  <span className="text-gs-text">{weight}%{weight === 0 ? ' (excluded)' : ''}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {Object.keys(financial.scoreMissingReasons || {}).length > 0 && (
+            <ul className="text-[10px] font-mono text-gs-textDim list-disc pl-4">
+              {Object.entries(financial.scoreMissingReasons).map(([key, reason]) => <li key={key}>{reason}</li>)}
+            </ul>
+          )}
+          <div className="text-[10px] font-mono text-gs-textDim p-2 rounded border border-gs-border/40 bg-gs-bg/40">
+            This score no longer includes guidance-delivery accuracy. How management performed against its own targets is shown separately in the Management Delivery Score.
+          </div>
+        </Card>
+      </div>
+
+      {emptyMessage}
+
+      {/* Annual summary */}
+      {data?.annualSummary?.length > 0 && (
+        <Card className="bg-gs-panel/40 border-gs-border p-4 font-mono text-xs" data-testid="pva-annual-summary">
+          <div className="text-gs-gold font-bold uppercase tracking-wider text-[11px] mb-2">Annual summary</div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px] text-left">
+              <thead>
+                <tr className="text-gs-textDim border-b border-gs-border/40">
+                  <th className="py-1 pr-3">Year</th>
+                  <th className="py-1 pr-3">Completed</th>
+                  <th className="py-1 pr-3">Met / exceeded</th>
+                  <th className="py-1 pr-3">Missed</th>
+                  <th className="py-1 pr-3">Pending</th>
+                  <th className="py-1 pr-3">Insufficient evidence</th>
+                  <th className="py-1 pr-3">Qualitative</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.annualSummary.map((bucket) => (
+                  <tr key={bucket.year} className="border-b border-gs-border/20">
+                    <td className="py-1 pr-3 text-gs-text">{bucket.year}</td>
+                    <td className="py-1 pr-3">{bucket.completed}</td>
+                    <td className="py-1 pr-3 text-emerald-400">{bucket.met + bucket.exceeded}</td>
+                    <td className="py-1 pr-3 text-rose-400">{bucket.missed}</td>
+                    <td className="py-1 pr-3">{bucket.pending}</td>
+                    <td className="py-1 pr-3">{bucket.insufficientEvidence}</td>
+                    <td className="py-1 pr-3">{bucket.qualitativeOnly}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {rows.length > 0 && (
+        <Card className="bg-gs-card border-gs-border p-4 space-y-3">
+          <div className="flex items-center gap-2 flex-wrap font-mono text-[11px]">
+            <label className="flex items-center gap-1 text-gs-textDim">Year
+              <select aria-label="Filter by year" value={yearFilter} onChange={(e) => setYearFilter(e.target.value)} className="bg-gs-bg border border-gs-border rounded px-1 py-0.5 text-gs-text">
+                <option value="ALL">All</option>
+                {years.map((y) => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-1 text-gs-textDim">Metric
+              <select aria-label="Filter by metric" value={metricFilter} onChange={(e) => setMetricFilter(e.target.value)} className="bg-gs-bg border border-gs-border rounded px-1 py-0.5 text-gs-text">
+                <option value="ALL">All</option>
+                {metrics.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-1 text-gs-textDim">Outcome
+              <select aria-label="Filter by outcome" value={outcomeFilter} onChange={(e) => setOutcomeFilter(e.target.value)} className="bg-gs-bg border border-gs-border rounded px-1 py-0.5 text-gs-text">
+                <option value="ALL">All</option>
+                {Object.entries(PVA_OUTCOME_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+              </select>
+            </label>
+            <span className="text-gs-textDim">{filteredRows.length} of {rows.length} targets</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs font-mono text-left" data-testid="pva-table">
+              <thead>
+                <tr className="text-gs-textDim border-b border-gs-border/40 text-[11px]">
+                  <th className="py-1 pr-3">Year</th>
+                  <th className="py-1 pr-3">Metric</th>
+                  <th className="py-1 pr-3">Target</th>
+                  <th className="py-1 pr-3">Actual</th>
+                  <th className="py-1 pr-3">Achievement</th>
+                  <th className="py-1 pr-3">Outcome</th>
+                  <th className="py-1"><span className="sr-only">Details</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRows.map((row) => <PromisesVsActualsRow key={row.id} row={row} allRows={rows} />)}
+              </tbody>
+            </table>
+            {filteredRows.length === 0 && (
+              <div className="p-4 text-center text-[11px] font-mono text-gs-textDim">No targets match these filters.</div>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {data?.disclaimer && (
+        <div className="p-3 bg-gs-panel/20 border border-gs-border/40 rounded text-[11px] font-mono text-gs-textDim text-center">{data.disclaimer}</div>
+      )}
+    </div>
+  );
+}
+
 function CompanyReport({ symbol, onBack }) {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1082,6 +1472,9 @@ function CompanyReport({ symbol, onBack }) {
   const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [timelineData, setTimelineData] = useState(null);
   const [timelineLoading, setTimelineLoading] = useState(false);
+  const [pvaData, setPvaData] = useState(null);
+  const [pvaLoading, setPvaLoading] = useState(false);
+  const [pvaError, setPvaError] = useState(false);
 
   const fetchReport = useCallback(async () => {
     try {
@@ -1118,6 +1511,26 @@ function CompanyReport({ symbol, onBack }) {
       fetchTimeline();
     }
   }, [activeTab, fetchTimeline]);
+
+  const fetchPromisesVsActuals = useCallback(async () => {
+    try {
+      setPvaLoading(true);
+      setPvaError(false);
+      const res = await apiClient.get(`/api/earnings-intelligence/${symbol}/promises-vs-actuals`);
+      setPvaData(res?.data ?? res);
+    } catch (err) {
+      console.error('Failed to load promises vs actuals:', err);
+      setPvaError(true);
+    } finally {
+      setPvaLoading(false);
+    }
+  }, [symbol]);
+
+  useEffect(() => {
+    if (activeTab === 'promisesVsActuals') {
+      fetchPromisesVsActuals();
+    }
+  }, [activeTab, fetchPromisesVsActuals]);
 
   // Polls the real job-status endpoint until it actually finishes (COMPLETED
   // or FAILED), rather than a single blind re-fetch after a fixed delay --
@@ -1288,9 +1701,9 @@ function CompanyReport({ symbol, onBack }) {
         </Card>
 
         <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">
-          <div className="text-[11px] font-mono text-gs-textDim uppercase">Guidance Accuracy ({report.weightsUsed?.guidanceAccuracy ?? 0}%)</div>
+          <div className="text-[11px] font-mono text-gs-textDim uppercase">Guidance Accuracy (not in score)</div>
           <div className="font-display text-2xl font-bold text-gs-gold mt-1">{breakdown.guidanceAccuracy ?? 'N/A'}</div>
-          <div className="text-[10px] font-mono text-gs-textDim mt-0.5">{promises.length ? `${promises.length} targets verified` : 'Qualitative only'}</div>
+          <div className="text-[10px] font-mono text-gs-textDim mt-0.5">Reported separately · see Promises vs Actuals</div>
         </Card>
 
         <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">
@@ -1334,7 +1747,18 @@ function CompanyReport({ symbol, onBack }) {
             className={`font-mono text-xs ${activeTab === 'guidance' ? 'bg-gs-gold text-gs-bg font-bold' : 'text-gs-textDim'}`}
           >
             <Award className="w-3.5 h-3.5 mr-1" />
-            Management Guidance ({promises.length})
+            {/* guidanceCount comes from the same curated-first source the tab body renders (see getCompanyReport). */}
+            Management Guidance ({report.guidanceCount ?? promises.length})
+          </Button>
+
+          <Button
+            variant={activeTab === 'promisesVsActuals' ? 'default' : 'ghost'}
+            size="sm"
+            onClick={() => setActiveTab('promisesVsActuals')}
+            className={`font-mono text-xs ${activeTab === 'promisesVsActuals' ? 'bg-gs-gold text-gs-bg font-bold' : 'text-gs-textDim'}`}
+          >
+            <Target className="w-3.5 h-3.5 mr-1" />
+            Promises vs Actuals
           </Button>
 
           <Button
@@ -1535,6 +1959,22 @@ function CompanyReport({ symbol, onBack }) {
               </div>
             )}
           </div>
+        )}
+
+        {/* TAB: Promises vs Actuals (lazy-fetched on activation, like the guidance timeline) */}
+        {activeTab === 'promisesVsActuals' && pvaLoading && (
+          <div className="p-8 text-center space-y-4">
+            <RefreshCw className="w-8 h-8 text-gs-gold animate-spin mx-auto" />
+            <div className="font-mono text-sm text-gs-textDim">Loading promises vs actuals...</div>
+          </div>
+        )}
+        {activeTab === 'promisesVsActuals' && !pvaLoading && pvaError && (
+          <div className="p-6 text-center bg-gs-panel/30 border border-gs-border rounded font-mono text-xs text-gs-neg">
+            Unable to load Promises vs Actuals right now.
+          </div>
+        )}
+        {activeTab === 'promisesVsActuals' && !pvaLoading && !pvaError && pvaData && (
+          <PromisesVsActualsPanel data={pvaData} />
         )}
 
         {/* TAB 3: 5-Year Chronological Historical Timeline */}

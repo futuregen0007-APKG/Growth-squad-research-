@@ -19,8 +19,32 @@ export const PROMISE_CATEGORIES = [
   'GUIDANCE', 'PRODUCT_LAUNCH', 'EXPANSION', 'OTHER',
 ];
 
-export const OUTCOME_STATUSES = ['ACHIEVED', 'PARTIAL', 'MISSED', 'PENDING', 'INSUFFICIENT_EVIDENCE'];
-export const RESOLVED_STATUSES = ['ACHIEVED', 'PARTIAL', 'MISSED'];
+// EXCEEDED and QUALITATIVE_ONLY were added additively. PARTIAL stays valid so
+// existing records still read, but it is no longer WRITTEN for a numerically
+// comparable target: utils/promiseOutcome.js decides met/missed by a direct
+// comparison, so a sub-target result is MISSED, never "partial".
+export const OUTCOME_STATUSES = ['ACHIEVED', 'EXCEEDED', 'PARTIAL', 'MISSED', 'PENDING', 'INSUFFICIENT_EVIDENCE', 'QUALITATIVE_ONLY'];
+// QUALITATIVE_ONLY is deliberately not "resolved": a promise with no numeric
+// target is never scored.
+export const RESOLVED_STATUSES = ['ACHIEVED', 'EXCEEDED', 'PARTIAL', 'MISSED'];
+
+/**
+ * CANDIDATE_STATUS_MAP - legacy ManagementPromise / calculatePromiseStatus
+ * status -> curated / PromiseCandidate outcome.status. The ONE shared copy
+ * (PromiseCandidateService and PromiseExtractionService both import it).
+ * EXCEEDED now maps to its own 'EXCEEDED' (it was previously folded into
+ * 'ACHIEVED'); PARTIALLY_FULFILLED -> PARTIAL is kept only so an old stored
+ * legacy status still translates -- calculatePromiseStatus never emits it.
+ */
+export const CANDIDATE_STATUS_MAP = Object.freeze({
+  FULFILLED: 'ACHIEVED',
+  EXCEEDED: 'EXCEEDED',
+  PARTIALLY_FULFILLED: 'PARTIAL',
+  MISSED: 'MISSED',
+  PENDING: 'PENDING',
+  INSUFFICIENT_EVIDENCE: 'INSUFFICIENT_EVIDENCE',
+  QUALITATIVE_ONLY: 'QUALITATIVE_ONLY',
+});
 
 export const PROMISE_OPERATORS = ['AT_LEAST', 'AT_MOST', 'EXACT', 'RANGE', 'QUALITATIVE'];
 export const TARGET_TYPES = ['PERCENTAGE', 'ABSOLUTE', 'QUALITATIVE'];
@@ -256,6 +280,13 @@ export const validateManagementPromiseRecord = (record, context = {}) => {
   if (!PROMISE_OPERATORS.includes(promise.operator)) errors.push(`promise.operator: must be one of ${PROMISE_OPERATORS.join(', ')}`);
   if (promise.targetUnit != null && !TARGET_UNITS.includes(promise.targetUnit)) errors.push(`promise.targetUnit: must be one of ${TARGET_UNITS.join(', ')} or null`);
   if (promise.targetValue != null && typeof promise.targetValue !== 'number') errors.push('promise.targetValue: must be a number or null');
+  // Optional, additive fields (absent on every pre-existing record).
+  if (promise.targetValueMax != null && typeof promise.targetValueMax !== 'number') errors.push('promise.targetValueMax: must be a number or null');
+  if (typeof promise.targetValueMax === 'number' && typeof promise.targetValue === 'number' && promise.targetValueMax < promise.targetValue) {
+    errors.push('promise.targetValueMax: range upper bound cannot be below promise.targetValue (the lower bound)');
+  }
+  if (promise.revisesPromiseId != null && !isNonEmptyString(promise.revisesPromiseId)) errors.push('promise.revisesPromiseId: must be a non-empty string or null');
+  if (promise.metric != null && !isNonEmptyString(promise.metric)) errors.push('promise.metric: must be a non-empty string or null');
 
   const outcome = record.outcome || {};
   if (!OUTCOME_STATUSES.includes(outcome.status)) errors.push(`outcome.status: must be one of ${OUTCOME_STATUSES.join(', ')}`);
@@ -364,6 +395,7 @@ export default {
   PROMISE_CATEGORIES,
   OUTCOME_STATUSES,
   RESOLVED_STATUSES,
+  CANDIDATE_STATUS_MAP,
   PROMISE_OPERATORS,
   TARGET_TYPES,
   TARGET_UNITS,

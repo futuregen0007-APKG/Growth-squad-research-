@@ -1,15 +1,16 @@
 # Render Blueprint additions for the Earnings Intelligence pipeline.
 #
-# This file defines two Cron Job services that let the XBRL and promise-
-# extraction pipelines keep running without a human (or Claude) driving them
-# from a laptop. It does NOT redefine the existing backend web service --
-# only add these two new services when connecting this Blueprint via the
+# This file defines three Cron Job services that let the XBRL, promise-
+# extraction and promise re-evaluation pipelines keep running without a human
+# (or Claude) driving them from a laptop. It does NOT redefine the existing
+# backend web service -- only add these new services when connecting this
+# Blueprint via the
 # Render dashboard (New > Blueprint), so the already-configured web service
 # is left untouched. Committing this file changes nothing live by itself;
 # a person must explicitly connect the Blueprint in Render for these jobs to
 # start running.
 #
-# Both jobs need the SAME environment variables the existing web service
+# All jobs need the SAME environment variables the existing web service
 # already has (MONGODB_URI, OPENAI_API_KEY, INDIAN_API_KEY, etc.). The
 # cleanest way to share them without re-entering secrets is an Environment
 # Group in the Render dashboard (Environment > Groups) attached to both the
@@ -65,5 +66,27 @@ services:
       --expect-target cluster0.yxgjqf0.mongodb.net/test
       --concurrency 2 --openai-concurrency 3 --batch-size 15
       --max-runtime-min 45 --max-cost-usd 5 --label cron-transcript-refresh
+    envVarGroups:
+      - growth-squad-earnings
+
+  - type: cron
+    name: earnings-promise-reevaluation
+    runtime: node
+    rootDir: backend
+    plan: starter
+    # Friday: after Monday's XBRL refresh and Wednesday's transcript refresh have landed that week's newly
+    # filed results, so a PENDING promise whose target period (plus its SEBI reporting window) has closed can
+    # be matched against the new actuals. Distinct day from the other two jobs so they never overlap.
+    # Like the other jobs, this does nothing until a person connects this Blueprint in the Render dashboard
+    # (New > Blueprint) -- committing the file changes nothing live.
+    schedule: "0 3 * * 5"
+    buildCommand: npm ci --omit=dev
+    # Bounded per run (--batch-size / --max-runtime-min) and resumable: the least recently re-evaluated
+    # records go first, so the backlog rotates across weekly runs. IndianAPI stays off (no paid API from a
+    # cron); ACCEPTED promises only ever get a proposal stored for human review, never an overwritten outcome.
+    startCommand: >
+      node scripts/reevaluatePromises.js
+      --expect-target cluster0.yxgjqf0.mongodb.net/test
+      --batch-size 40 --max-runtime-min 30 --label cron-promise-reevaluation
     envVarGroups:
       - growth-squad-earnings
