@@ -38,6 +38,79 @@ export const deriveFiscalYearLabel = (periodLabel) => {
 const slugify = (value) => String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 
 /**
+ * VERIFIED_LABELS - human-readable display text for each verified
+ * definition enum. "Profit after tax (consolidated)" deliberately does NOT
+ * claim a profit-attributable-to-owners split -- Upstox's API has no
+ * minority-interest line anywhere (confirmed live against TCS/INFY
+ * full_statement), so this project never fabricates one.
+ */
+const VERIFIED_LABELS = {
+  REVENUE_FROM_OPERATIONS: 'Revenue from operations',
+  TOTAL_INCOME: 'Total income',
+  PROFIT_BEFORE_TAX: 'Profit before tax',
+  PROFIT_AFTER_TAX: 'Profit after tax (consolidated)',
+};
+
+/** valuesMatch - 2dp-tolerant equality for cross-referencing summary vs full_statement figures (both already pass through toNumberOrNull, so this only guards against float drift, never a real mismatch). */
+const valuesMatch = (a, b) => a !== null && a !== undefined && b !== null && b !== undefined && Math.abs(a - b) < 0.005;
+
+/**
+ * buildFullStatementLookup - income-statement's `fs=true` response adds a
+ * `full_statement` array using the SAME nested shape as `income_statement`
+ * (confirmed live for TCS/INFY) but keyed by `particular` instead of
+ * `category` ("Revenue", "Other Income", "Total Revenue", "Profit Before
+ * Tax", "Profit After Tax", ...). Returns slugify(particular) -> Map(rawPeriod -> value).
+ * Absent/empty full_statement (fs wasn't honored, or no data for this
+ * company) returns an empty Map -- callers must treat that as
+ * "unverifiable", never guess.
+ */
+const buildFullStatementLookup = (fullStatementList) => {
+  const lookup = new Map();
+  if (!Array.isArray(fullStatementList)) return lookup;
+  for (const entry of fullStatementList) {
+    const key = entry?.particular != null ? slugify(entry.particular) : null;
+    if (!key || !Array.isArray(entry.history)) continue;
+    const periodMap = new Map();
+    for (const h of entry.history) {
+      const rawPeriod = h?.period != null ? String(h.period) : null;
+      if (!rawPeriod) continue;
+      periodMap.set(rawPeriod, toNumberOrNull(h?.value));
+    }
+    lookup.set(key, periodMap);
+  }
+  return lookup;
+};
+
+/**
+ * deriveVerifiedDefinition - cross-references ONE summary metric
+ * (label/value for a SPECIFIC rawPeriod) against the full_statement lookup
+ * for that SAME period -- done per period, not just the latest, since a
+ * company's revenue/other-income mix can change year to year. Never
+ * guesses: a label this function doesn't recognize, a missing/empty
+ * lookup, a missing particular for that period, or a value that doesn't
+ * match any candidate particular all resolve to `null`.
+ */
+const deriveVerifiedDefinition = (label, value, rawPeriod, fullStatementLookup) => {
+  if (value === null || value === undefined || !rawPeriod || !fullStatementLookup?.size) return null;
+  const valueAt = (particularKey) => fullStatementLookup.get(particularKey)?.get(rawPeriod);
+
+  if (label === 'revenue') {
+    if (valuesMatch(value, valueAt('revenue'))) return 'REVENUE_FROM_OPERATIONS';
+    if (valuesMatch(value, valueAt('total_revenue'))) return 'TOTAL_INCOME';
+    return null;
+  }
+  if (label === 'operating_profit') {
+    if (valuesMatch(value, valueAt('profit_before_tax'))) return 'PROFIT_BEFORE_TAX';
+    return null;
+  }
+  if (label === 'net_profit') {
+    if (valuesMatch(value, valueAt('profit_after_tax'))) return 'PROFIT_AFTER_TAX';
+    return null;
+  }
+  return null;
+};
+
+/**
  * parseChangePct - Upstox's `change` field is a formatted percentage
  * STRING like "+6.51%" or "-454.14%", not a plain number -- confirmed
  * live against real income-statement and cash-flow responses. Passing
@@ -97,15 +170,43 @@ const extractPeriodicMetrics = (list, { flatExcludeKeys = ['period'] } = {}) => 
   });
 };
 
-/** Shared builder for balance-sheet/cash-flow/income-statement, which all resolve to the same explicit schema. */
+/**
+ * Shared builder for balance-sheet/cash-flow/income-statement, which all
+ * resolve to the same explicit schema. `annotateProviderFields` is ONLY
+ * ever true for income-statement (the one statement with a confirmed
+ * provider-label-vs-true-meaning mismatch -- balance-sheet/cash-flow's
+ * summary field names are inherently unambiguous aggregates and are
+ * deliberately left untouched): when true, each metric also gets
+ * `providerLabel` (identical to `label`, kept for backward compat -- see
+ * `label` usage check in UpstoxNormalizer's own module comment history)
+ * plus `verifiedDefinition`/`verifiedLabel` derived per-period from
+ * `data.full_statement` via deriveVerifiedDefinition.
+ */
 const buildStatement = (raw, {
   symbol = null, isin, fetchedAt, statementType = 'consolidated', period = 'YEARLY', topLevelKeys, flatExcludeKeys,
+  annotateProviderFields = false,
 }) => {
   const data = raw?.data && typeof raw.data === 'object' ? raw.data : {};
   let list = [];
   for (const key of topLevelKeys) {
     if (Array.isArray(data[key])) { list = data[key]; break; }
   }
+  const fullStatementLookup = annotateProviderFields ? buildFullStatementLookup(data.full_statement) : null;
+  const metrics = extractPeriodicMetrics(list, { flatExcludeKeys }).map(({
+    financialYear, rawPeriod, label, value, changePct,
+  }) => {
+    if (!annotateProviderFields) return { financialYear, label, value, changePct };
+    const verifiedDefinition = deriveVerifiedDefinition(label, value, rawPeriod, fullStatementLookup);
+    return {
+      financialYear,
+      label,
+      value,
+      changePct,
+      providerLabel: label,
+      verifiedDefinition,
+      verifiedLabel: verifiedDefinition ? VERIFIED_LABELS[verifiedDefinition] : null,
+    };
+  });
   return {
     symbol,
     isin,
@@ -114,9 +215,7 @@ const buildStatement = (raw, {
     units: UPSTOX_UNIT,
     provider: 'UPSTOX',
     fetchedAt,
-    metrics: extractPeriodicMetrics(list, { flatExcludeKeys }).map(({ financialYear, label, value, changePct }) => ({
-      financialYear, label, value, changePct,
-    })),
+    metrics,
     raw,
   };
 };
@@ -130,7 +229,7 @@ export const normalizeCashFlow = (raw, ctx) => buildStatement(raw, {
 });
 
 export const normalizeIncomeStatement = (raw, ctx) => buildStatement(raw, {
-  ...ctx, period: 'YEARLY', topLevelKeys: ['income_statement', 'history'], flatExcludeKeys: ['period'],
+  ...ctx, period: 'YEARLY', topLevelKeys: ['income_statement', 'history'], flatExcludeKeys: ['period'], annotateProviderFields: true,
 });
 
 /**
@@ -213,10 +312,11 @@ export const normalizeCorporateActions = (raw, { symbol = null, isin, fetchedAt 
   };
 };
 
-export { extractPeriodicMetrics, parseChangePct };
+export { extractPeriodicMetrics, parseChangePct, VERIFIED_LABELS };
 
 export default {
   UPSTOX_UNIT,
+  VERIFIED_LABELS,
   deriveFiscalYearLabel,
   normalizeBalanceSheet,
   normalizeCashFlow,

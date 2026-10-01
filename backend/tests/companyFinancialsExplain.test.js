@@ -68,6 +68,85 @@ test('required: validateGroundedExplanation REJECTS an explanation citing a numb
   assert.ok(result.reason.includes('999999'));
 });
 
+test('required: validateGroundedExplanation REJECTS a fabricated observation that cites a REAL number under a WRONG label -- closes the old "value exists anywhere" bug', () => {
+  // SECTIONS_FIXTURE's balanceSheet really does have total_asset=500000 for
+  // FY2026. The old flat-value-Set check (buildSourceValueIndex) would have
+  // accepted this: 500000 is a real number present somewhere in the digest,
+  // and the old check never looked at WHICH label it was supposed to belong
+  // to. The new indexed check resolves "revenue|FY2026" first (which is
+  // really 250000 in this fixture) and only then compares the cited value,
+  // so a real total_asset figure mislabeled as revenue must now fail.
+  const parsed = {
+    summary: 'TCS reported revenue of 500000 Cr in FY2026.',
+    observations: [{
+      statement: 'Revenue was 500000 in FY2026', citedLabel: 'revenue', citedFinancialYear: 'FY2026', citedValue: 500000,
+    }],
+    missingSectionsNote: null,
+  };
+  const result = validateGroundedExplanation(parsed, SECTIONS_FIXTURE);
+  assert.equal(result.valid, false, 'a real number under the wrong label must be rejected, not just a never-seen number');
+  assert.equal(result.ungroundedObservation.citedValue, 500000);
+});
+
+test('validateGroundedExplanation ACCEPTS a correctly-labeled, verified-definition citation (income-statement metric carrying verifiedLabel/verifiedDefinition)', () => {
+  const sectionsWithVerifiedIncomeStatement = {
+    ...SECTIONS_FIXTURE,
+    incomeStatement: {
+      ...SECTIONS_FIXTURE.incomeStatement,
+      metrics: [
+        {
+          financialYear: 'FY2026', label: 'revenue', value: 271423, changePct: 4.68, providerLabel: 'revenue', verifiedDefinition: 'TOTAL_INCOME', verifiedLabel: 'Total income',
+        },
+      ],
+    },
+  };
+  const parsed = {
+    summary: 'TCS reported total income of 271423 Cr in FY2026.',
+    observations: [{
+      statement: 'Total income was 271423 Cr in FY2026 (Upstox-verified)', citedLabel: 'Total income', citedFinancialYear: 'FY2026', citedValue: 271423, statementType: 'CONSOLIDATED', definitionVerified: true,
+    }],
+    missingSectionsNote: null,
+  };
+  const result = validateGroundedExplanation(parsed, sectionsWithVerifiedIncomeStatement);
+  assert.equal(result.valid, true);
+});
+
+test('validateGroundedExplanation REJECTS a citation that uses the RAW label when a verifiedLabel exists for that metric -- the model must cite the verified name, not the provider name, once one is available', () => {
+  const sectionsWithVerifiedIncomeStatement = {
+    ...SECTIONS_FIXTURE,
+    incomeStatement: {
+      ...SECTIONS_FIXTURE.incomeStatement,
+      metrics: [
+        {
+          financialYear: 'FY2026', label: 'revenue', value: 271423, changePct: 4.68, providerLabel: 'revenue', verifiedDefinition: 'TOTAL_INCOME', verifiedLabel: 'Total income',
+        },
+      ],
+    },
+  };
+  const parsed = {
+    summary: 'TCS reported revenue of 271423 Cr in FY2026.',
+    observations: [{
+      statement: 'Revenue was 271423 Cr in FY2026', citedLabel: 'revenue', citedFinancialYear: 'FY2026', citedValue: 271423,
+    }],
+    missingSectionsNote: null,
+  };
+  const result = validateGroundedExplanation(parsed, sectionsWithVerifiedIncomeStatement);
+  assert.equal(result.valid, false, 'once a verifiedLabel exists, the raw provider label is no longer a valid citation key');
+});
+
+test('validateGroundedExplanation REJECTS a correctly-valued citation that claims the wrong statement basis', () => {
+  const parsed = {
+    summary: 'TCS reported revenue of 250000 Cr in FY2026 on a standalone basis.',
+    observations: [{
+      statement: 'Revenue was 250000 in FY2026', citedLabel: 'revenue', citedFinancialYear: 'FY2026', citedValue: 250000, statementType: 'STANDALONE',
+    }],
+    missingSectionsNote: null,
+  };
+  const result = validateGroundedExplanation(parsed, SECTIONS_FIXTURE); // fixture's incomeStatement is CONSOLIDATED
+  assert.equal(result.valid, false);
+  assert.ok(result.reason.toLowerCase().includes('statement basis'));
+});
+
 test('validateGroundedExplanation tolerates a purely qualitative observation that cites no number', () => {
   const parsed = {
     summary: 'The company operates in IT services.',
@@ -121,6 +200,51 @@ test('required: explainCompanyFinancials WITHHOLDS an ungrounded AI response rat
   );
   assert.equal(result.available, false);
   assert.ok(result.reason.toLowerCase().includes('withheld') || result.reason.toLowerCase().includes('verified'));
+});
+
+test('required: explainCompanyFinancials (end-to-end, mocked OpenAI) WITHHOLDS a response that cites a REAL number under the WRONG label -- the exact old bug, closed', async () => {
+  // Same shape of bug as the direct validateGroundedExplanation test above,
+  // but exercised through the full explainCompanyFinancials path (real
+  // OpenAI-response mocking) to prove the fix holds end-to-end, not just at
+  // the unit level: balanceSheet's real total_asset=500000 is cited as if
+  // it were revenue. The old flat-value-Set grounding check would have
+  // accepted this (500000 is a real number somewhere in the digest); the
+  // new label+period-indexed check must reject it.
+  const result = await withMockedOpenAI(
+    () => explainCompanyFinancials('TCS', SECTIONS_FIXTURE, 'Tata Consultancy Services Ltd.'),
+    {
+      summary: 'TCS reported revenue of 500000 Cr in FY2026.',
+      observations: [{ statement: 'Revenue was 500000 in FY2026', citedLabel: 'revenue', citedFinancialYear: 'FY2026', citedValue: 500000 }],
+      missingSectionsNote: null,
+    },
+  );
+  assert.equal(result.available, false, 'a real figure mislabeled as a different metric must still be withheld');
+  assert.ok(result.reason.toLowerCase().includes('withheld') || result.reason.toLowerCase().includes('verified'));
+});
+
+test('explainCompanyFinancials (end-to-end, mocked OpenAI) accepts a correctly-labeled verified-definition citation', async () => {
+  const sectionsWithVerifiedIncomeStatement = {
+    ...SECTIONS_FIXTURE,
+    incomeStatement: {
+      ...SECTIONS_FIXTURE.incomeStatement,
+      metrics: [
+        {
+          financialYear: 'FY2026', label: 'revenue', value: 271423, changePct: 4.68, providerLabel: 'revenue', verifiedDefinition: 'TOTAL_INCOME', verifiedLabel: 'Total income',
+        },
+      ],
+    },
+  };
+  const result = await withMockedOpenAI(
+    () => explainCompanyFinancials('TCS', sectionsWithVerifiedIncomeStatement, 'Tata Consultancy Services Ltd.'),
+    {
+      summary: 'TCS reported total income of 271423 Cr in FY2026.',
+      observations: [{
+        statement: 'Total income was 271423 Cr in FY2026 (Upstox-verified)', citedLabel: 'Total income', citedFinancialYear: 'FY2026', citedValue: 271423, statementType: 'CONSOLIDATED', definitionVerified: true,
+      }],
+      missingSectionsNote: null,
+    },
+  );
+  assert.equal(result.available, true);
 });
 
 test('explainCompanyFinancials degrades gracefully when OpenAI is not configured -- never throws, HTTP-200-safe', async () => {

@@ -131,6 +131,18 @@ test('UpstoxProvider fetches all sections concurrently without crashing when unc
   assert.ok(results.every((r) => r.reason.errorCode === UPSTOX_ERROR_CODES.CONFIGURATION_ERROR));
 });
 
+test('UpstoxProvider.getIncomeStatement requests fs:true alongside type/time_period, so the normalizer can cross-reference full_statement against the summary categories', async () => {
+  const provider = new UpstoxProvider({ token: 'test-token' });
+  let capturedParams = null;
+  withMockedClient(provider, async (path, config) => {
+    capturedParams = config?.params || null;
+    return { data: { data: { income_statement: [] } } };
+  });
+
+  await provider.getIncomeStatement(TEST_ISIN, { symbol: 'TCS' });
+  assert.deepEqual(capturedParams, { type: 'consolidated', time_period: 'yearly', fs: true });
+});
+
 test('UpstoxProvider.getCachedStatementsOnly never calls the network and degrades to all-null sections when nothing is cached (no Redis connected in this test process)', async () => {
   const provider = new UpstoxProvider({ token: 'test-token' });
   let networkCalled = false;

@@ -152,9 +152,22 @@ export class UpstoxProvider extends CompanyResearchProvider {
     return { fromCache, data: normalizeCashFlow(raw, { symbol, isin, fetchedAt, statementType: type, period: 'YEARLY' }) };
   }
 
+  /**
+   * getIncomeStatement - requests `fs: true` (full_statement) ALONGSIDE the
+   * usual summary categories. Confirmed live (see UpstoxNormalizer's
+   * deriveVerifiedDefinition) that Upstox's summary `revenue`/
+   * `operating_profit`/`net_profit` category names do not match their true
+   * accounting meaning (e.g. `revenue` is actually Total Income for real
+   * companies with other income). `full_statement` carries individually
+   * labeled line items ("Revenue", "Total Revenue", "Profit Before Tax",
+   * "Profit After Tax", ...) that the normalizer cross-references per
+   * period to derive a verified definition -- never guessed, never
+   * hardcoded. Cache key is unaffected (same resource/type/period); the
+   * richer response is simply cached under the same key as before.
+   */
   async getIncomeStatement(isin, { symbol = null, type = 'consolidated' } = {}) {
     const { raw, fetchedAt, fromCache } = await this._fetchCached(
-      isin, 'income-statement', { type, time_period: 'yearly' }, { type, period: 'YEARLY' },
+      isin, 'income-statement', { type, time_period: 'yearly', fs: true }, { type, period: 'YEARLY' },
     );
     return { fromCache, data: normalizeIncomeStatement(raw, { symbol, isin, fetchedAt, statementType: type, period: 'YEARLY' }) };
   }

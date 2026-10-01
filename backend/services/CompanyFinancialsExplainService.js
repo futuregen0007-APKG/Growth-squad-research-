@@ -27,13 +27,25 @@ const EXPLAIN_TIMEOUT_MS = 20000;
 
 const round2 = (value) => Math.round(Number(value) * 100) / 100;
 
-/** Pulls a minimal {label, financialYear, value, changePct}[] digest out of one normalized statement section -- the ONLY place prompt values come from. */
+/**
+ * Pulls a minimal {label, financialYear, value, changePct, verifiedLabel?,
+ * verifiedDefinition?}[] digest out of one normalized statement section --
+ * the ONLY place prompt values come from. verifiedLabel/verifiedDefinition
+ * are only ever present on income-statement metrics (UpstoxNormalizer only
+ * annotates those); they're included here verbatim, never recomputed, so
+ * the model sees exactly which labels are verified vs provider-reported-only.
+ */
 const statementDigest = (section) => {
   if (!section?.metrics?.length) return [];
   return section.metrics
     .filter((m) => m.value !== null)
     .map((m) => ({
-      label: m.label, financialYear: m.financialYear, value: m.value, changePct: m.changePct,
+      label: m.label,
+      financialYear: m.financialYear,
+      value: m.value,
+      changePct: m.changePct,
+      ...(m.verifiedLabel ? { verifiedLabel: m.verifiedLabel } : {}),
+      ...(m.verifiedDefinition ? { verifiedDefinition: m.verifiedDefinition } : {}),
     }));
 };
 
@@ -44,18 +56,21 @@ const ratiosDigest = (section) => {
     .map((r) => ({ name: r.name, companyValue: r.companyValue, sectorValue: r.sectorValue }));
 };
 
+/** statementSectionDigest - wraps statementDigest with the section's own statementType tag (e.g. "CONSOLIDATED"), so the model always knows which statement basis a metric came from and can echo it back for grounding. `null` when the section itself is unavailable, never a guessed default. */
+const statementSectionDigest = (section) => (section ? { statementType: section.statementType || null, metrics: statementDigest(section) } : null);
+
 /**
  * buildDigest - EVERY number in here is copied verbatim from `sections`
  * (the normalized Upstox output already fetched) -- nothing here is
  * computed, estimated, or looked up elsewhere. This is what makes grounded
  * validation possible: the prompt can never contain a figure that isn't
- * also indexable by buildSourceValueIndex below.
+ * also indexable by buildSourceIndex below.
  */
 const buildDigest = (sections) => ({
   profile: sections?.profile ? { sector: sections.profile.sector || null, companyProfile: sections.profile.companyProfile || null } : null,
-  balanceSheet: statementDigest(sections?.balanceSheet),
-  cashFlow: statementDigest(sections?.cashFlow),
-  incomeStatement: statementDigest(sections?.incomeStatement),
+  balanceSheet: statementSectionDigest(sections?.balanceSheet),
+  cashFlow: statementSectionDigest(sections?.cashFlow),
+  incomeStatement: statementSectionDigest(sections?.incomeStatement),
   keyRatios: ratiosDigest(sections?.keyRatios),
 });
 
@@ -74,6 +89,8 @@ RULES:
 3. If a section below is null, say so plainly in missingSectionsNote -- do not guess or fill the gap with outside knowledge.
 4. Distinguish an observed fact ("revenue was X in FY2026") from interpretation ("this suggests...") -- interpretation is welcome but must still be grounded in a cited DATA value.
 5. This is not investment advice -- never issue a buy/sell/hold recommendation.
+6. incomeStatement metrics may carry a "verifiedLabel" that was cross-checked against Upstox's own detailed line-item breakdown for that exact period (one of "Revenue from operations", "Total income", "Profit before tax", "Profit after tax (consolidated)"). When a metric has a verifiedLabel, you MUST cite it using that EXACT verifiedLabel text as citedLabel (not the raw provider label), and set definitionVerified: true. When a metric has NO verifiedLabel (it is null or absent), cite its raw label as citedLabel, explicitly add the phrase "(Upstox-reported, exact definition not independently verified)" to that observation's statement text, and set definitionVerified: false.
+7. "Profit after tax (consolidated)" is the CONSOLIDATED profit-after-tax figure. It may differ from the profit attributable to the parent company's own shareholders where the company has minority/non-controlling interests elsewhere in the group -- you may note this plainly, but NEVER state or imply a specific attributable-to-owners split, since that figure is not present in DATA.
 
 DATA:
 ${JSON.stringify(digest)}
@@ -84,46 +101,111 @@ Respond with STRICT JSON only, no prose outside the JSON object, in exactly this
 {
   "summary": "2-4 sentence plain-English summary, grounded only in DATA",
   "observations": [
-    { "statement": "one grounded sentence", "citedLabel": "revenue", "citedFinancialYear": "FY2026", "citedValue": 12345.6 }
+    { "statement": "one grounded sentence", "citedLabel": "Total income", "citedFinancialYear": "FY2026", "citedValue": 12345.6, "statementType": "CONSOLIDATED", "definitionVerified": true }
   ],
   "missingSectionsNote": "one sentence naming what's missing, or null if nothing is missing"
 }`;
 };
 
-/** buildSourceValueIndex - every numeric value actually present in `sections`, rounded to 2dp for stable comparison against whatever the model echoes back. */
-const buildSourceValueIndex = (sections) => {
-  const values = new Set();
+/**
+ * buildSourceIndex - replaces the old flat "does this number exist
+ * ANYWHERE" Set with a proper identity-checked lookup, built from the SAME
+ * digest the model was given:
+ *   - statementIndex: `${label}|${financialYear}` -> {value, changePct, statementType}
+ *     for balanceSheet/cashFlow/incomeStatement metrics. `label` is the
+ *     metric's verifiedLabel when it has one, else its raw label -- i.e.
+ *     the EXACT string the model was instructed to cite, so a verified
+ *     metric can only be grounded under its verified name, never its raw
+ *     provider label.
+ *   - ratioIndex: `name` -> {value} for keyRatios (no financial year).
+ * This is what closes the old bug: previously a citedValue was checked
+ * against a flat Set of every number anywhere in the data, so a REAL
+ * number (e.g. TCS's real total_asset) cited under a WRONG label (e.g.
+ * "revenue") still passed, because the set only tracked values, never
+ * which label/period/statement they actually belonged to. Resolving by
+ * (label, financialYear) FIRST and only then comparing the value closes
+ * that gap.
+ */
+const buildSourceIndex = (sections) => {
+  const statementIndex = new Map();
   for (const key of ['balanceSheet', 'cashFlow', 'incomeStatement']) {
-    for (const metric of statementDigest(sections?.[key])) {
-      if (metric.value != null) values.add(round2(metric.value));
-      if (metric.changePct != null) values.add(round2(metric.changePct));
+    const section = sections?.[key];
+    if (!section) continue;
+    const statementType = section.statementType || null;
+    for (const metric of statementDigest(section)) {
+      const labelKey = metric.verifiedLabel || metric.label;
+      if (labelKey == null || metric.financialYear == null || metric.value == null) continue;
+      statementIndex.set(`${labelKey}|${metric.financialYear}`, {
+        value: metric.value, changePct: metric.changePct, statementType,
+      });
     }
   }
+  const ratioIndex = new Map();
   for (const ratio of ratiosDigest(sections?.keyRatios)) {
-    if (ratio.companyValue != null) values.add(round2(ratio.companyValue));
-    if (ratio.sectorValue != null) values.add(round2(ratio.sectorValue));
+    if (ratio.name == null || ratio.companyValue == null) continue;
+    ratioIndex.set(ratio.name, { value: ratio.companyValue, statementType: null });
   }
-  return values;
+  return { statementIndex, ratioIndex };
 };
 
 /**
  * validateGroundedExplanation - the caller-side check that makes it
  * impossible for an AI explanation to survive citing a number that was
- * never actually fetched. Mirrors searchManagementExplanation's
- * validate-against-a-known-good-set idiom in ManagementPromiseService.js.
+ * never actually fetched UNDER THE LABEL/PERIOD/STATEMENT-BASIS it claims.
+ * Mirrors searchManagementExplanation's validate-against-a-known-good-set
+ * idiom in ManagementPromiseService.js, but checks metric identity (label +
+ * period, and statement basis when echoed), not just numeric existence.
  */
 export const validateGroundedExplanation = (parsed, sections) => {
   if (!parsed || typeof parsed.summary !== 'string' || !parsed.summary.trim()) {
     return { valid: false, reason: 'Model returned no usable summary.' };
   }
   const observations = Array.isArray(parsed.observations) ? parsed.observations : [];
-  const valueIndex = buildSourceValueIndex(sections);
+  const { statementIndex, ratioIndex } = buildSourceIndex(sections);
   for (const observation of observations) {
     if (observation?.citedValue === null || observation?.citedValue === undefined) continue; // a purely qualitative observation cites no number -- nothing to ground
-    if (!Number.isFinite(Number(observation.citedValue)) || !valueIndex.has(round2(observation.citedValue))) {
+    const citedValue = Number(observation.citedValue);
+    if (!Number.isFinite(citedValue)) {
       return {
         valid: false,
-        reason: `Observation cites a value (${observation.citedValue}) that is not present in the fetched Upstox data.`,
+        reason: `Observation cites a non-numeric value (${observation.citedValue}).`,
+        ungroundedObservation: observation,
+      };
+    }
+    const citedLabel = observation?.citedLabel != null ? String(observation.citedLabel) : null;
+    const citedFinancialYear = observation?.citedFinancialYear != null ? String(observation.citedFinancialYear) : null;
+
+    // Resolve the SPECIFIC metric this observation claims to cite -- by
+    // label+period first (statements), falling back to label-only (ratios,
+    // which carry no financial year) -- never by value alone.
+    let entry = null;
+    if (citedLabel && citedFinancialYear) entry = statementIndex.get(`${citedLabel}|${citedFinancialYear}`) || null;
+    if (!entry && citedLabel) entry = ratioIndex.get(citedLabel) || null;
+
+    if (!entry) {
+      return {
+        valid: false,
+        reason: `Observation cites "${citedLabel}" for ${citedFinancialYear || 'an unspecified period'}, which does not match any metric label/period actually present in the fetched Upstox data.`,
+        ungroundedObservation: observation,
+      };
+    }
+
+    const roundedCited = round2(citedValue);
+    const valueMatches = roundedCited === round2(entry.value)
+      || (entry.changePct != null && roundedCited === round2(entry.changePct));
+    if (!valueMatches) {
+      return {
+        valid: false,
+        reason: `Observation cites a value (${observation.citedValue}) that does not match the fetched value for "${citedLabel}" in ${citedFinancialYear || 'the cited period'}.`,
+        ungroundedObservation: observation,
+      };
+    }
+
+    if (observation?.statementType != null && entry.statementType != null
+      && String(observation.statementType).toUpperCase() !== String(entry.statementType).toUpperCase()) {
+      return {
+        valid: false,
+        reason: `Observation claims statement basis "${observation.statementType}" for "${citedLabel}", but the matched metric is actually ${entry.statementType}.`,
         ungroundedObservation: observation,
       };
     }

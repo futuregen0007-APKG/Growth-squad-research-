@@ -94,7 +94,18 @@ function StatementTable({ section }) {
       <div className="max-h-72 divide-y divide-gs-border overflow-y-auto">
         {data.metrics.map((m, index) => (
           <div key={`${m.label}-${m.financialYear}-${index}`} className="flex items-center justify-between gap-3 py-1.5 text-[12px]">
-            <span className="capitalize text-gs-textMuted">{String(m.label || '').replace(/_/g, ' ')} <span className="text-gs-textDim">({safeText(m.financialYear)})</span></span>
+            <span className="capitalize text-gs-textMuted">
+              {m.verifiedLabel
+                ? m.verifiedLabel
+                // `verifiedDefinition` (even when null) only ever exists on income-statement
+                // metrics -- balanceSheet/cashFlow metrics never carry that key at all, so
+                // this qualifier only ever appears where a definition was actually checked
+                // and didn't resolve, never on the statements that don't need it.
+                : (m.verifiedDefinition !== undefined
+                  ? <>{String(m.label || '').replace(/_/g, ' ')} <span className="normal-case text-gs-textDim">(provider-reported, definition unverified)</span></>
+                  : String(m.label || '').replace(/_/g, ' '))}
+              {' '}<span className="text-gs-textDim">({safeText(m.financialYear)})</span>
+            </span>
             <span className="font-mono text-gs-text">{formatCr(m.value)}{m.changePct != null ? <span className="ml-2 text-gs-textDim">{formatPct(m.changePct)}</span> : null}</span>
           </div>
         ))}
