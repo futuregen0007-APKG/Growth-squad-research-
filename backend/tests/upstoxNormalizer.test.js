@@ -28,11 +28,17 @@ test('deriveFiscalYearLabel: never guesses on an unparseable label', () => {
 });
 
 test('normalizeIncomeStatement: nested category/history shape maps to explicit metrics, FY-labeled, never merging consolidated/standalone or yearly/quarterly ambiguously', () => {
+  // `change` is a formatted percentage STRING in Upstox's real responses
+  // (confirmed live: "+12.5%", "-454.14%"), not a plain number -- this
+  // fixture was fixed to match after that mismatch let a real bug through
+  // (toNumberOrNull("+12.5%") is NaN because of the trailing "%", so every
+  // changePct silently came back null against live data despite this
+  // test, with a plain-number fixture, passing throughout).
   const raw = {
     data: {
       income_statement: [
-        { category: 'revenue', history: [{ value: 250000, period: 'Mar 2026', change: 12.5 }, { value: 222000, period: 'Mar 2025', change: 8.1 }] },
-        { category: 'net_profit', history: [{ value: 45000, period: 'Mar 2026', change: 15.2 }] },
+        { category: 'revenue', history: [{ value: 250000, period: 'Mar 2026', change: '+12.5%' }, { value: 222000, period: 'Mar 2025', change: '+8.1%' }] },
+        { category: 'net_profit', history: [{ value: 45000, period: 'Mar 2026', change: '-15.2%' }] },
       ],
     },
   };
@@ -56,6 +62,7 @@ test('normalizeIncomeStatement: nested category/history shape maps to explicit m
   const netProfitFY2026 = result.metrics.find((m) => m.label === 'net_profit' && m.financialYear === 'FY2026');
   assert.ok(netProfitFY2026);
   assert.equal(netProfitFY2026.value, 45000);
+  assert.equal(netProfitFY2026.changePct, -15.2, 'a negative percentage string parses correctly too');
 
   assert.ok(result.raw, 'raw response preserved for debugging');
 });

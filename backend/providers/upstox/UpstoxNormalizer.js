@@ -38,6 +38,21 @@ export const deriveFiscalYearLabel = (periodLabel) => {
 const slugify = (value) => String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 
 /**
+ * parseChangePct - Upstox's `change` field is a formatted percentage
+ * STRING like "+6.51%" or "-454.14%", not a plain number -- confirmed
+ * live against real income-statement and cash-flow responses. Passing
+ * that straight through toNumberOrNull silently dropped every real
+ * change value to null (Number("+6.51%") is NaN because of the trailing
+ * "%", even though the numeric part is perfectly valid). Strips the "%"
+ * before delegating to the same never-fabricate numeric coercion used
+ * everywhere else.
+ */
+const parseChangePct = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  return toNumberOrNull(String(value).replace(/%/g, '').trim());
+};
+
+/**
  * extractPeriodicMetrics - handles BOTH shapes Upstox's statement
  * endpoints use: a nested "category -> history[]" shape (confirmed for
  * income-statement: `{category, history:[{value,period,change}]}`, and
@@ -62,7 +77,7 @@ const extractPeriodicMetrics = (list, { flatExcludeKeys = ['period'] } = {}) => 
         rawPeriod: h?.period != null ? String(h.period) : null,
         label,
         value: toNumberOrNull(h?.value),
-        changePct: toNumberOrNull(h?.change),
+        changePct: parseChangePct(h?.change),
       }));
     });
   }
@@ -198,7 +213,7 @@ export const normalizeCorporateActions = (raw, { symbol = null, isin, fetchedAt 
   };
 };
 
-export { extractPeriodicMetrics };
+export { extractPeriodicMetrics, parseChangePct };
 
 export default {
   UPSTOX_UNIT,
