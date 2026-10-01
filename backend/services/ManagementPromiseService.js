@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { loadEarningsAnnualFinancials } from './EarningsAnnualFinancials.js';
 import ManagementPromise from '../models/ManagementPromise.js';
 import CompanyHistoricalFact, { FACT_CATEGORIES } from '../models/CompanyHistoricalFact.js';
 import ResearchRun from '../models/ResearchRun.js';
@@ -1239,7 +1240,7 @@ export const refreshCompanyResearch = async (symbol, researchRunId = null, progr
       profile
     });
 
-    const periods = [...new Set(allDbFacts.map(f => f.period).filter(Boolean))];
+    const periods = executionScoreResult.financialSnapshot.coveredYears;
     const coverageStart = periods.length ? periods[0] : null;
     const coverageEnd = periods.length ? periods[periods.length - 1] : null;
 
@@ -1247,7 +1248,8 @@ export const refreshCompanyResearch = async (symbol, researchRunId = null, progr
       facts: allDbFacts,
       promises: allDbPromises,
       sources: documents,
-      coverageYears: periods
+      coverageYears: periods,
+      financialQuality: executionScoreResult.financialSnapshot.quality
     });
 
     const state = allDbFacts.length >= 8 ? 'HISTORICAL_DATA_AVAILABLE' : allDbFacts.length > 0 ? 'LIMITED_COVERAGE' : 'INSUFFICIENT_EVIDENCE';
@@ -1421,13 +1423,13 @@ const getFinancialIntelligence = async (symbol) => {
   }
 };
 
-export const getCompanySummary = async (symbol) => {
+export const getCompanySummary = async (symbol, { annualFinancials = null } = {}) => {
   const normalized = String(symbol).toUpperCase();
   const profile = getCompanyResearchProfile(normalized, companyFor(normalized), SUPPORTED_STOCKS[normalized]?.sector);
   const facts = await getCompanyFacts(normalized);
   const promises = await getCompanyPromises(normalized);
   const reliability = calculateReliability(promises);
-  const financialIntelligence = await getFinancialIntelligence(normalized);
+  const financialIntelligence = annualFinancials ? null : await getFinancialIntelligence(normalized);
 
   let latestRun = null;
   if (isDbConnected()) {
@@ -1441,17 +1443,12 @@ export const getCompanySummary = async (symbol) => {
   const executionScoreResult = calculateCompanyExecutionScore({
     facts,
     promises,
-    profile
+    profile,
+    financialFacts: annualFinancials?.facts ?? null
   });
 
-  const periods = [...new Set(facts.map(f => f.period).filter(Boolean))].sort((a, b) => {
-    const yearA = parseInt(String(a).match(/\d+/)?.[0] || '0', 10);
-    const yearB = parseInt(String(b).match(/\d+/)?.[0] || '0', 10);
-    return yearA - yearB;
-  });
-  const coverageYears = periods.length
-    ? `${periods[0]}–${periods[periods.length - 1]}`
-    : latestRun?.coverageStart ? `${latestRun.coverageStart}–${latestRun.coverageEnd}` : 'Coverage unavailable';
+  const periods = executionScoreResult.financialSnapshot.coveredYears;
+  const coverageYears = periods.length ? `${periods[0]}–${periods[periods.length - 1]}` : 'Coverage unavailable';
 
   // Count unique source documents
   const uniqueSourceUrls = new Set();
@@ -1462,7 +1459,8 @@ export const getCompanySummary = async (symbol) => {
     facts,
     promises,
     sources: Array.from(uniqueSourceUrls),
-    coverageYears: periods
+    coverageYears: periods,
+    financialQuality: { excludedFactsCount: executionScoreResult.financialSnapshot.quality.historicalExcludedFactsCount ?? executionScoreResult.financialSnapshot.quality.excludedFactsCount }
   });
 
   let researchState = 'RESEARCH_REQUIRED';
@@ -1489,6 +1487,7 @@ export const getCompanySummary = async (symbol) => {
     ratingLabel: executionScoreResult.ratingLabel,
     scoreBreakdown: executionScoreResult.scoreBreakdown,
     financialSnapshot: executionScoreResult.financialSnapshot,
+    financialDataStatus: annualFinancials ? { ...annualFinancials, facts: undefined } : { provider: 'STORED_FILINGS' },
     financialIntelligence,
     guidanceSuccessRate: executionScoreResult.guidanceSuccessRate,
     confidence: confidence.level,
@@ -1516,7 +1515,8 @@ export const getCompanyReport = async (symbol) => {
   const profile = getCompanyResearchProfile(normalized, companyFor(normalized), SUPPORTED_STOCKS[normalized]?.sector);
   const facts = await getCompanyFacts(normalized);
   const promises = await getCompanyPromises(normalized);
-  const summary = await getCompanySummary(normalized);
+  const annualFinancials = await loadEarningsAnnualFinancials(normalized).catch(() => ({ facts: [], provider: 'UPSTOX', status: 'UNAVAILABLE', reason: 'PROVIDER_ERROR' }));
+  const summary = await getCompanySummary(normalized, { annualFinancials });
   const latestRun = summary.latestRun;
 
   const strategicFacts = facts.filter(f => 
@@ -1648,6 +1648,7 @@ export const getCompanyReport = async (symbol) => {
     financialCoverage,
     promiseCoverage,
     financialSnapshot: summary.financialSnapshot,
+    financialDataStatus: summary.financialDataStatus,
     historicalFacts: facts,
     timeline: facts, // Full chronological verified events
     businessDevelopments: strategicFacts,

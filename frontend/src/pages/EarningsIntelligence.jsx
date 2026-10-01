@@ -247,11 +247,11 @@ function CompanyCard({ report, onOpen }) {
             </div>
             <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] font-mono">
               <div className="flex justify-between">
-                <span className="text-gs-textDim">5-Yr Rev CAGR:</span>
+                <span className="text-gs-textDim">Income CAGR:</span>
                 <span className="font-semibold text-gs-text">{snapshot.revenueCagr != null ? `${snapshot.revenueCagr}%` : 'N/A'}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-gs-textDim">5-Yr PAT CAGR:</span>
+                <span className="text-gs-textDim">{snapshot.patLabel || 'Profit after tax'} CAGR:</span>
                 <span className="font-semibold text-gs-pos">{snapshot.patCagr != null ? `${snapshot.patCagr}%` : 'N/A'}</span>
               </div>
               <div className="flex justify-between">
@@ -260,7 +260,7 @@ function CompanyCard({ report, onOpen }) {
               </div>
               <div className="flex justify-between">
                 <span className="text-gs-textDim">Debt Trend:</span>
-                <span className="font-semibold text-blue-300 truncate">{snapshot.debtTrend || 'Stable'}</span>
+                <span className="font-semibold text-blue-300 truncate">{snapshot.debtTrend || 'Unavailable'}</span>
               </div>
             </div>
 
@@ -1172,7 +1172,7 @@ function CompanyReport({ symbol, onBack }) {
     return (
       <div className="p-8 text-center space-y-4">
         <RefreshCw className="w-8 h-8 text-gs-gold animate-spin mx-auto" />
-        <div className="font-mono text-sm text-gs-textDim">Loading 5-year historical intelligence for {symbol}...</div>
+        <div className="font-mono text-sm text-gs-textDim">Loading financial and historical intelligence for {symbol}...</div>
       </div>
     );
   }
@@ -1193,7 +1193,6 @@ function CompanyReport({ symbol, onBack }) {
   const confidence = (typeof report.confidence === 'string' ? report.confidence : report.confidence?.level) || 'INSUFFICIENT EVIDENCE';
   const coverage = report.coverage || 'Coverage unavailable';
   const snapshot = report.financialSnapshot || {};
-  const financialIntelligence = report.financialIntelligence || null;
   const breakdown = report.scoreBreakdown || {};
   const promises = report.promises || [];
   const sourceDocs = report.sourceDocuments || [];
@@ -1241,7 +1240,7 @@ function CompanyReport({ symbol, onBack }) {
             </h1>
 
             <p className="text-xs font-mono text-gs-textDim flex items-center gap-2 flex-wrap">
-              <span>5-Year Historical Track Record ({coverage})</span>
+              <span>Annual Financial Track Record ({coverage})</span>
               <span>·</span>
               <span>{report.confidence?.verifiedFactsCount || report.historicalFacts?.length || 0} Verified Facts</span>
               <span>·</span>
@@ -1323,7 +1322,7 @@ function CompanyReport({ symbol, onBack }) {
             className={`font-mono text-xs ${activeTab === 'financials' ? 'bg-gs-gold text-gs-bg font-bold' : 'text-gs-textDim'}`}
           >
             <Calculator className="w-3.5 h-3.5 mr-1" />
-            5-Year Financial History & Growth
+            Annual Financial History & Growth
           </Button>
 
           <Button
@@ -1380,18 +1379,29 @@ function CompanyReport({ symbol, onBack }) {
         {/* TAB 1: SECTION A - 5-Year Verified Financial Track Record & Deterministic Growth */}
         {activeTab === 'financials' && (
           <div className="space-y-6">
+            {(snapshot.quality?.excludedFactsCount > 0 || snapshot.quality?.historicalExcludedFactsCount > 0) && (
+              <div role="status" className="p-3 border border-gs-gold/40 rounded text-sm text-gs-gold">
+                Conflicting historical financial extracts were excluded. The annual table and growth calculations use Upstox statements; missing values remain N/A.
+              </div>
+            )}
+            <div className="text-xs font-mono text-gs-textDim" role="status">
+              Financial source: {report.financialDataStatus?.provider || 'Unavailable'} — {report.financialDataStatus?.status || 'Unavailable'}.
+              {report.financialDataStatus?.sections?.incomeStatement?.fetchedAt && (
+                <span> Fetched: {new Date(report.financialDataStatus.sections.incomeStatement.fetchedAt).toLocaleString()} ({report.financialDataStatus.sections.incomeStatement.fromCache ? 'cached' : 'upstream fetch'}).</span>
+              )}
+            </div>
             {/* Growth Cards */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono">
               <div className="p-3.5 bg-gs-card rounded border border-gs-border">
-                <div className="text-xs text-gs-textDim">5-Year Revenue CAGR</div>
+                <div className="text-xs text-gs-textDim">{snapshot.revenueLabel || 'Revenue / income'} CAGR</div>
                 <div className="text-xl font-bold text-gs-text mt-1">{snapshot.revenueCagr != null ? `${snapshot.revenueCagr}%` : 'N/A'}</div>
-                <div className="text-[10px] text-gs-textDim mt-0.5">{coverage} Topline Growth</div>
+                <div className="text-[10px] text-gs-textDim mt-0.5">{snapshot.revenueWindow || 'Comparable annual history unavailable'}</div>
               </div>
 
               <div className="p-3.5 bg-gs-card rounded border border-gs-border">
-                <div className="text-xs text-gs-textDim">5-Year PAT CAGR</div>
+                <div className="text-xs text-gs-textDim">{snapshot.patLabel || 'Profit after tax'} CAGR</div>
                 <div className="text-xl font-bold text-gs-pos mt-1">{snapshot.patCagr != null ? `${snapshot.patCagr}%` : 'N/A'}</div>
-                <div className="text-[10px] text-gs-textDim mt-0.5">{coverage} Net Profit Trajectory</div>
+                <div className="text-[10px] text-gs-textDim mt-0.5">{snapshot.patWindow || 'Comparable annual history unavailable'}</div>
               </div>
 
               <div className="p-3.5 bg-gs-card rounded border border-gs-border">
@@ -1402,68 +1412,10 @@ function CompanyReport({ symbol, onBack }) {
 
               <div className="p-3.5 bg-gs-card rounded border border-gs-border">
                 <div className="text-xs text-gs-textDim">Debt Trend</div>
-                <div className="text-xl font-bold text-blue-300 mt-1 truncate">{snapshot.debtTrend || 'Stable'}</div>
+                <div className="text-xl font-bold text-blue-300 mt-1 truncate">{snapshot.debtTrend || 'Unavailable'}</div>
                 <div className="text-[10px] text-gs-textDim mt-0.5">Balance Sheet Quality</div>
               </div>
             </div>
-
-            {/* Financial Intelligence (provider-backed, broadly available -- distinct
-                from the curated/verified 5-Year Historical Snapshot above, which
-                requires manual research and is sparse today). Missing fields render
-                as "—", never fabricated or shown as 0. */}
-            <Card className="bg-gs-panel/40 border-gs-border p-4 space-y-3">
-              <div className="flex items-center justify-between border-b border-gs-border/60 pb-2">
-                <h3 className="font-semibold text-gs-text text-sm">Financial Intelligence</h3>
-                <Badge variant="outline" className="font-mono text-[10px] uppercase">
-                  {financialIntelligence ? (financialIntelligence.sourceProvider || 'Provider Data') : 'Unavailable'}
-                </Badge>
-              </div>
-              {financialIntelligence ? (
-                <>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono text-xs">
-                    <div>
-                      <div className="text-gs-textDim text-[10px] uppercase">Latest Period</div>
-                      <div className="font-bold text-gs-text mt-0.5">{financialIntelligence.latestPeriod ?? '—'}</div>
-                    </div>
-                    <div>
-                      <div className="text-gs-textDim text-[10px] uppercase">Revenue Growth</div>
-                      <div className="font-bold text-gs-text mt-0.5">{financialIntelligence.revenueGrowth != null ? `${financialIntelligence.revenueGrowth}%` : '—'}</div>
-                    </div>
-                    <div>
-                      <div className="text-gs-textDim text-[10px] uppercase">Profit Growth</div>
-                      <div className="font-bold text-gs-pos mt-0.5">{financialIntelligence.netProfitGrowth != null ? `${financialIntelligence.netProfitGrowth}%` : '—'}</div>
-                    </div>
-                    <div>
-                      <div className="text-gs-textDim text-[10px] uppercase">Operating Margin</div>
-                      <div className="font-bold text-gs-gold mt-0.5">{financialIntelligence.operatingMargin != null ? `${financialIntelligence.operatingMargin}%` : '—'}</div>
-                    </div>
-                    <div>
-                      <div className="text-gs-textDim text-[10px] uppercase">Revenue</div>
-                      <div className="font-bold text-gs-text mt-0.5">{financialIntelligence.revenue != null ? `₹${financialIntelligence.revenue} Cr` : '—'}</div>
-                    </div>
-                    <div>
-                      <div className="text-gs-textDim text-[10px] uppercase">Net Profit</div>
-                      <div className="font-bold text-gs-text mt-0.5">{financialIntelligence.netProfit != null ? `₹${financialIntelligence.netProfit} Cr` : '—'}</div>
-                    </div>
-                    <div>
-                      <div className="text-gs-textDim text-[10px] uppercase">EPS</div>
-                      <div className="font-bold text-gs-text mt-0.5">{financialIntelligence.eps != null ? `₹${financialIntelligence.eps}` : '—'}</div>
-                    </div>
-                    <div>
-                      <div className="text-gs-textDim text-[10px] uppercase">Debt Trend</div>
-                      <div className="font-bold text-blue-300 mt-0.5 truncate">{financialIntelligence.debtTrend ?? '—'}</div>
-                    </div>
-                  </div>
-                  <div className="text-[10px] font-mono text-gs-textDim pt-1 border-t border-gs-border/40">
-                    As of {formatDate(financialIntelligence.fetchedAt)} · Sourced from company-reported financial statements, not management guidance or promises.
-                  </div>
-                </>
-              ) : (
-                <div className="text-xs font-mono text-gs-textMuted py-2">
-                  Financial data is currently unavailable for this company.
-                </div>
-              )}
-            </Card>
 
             {/* Exact Mathematical Formula Breakdown */}
             <Card className="bg-gs-panel/40 border-gs-border p-4 font-mono text-xs space-y-2">
@@ -1487,14 +1439,14 @@ function CompanyReport({ symbol, onBack }) {
               <div className="flex items-center justify-between border-b border-gs-border/60 pb-3">
                 <div>
                   <h3 className="font-semibold text-gs-text text-sm sm:text-base">
-                    5-Year Verified Financial Track Record ({coverage})
+                    Annual Financial Track Record ({coverage})
                   </h3>
                   <div className="text-xs font-mono text-gs-textDim mt-0.5">
-                    Audited statutory numbers from primary company disclosures. Missing metrics are labeled N/A (never fabricated).
+                    Annual figures selected from reporting-period evidence. Missing or conflicting metrics are labeled N/A.
                   </div>
                 </div>
                 <Badge variant="outline" className="font-mono text-[10px] uppercase">
-                  Primary Source Backed
+                  Annual Evidence
                 </Badge>
               </div>
 
@@ -1511,7 +1463,7 @@ function CompanyReport({ symbol, onBack }) {
                     </thead>
                     <tbody className="divide-y divide-gs-border/40 text-gs-text">
                       <tr className="hover:bg-gs-panel/20">
-                        <td className="py-2 px-3 font-semibold text-gs-text">Revenue (₹ Cr)</td>
+                        <td className="py-2 px-3 font-semibold text-gs-text">{snapshot.revenueLabel || 'Revenue / income'} (₹ Cr)</td>
                         {annualSeries.map(s => (
                           <td key={s.year} className="py-2 px-3 text-right font-medium">{s.revenue != null ? s.revenue : 'N/A'}</td>
                         ))}
@@ -1529,19 +1481,19 @@ function CompanyReport({ symbol, onBack }) {
                         ))}
                       </tr>
                       <tr className="hover:bg-gs-panel/20">
-                        <td className="py-2 px-3 font-semibold text-gs-pos">PAT (₹ Cr)</td>
+                        <td className="py-2 px-3 font-semibold text-gs-pos">{snapshot.patLabel || 'Profit after tax'} (₹ Cr)</td>
                         {annualSeries.map(s => (
                           <td key={s.year} className="py-2 px-3 text-right font-medium text-gs-pos">{s.pat != null ? s.pat : 'N/A'}</td>
                         ))}
                       </tr>
                       <tr className="hover:bg-gs-panel/20">
-                        <td className="py-2 px-3 text-gs-textDim">Adjusted PAT (₹ Cr)</td>
+                        <td className="py-2 px-3 text-gs-textDim">Adjusted {snapshot.patLabel || 'Profit after tax'} (₹ Cr)</td>
                         {annualSeries.map(s => (
                           <td key={s.year} className="py-2 px-3 text-right">{s.adjustedPat != null ? s.adjustedPat : 'N/A'}</td>
                         ))}
                       </tr>
                       <tr className="hover:bg-gs-panel/20">
-                        <td className="py-2 px-3 text-gs-textDim">Diluted EPS (₹)</td>
+                        <td className="py-2 px-3 text-gs-textDim">{snapshot.epsLabel || 'EPS'} (₹)</td>
                         {annualSeries.map(s => (
                           <td key={s.year} className="py-2 px-3 text-right">{s.eps != null ? `₹${s.eps}` : 'N/A'}</td>
                         ))}

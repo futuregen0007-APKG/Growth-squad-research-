@@ -4,6 +4,7 @@
  */
 
 import { logger } from '../utils/logger.js';
+import { selectAnnualFacts } from './AnnualFinancialEvidence.js';
 
 /**
  * Exact Mathematical Compound Annual Growth Rate (CAGR)
@@ -86,11 +87,19 @@ export const extractYearFromPeriod = (period) => {
  */
 export const isSubYearPeriod = (period) => /(^|[^A-Za-z0-9])(Q[1-4]|H[12]|[1-9]M)(?=FY|[^A-Za-z]|$)/i.test(String(period || ''));
 
+
+const comparableSeries = (series) => {
+  const cells = Object.values(series);
+  return cells.length >= 2 && !cells.some(c => c.definition?.startsWith('UNVERIFIED')) && new Set(cells.map(c => `${c.basis}:${c.definition}:${c.unit}`)).size === 1;
+};
+
 /**
  * Builds 5-Year Verified Financial Track Record matrix and growth calculations
  * from FULL-YEAR facts only (see isSubYearPeriod).
  */
 export const buildFinancialSnapshot = (facts = []) => {
+  const { selected, rejected } = selectAnnualFacts(facts);
+  facts = selected;
   const metricHistory = {
     REVENUE: {},
     EBITDA: {},
@@ -118,37 +127,38 @@ export const buildFinancialSnapshot = (facts = []) => {
 
     if (year && value !== null && value !== undefined && Number.isFinite(Number(value))) {
       const numVal = Number(value);
+      const evidence = { ...fact.annualEvidence, sourceUrl: fact.source?.url || null, sourceFactId: fact._id ? String(fact._id) : null };
 
       if (rawMetric === 'REVENUE' || rawMetric === 'TOTAL_REVENUE' || rawMetric === 'TURNOVER') {
-        metricHistory.REVENUE[year] = { value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
+        metricHistory.REVENUE[year] = { ...evidence, value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
       } else if (rawMetric === 'EBITDA') {
-        metricHistory.EBITDA[year] = { value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
+        metricHistory.EBITDA[year] = { ...evidence, value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
       } else if (rawMetric === 'EBITDA_MARGIN' || rawMetric === 'OPERATING_MARGIN' || rawMetric === 'EBIT_MARGIN') {
-        metricHistory.EBITDA_MARGIN[year] = { value: numVal, period, unit: 'PERCENTAGE' };
+        metricHistory.EBITDA_MARGIN[year] = { ...evidence, value: numVal, period, unit: 'PERCENTAGE' };
       } else if (rawMetric === 'PAT' || rawMetric === 'NET_PROFIT' || rawMetric === 'PROFIT_AFTER_TAX') {
-        metricHistory.PAT[year] = { value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
+        metricHistory.PAT[year] = { ...evidence, value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
       } else if (rawMetric === 'ADJUSTED_PAT') {
-        metricHistory.ADJUSTED_PAT[year] = { value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
+        metricHistory.ADJUSTED_PAT[year] = { ...evidence, value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
       } else if (rawMetric === 'EPS' || rawMetric === 'DILUTED_EPS') {
-        metricHistory.EPS[year] = { value: numVal, period, unit: 'INR' };
+        metricHistory.EPS[year] = { ...evidence, value: numVal, period, unit: 'INR' };
       } else if (rawMetric === 'OPERATING_CASH_FLOW' || rawMetric === 'CASH_FLOW_OPERATIONS') {
-        metricHistory.OPERATING_CASH_FLOW[year] = { value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
+        metricHistory.OPERATING_CASH_FLOW[year] = { ...evidence, value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
       } else if (rawMetric === 'FREE_CASH_FLOW' || rawMetric === 'FCF') {
-        metricHistory.FREE_CASH_FLOW[year] = { value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
+        metricHistory.FREE_CASH_FLOW[year] = { ...evidence, value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
       } else if (rawMetric === 'DEBT' || rawMetric === 'TOTAL_DEBT' || rawMetric === 'BORROWINGS') {
-        metricHistory.DEBT[year] = { value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
+        metricHistory.DEBT[year] = { ...evidence, value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
       } else if (rawMetric === 'NET_DEBT') {
-        metricHistory.NET_DEBT[year] = { value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
+        metricHistory.NET_DEBT[year] = { ...evidence, value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
       } else if (rawMetric === 'ROE') {
-        metricHistory.ROE[year] = { value: numVal, period, unit: 'PERCENTAGE' };
+        metricHistory.ROE[year] = { ...evidence, value: numVal, period, unit: 'PERCENTAGE' };
       } else if (rawMetric === 'ROCE') {
-        metricHistory.ROCE[year] = { value: numVal, period, unit: 'PERCENTAGE' };
+        metricHistory.ROCE[year] = { ...evidence, value: numVal, period, unit: 'PERCENTAGE' };
       } else if (rawMetric === 'ORDER_BOOK') {
-        metricHistory.ORDER_BOOK[year] = { value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
+        metricHistory.ORDER_BOOK[year] = { ...evidence, value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
       } else if (rawMetric === 'NIM') {
-        metricHistory.NIM[year] = { value: numVal, period, unit: 'PERCENTAGE' };
+        metricHistory.NIM[year] = { ...evidence, value: numVal, period, unit: 'PERCENTAGE' };
       } else if (rawMetric === 'GNPA') {
-        metricHistory.GNPA[year] = { value: numVal, period, unit: 'PERCENTAGE' };
+        metricHistory.GNPA[year] = { ...evidence, value: numVal, period, unit: 'PERCENTAGE' };
       }
     }
   });
@@ -166,7 +176,7 @@ export const buildFinancialSnapshot = (facts = []) => {
     const yearsDiff = endYr - startYr;
     revenueStart = metricHistory.REVENUE[startYr].value;
     revenueEnd = metricHistory.REVENUE[endYr].value;
-    if (yearsDiff >= 1) {
+    if (yearsDiff >= 1 && comparableSeries(metricHistory.REVENUE)) {
       revenueCagr = calculateCagr(revenueStart, revenueEnd, yearsDiff);
       if (revenueCagr !== null) {
         revenueCagrFormula = `((${revenueEnd} / ${revenueStart})^(1/${yearsDiff}) - 1) * 100 = ${revenueCagr}% (FY${startYr} to FY${endYr})`;
@@ -187,7 +197,7 @@ export const buildFinancialSnapshot = (facts = []) => {
     const yearsDiff = endYr - startYr;
     patStart = metricHistory.PAT[startYr].value;
     patEnd = metricHistory.PAT[endYr].value;
-    if (yearsDiff >= 1) {
+    if (yearsDiff >= 1 && comparableSeries(metricHistory.PAT)) {
       patCagr = calculateCagr(patStart, patEnd, yearsDiff);
       if (patCagr !== null) {
         patCagrFormula = `((${patEnd} / ${patStart})^(1/${yearsDiff}) - 1) * 100 = ${patCagr}% (FY${startYr} to FY${endYr})`;
@@ -202,7 +212,7 @@ export const buildFinancialSnapshot = (facts = []) => {
     const startYr = ebitdaYears[0];
     const endYr = ebitdaYears[ebitdaYears.length - 1];
     const yearsDiff = endYr - startYr;
-    if (yearsDiff >= 1) {
+    if (yearsDiff >= 1 && comparableSeries(metricHistory.EBITDA)) {
       ebitdaCagr = calculateCagr(metricHistory.EBITDA[startYr].value, metricHistory.EBITDA[endYr].value, yearsDiff);
     }
   }
@@ -217,10 +227,10 @@ export const buildFinancialSnapshot = (facts = []) => {
 
   // Calculate Debt Trend
   const debtYears = Object.keys(metricHistory.DEBT).map(Number).sort((a, b) => a - b);
-  let debtTrend = 'Stable';
+  let debtTrend = 'Unavailable';
   let debtChangePercent = null;
 
-  if (debtYears.length >= 2) {
+  if (debtYears.length >= 2 && comparableSeries(metricHistory.DEBT)) {
     const firstDebt = metricHistory.DEBT[debtYears[0]].value;
     const lastDebt = metricHistory.DEBT[debtYears[debtYears.length - 1]].value;
     debtChangePercent = calculateYoY(firstDebt, lastDebt);
@@ -264,9 +274,17 @@ export const buildFinancialSnapshot = (facts = []) => {
     gnpa: metricHistory.GNPA[yr]?.value ?? null
   }));
 
+  const revenueDefinitions = [...new Set(Object.values(metricHistory.REVENUE).map(v => v.definition))];
+  const epsDefinitions = [...new Set(Object.values(metricHistory.EPS).map(v => v.definition))];
   return {
+    quality: { status: rejected.length ? 'PARTIAL' : selected.length ? 'AVAILABLE' : 'UNAVAILABLE', excludedFactsCount: rejected.length, excludedFacts: rejected },
+    patLabel: [...new Set(Object.values(metricHistory.PAT).map(v => v.definition))].join() === 'PROFIT_FOR_PERIOD' ? 'Profit for period (filing definition)' : 'Profit after tax',
+    revenueLabel: revenueDefinitions.length === 1 && revenueDefinitions[0] === 'TOTAL_INCOME' ? 'Total income' : revenueDefinitions.length === 1 && revenueDefinitions[0] === 'REVENUE_FROM_OPERATIONS' ? 'Revenue from operations' : 'Revenue / income (definition unverified)',
+    epsLabel: epsDefinitions.length === 1 && epsDefinitions[0] === 'BASIC_EPS' ? 'Basic EPS' : epsDefinitions.length === 1 && epsDefinitions[0] === 'DILUTED_EPS' ? 'Diluted EPS' : 'EPS (basis unverified)',
     revenueCagr,
     revenueCagrFormula,
+    revenueWindow: revenueCagr !== null ? `FY${revYears[0]}–FY${revYears[revYears.length - 1]} (${revYears[revYears.length - 1] - revYears[0]} year(s) elapsed)` : null,
+    patWindow: patCagr !== null ? `FY${patYears[0]}–FY${patYears[patYears.length - 1]} (${patYears[patYears.length - 1] - patYears[0]} year(s) elapsed)` : null,
     revenueStart,
     revenueEnd,
     patCagr,
@@ -440,17 +458,23 @@ export const calculateCapitalAllocationScore = (snapshot, facts = []) => {
 /**
  * Overall Deterministic Company Execution Score (0-100)
  */
-export const calculateCompanyExecutionScore = ({ facts = [], promises = [], profile = {} }) => {
+export const calculateCompanyExecutionScore = ({ facts = [], promises = [], profile = {}, financialFacts = null }) => {
   // Belt-and-suspenders: the real query path (ManagementPromiseService's NOT_QUARANTINED_FILTER) already
   // excludes these, but this function must never let a quarantined value (source verified, value implausible
   // -- see models/CompanyHistoricalFact.js) into a growth rate or score even if some other caller forgets to filter.
   facts = facts.filter((fact) => fact.dataOrigin !== 'SEEDED_DEMO' && !fact.quarantine?.quarantined);
   promises = promises.filter((promise) => promise.dataOrigin !== 'SEEDED_DEMO');
-  const financialSnapshot = buildFinancialSnapshot(facts);
+  const financialSnapshot = buildFinancialSnapshot(financialFacts ?? facts);
+  if (financialFacts !== null) {
+    const historicalQuality = buildFinancialSnapshot(facts).quality;
+    financialSnapshot.quality.historicalExcludedFactsCount = historicalQuality.excludedFactsCount;
+  }
+  const { selected } = selectAnnualFacts(facts);
+  facts = facts.filter(f => f.metrics?.actualValue == null || !f.metrics?.metric).concat(selected);
 
   // Insufficient verified history threshold:
   // Must have at least 3 verified facts and multi-year financial history
-  if (facts.length < 3 || financialSnapshot.annualSeries.length < 2) {
+  if (facts.length < 3 || financialSnapshot.annualSeries.length < 2 || (financialSnapshot.revenueCagr === null && financialSnapshot.patCagr === null && financialSnapshot.ebitdaCagr === null)) {
     return {
       executionScore: null,
       ratingLabel: 'Insufficient verified history',
@@ -532,7 +556,7 @@ export const calculateCompanyExecutionScore = ({ facts = [], promises = [], prof
 /**
  * Confidence Level Assessment (HIGH, MEDIUM, LOW)
  */
-export const calculateConfidence = ({ facts = [], promises = [], sources = [], coverageYears = [] }) => {
+export const calculateConfidence = ({ facts = [], promises = [], sources = [], coverageYears = [], financialQuality = null }) => {
   const factCount = facts.length;
   const sourceCount = sources.length;
   const yearsCount = coverageYears.length;
@@ -554,6 +578,10 @@ export const calculateConfidence = ({ facts = [], promises = [], sources = [], c
     reason = 'Insufficient verified historical evidence in public records.';
   }
 
+  if (financialQuality?.excludedFactsCount > 0) {
+    level = 'LOW';
+    reason = 'Conflicting or unverifiable financial records excluded; annual financial coverage is partial.';
+  }
   return {
     level,
     reason,
