@@ -1258,7 +1258,7 @@ function PromisesVsActualsPanel({ data }) {
   const [yearFilter, setYearFilter] = useState('ALL');
   const [metricFilter, setMetricFilter] = useState('ALL');
   const [outcomeFilter, setOutcomeFilter] = useState('ALL');
-  const rows = data?.rows || [];
+  const rows = useMemo(() => data?.rows || [], [data]);
 
   const years = useMemo(() => [...new Set(rows.map((r) => r.year))].sort().reverse(), [rows]);
   const metrics = useMemo(() => [...new Map(rows.map((r) => [r.metric, r.metricLabel])).entries()], [rows]);
