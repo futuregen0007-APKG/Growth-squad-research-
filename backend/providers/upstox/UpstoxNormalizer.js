@@ -170,6 +170,34 @@ const extractPeriodicMetrics = (list, { flatExcludeKeys = ['period'] } = {}) => 
   });
 };
 
+export const UPSTOX_PER_SHARE_UNIT = 'INR_PER_SHARE';
+
+const EPS_PARTICULARS = [
+  ['eps_basic', slugify('EPS - Basic')],
+  ['eps_diluted', slugify('EPS - Diluted')],
+];
+
+/**
+ * extractEpsMetrics - reads EPS straight from the income-statement
+ * full_statement lookup (particulars "EPS - Basic"/"EPS - Diluted",
+ * confirmed live for TCS/INFY/HDFCBANK). One entry per period actually
+ * present; a missing particular yields no entries, a non-numeric value
+ * stays null -- never derived from PAT/share count, never fabricated.
+ */
+const extractEpsMetrics = (fullStatementLookup) => {
+  if (!fullStatementLookup?.size) return [];
+  return EPS_PARTICULARS.flatMap(([label, key]) => {
+    const periodMap = fullStatementLookup.get(key);
+    if (!periodMap) return [];
+    return [...periodMap.entries()].map(([rawPeriod, value]) => ({
+      financialYear: deriveFiscalYearLabel(rawPeriod),
+      label,
+      value,
+      unit: UPSTOX_PER_SHARE_UNIT,
+    }));
+  });
+};
+
 /**
  * Shared builder for balance-sheet/cash-flow/income-statement, which all
  * resolve to the same explicit schema. `annotateProviderFields` is ONLY
@@ -216,6 +244,11 @@ const buildStatement = (raw, {
     provider: 'UPSTOX',
     fetchedAt,
     metrics,
+    // Only income-statement carries per-share figures (its full_statement's
+    // "EPS - Basic"/"EPS - Diluted" particulars). Kept in their OWN array,
+    // never mixed into `metrics` -- `metrics` is homogeneously INR_CRORE
+    // (see `units` above) and callers rely on that.
+    ...(annotateProviderFields ? { epsMetrics: extractEpsMetrics(fullStatementLookup) } : {}),
     raw,
   };
 };
@@ -345,6 +378,7 @@ export { extractPeriodicMetrics, parseChangePct, parseRatioValue, VERIFIED_LABEL
 
 export default {
   UPSTOX_UNIT,
+  UPSTOX_PER_SHARE_UNIT,
   VERIFIED_LABELS,
   deriveFiscalYearLabel,
   normalizeBalanceSheet,

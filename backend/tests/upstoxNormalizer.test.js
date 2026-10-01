@@ -426,3 +426,74 @@ test('normalizeIncomeStatement: consolidated and standalone are kept as distinct
   assert.equal(consolidated.statementType, 'CONSOLIDATED');
   assert.equal(standalone.statementType, 'STANDALONE');
 });
+
+// Real "EPS - Basic"/"EPS - Diluted" full_statement particulars captured live
+// from Upstox's income-statement endpoint (fs=true), FY2023-FY2026.
+const REAL_EPS_PARTICULARS = {
+  TCS: {
+    basic: [[136.01, 'Mar 2026'], [134.19, 'Mar 2025'], [125.88, 'Mar 2024'], [115.19, 'Mar 2023']],
+    diluted: [[136.01, 'Mar 2026'], [134.19, 'Mar 2025'], [125.88, 'Mar 2024'], [115.19, 'Mar 2023']],
+  },
+  INFY: {
+    basic: [[71.58, 'Mar 2026'], [64.5, 'Mar 2025'], [63.39, 'Mar 2024'], [57.63, 'Mar 2023']],
+    diluted: [[71.46, 'Mar 2026'], [64.34, 'Mar 2025'], [63.29, 'Mar 2024'], [57.54, 'Mar 2023']],
+  },
+  HDFCBANK: {
+    basic: [[49.5, 'Mar 2026'], [46.41, 'Mar 2025'], [90.42, 'Mar 2024'], [82.64, 'Mar 2023']],
+    diluted: [[49.28, 'Mar 2026'], [46.2, 'Mar 2025'], [90.01, 'Mar 2024'], [82.27, 'Mar 2023']],
+  },
+};
+const toHistory = (pairs) => pairs.map(([value, period]) => ({ value, period }));
+const withEps = (base, eps) => ({
+  data: {
+    ...base.data,
+    full_statement: [
+      ...(base.data.full_statement || []),
+      { particular: 'EPS - Basic', history: toHistory(eps.basic) },
+      { particular: 'EPS - Diluted', history: toHistory(eps.diluted) },
+    ],
+  },
+});
+
+test('normalizeIncomeStatement: epsMetrics extracts real EPS Basic/Diluted per financial year as INR_PER_SHARE, kept OUT of the INR_CRORE metrics[] array', () => {
+  const result = normalizeIncomeStatement(withEps(TCS_FS_TRUE_FIXTURE, REAL_EPS_PARTICULARS.TCS), {
+    symbol: 'TCS', isin: 'INE467B01029', fetchedAt: '2026-09-29T00:00:00.000Z', statementType: 'consolidated', period: 'YEARLY',
+  });
+  assert.equal(result.units, 'INR_CRORE');
+  assert.equal(result.epsMetrics.length, 8, '4 years x basic/diluted');
+  const basicFY2026 = result.epsMetrics.find((m) => m.label === 'eps_basic' && m.financialYear === 'FY2026');
+  assert.deepEqual(basicFY2026, { financialYear: 'FY2026', label: 'eps_basic', value: 136.01, unit: 'INR_PER_SHARE' });
+  const dilutedFY2023 = result.epsMetrics.find((m) => m.label === 'eps_diluted' && m.financialYear === 'FY2023');
+  assert.equal(dilutedFY2023.value, 115.19);
+  assert.ok(result.epsMetrics.every((m) => m.unit === 'INR_PER_SHARE'));
+  // Never mixed into the crore-denominated metrics array.
+  assert.ok(!result.metrics.some((m) => /eps/i.test(m.label)), 'metrics[] must stay homogeneously INR_CRORE');
+  assert.ok(!result.metrics.some((m) => 'unit' in m));
+});
+
+test('normalizeIncomeStatement: epsMetrics for real INFY/HDFCBANK -- basic and diluted are distinct values, not copied', () => {
+  for (const [symbol, eps] of [['INFY', REAL_EPS_PARTICULARS.INFY], ['HDFCBANK', REAL_EPS_PARTICULARS.HDFCBANK]]) {
+    const raw = withEps({ data: { income_statement: [] } }, eps);
+    const result = normalizeIncomeStatement(raw, { symbol, isin: 'X', fetchedAt: '2026-09-29T00:00:00.000Z' });
+    const byKey = Object.fromEntries(result.epsMetrics.map((m) => [`${m.label}:${m.financialYear}`, m.value]));
+    for (const [value, period] of eps.basic) assert.equal(byKey[`eps_basic:${deriveFiscalYearLabel(period)}`], value, `${symbol} basic ${period}`);
+    for (const [value, period] of eps.diluted) assert.equal(byKey[`eps_diluted:${deriveFiscalYearLabel(period)}`], value, `${symbol} diluted ${period}`);
+  }
+  const hdfc = normalizeIncomeStatement(withEps({ data: { income_statement: [] } }, REAL_EPS_PARTICULARS.HDFCBANK), { symbol: 'HDFCBANK', isin: 'INE040A01034', fetchedAt: null });
+  assert.equal(hdfc.epsMetrics.find((m) => m.label === 'eps_diluted' && m.financialYear === 'FY2026').value, 49.28);
+  assert.equal(hdfc.epsMetrics.find((m) => m.label === 'eps_basic' && m.financialYear === 'FY2026').value, 49.5);
+});
+
+test('normalizeIncomeStatement: no full_statement (or no EPS particulars) yields an empty epsMetrics, never a derived EPS', () => {
+  const noFs = normalizeIncomeStatement({ data: { income_statement: [{ category: 'net_profit', history: [{ value: 100, period: 'Mar 2026' }] }] } }, { symbol: 'TCS', isin: 'X', fetchedAt: null });
+  assert.deepEqual(noFs.epsMetrics, []);
+  const noEps = normalizeIncomeStatement(TCS_FS_TRUE_FIXTURE, { symbol: 'TCS', isin: 'X', fetchedAt: null });
+  assert.deepEqual(noEps.epsMetrics, []);
+});
+
+test('normalizeBalanceSheet/normalizeCashFlow: never gain an epsMetrics key -- scope is income-statement only', () => {
+  const bs = normalizeBalanceSheet({ data: { history: [{ period: 'Mar 2026', total_asset: 182372 }], full_statement: [{ particular: 'EPS - Basic', history: [{ value: 1, period: 'Mar 2026' }] }] } }, { symbol: 'TCS', isin: 'X', fetchedAt: null });
+  assert.ok(!('epsMetrics' in bs));
+  const cf = normalizeCashFlow({ data: { cash_flow: [{ category: 'operating', history: [{ value: 52094, period: 'Mar 2026' }] }] } }, { symbol: 'TCS', isin: 'X', fetchedAt: null });
+  assert.ok(!('epsMetrics' in cf));
+});

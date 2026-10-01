@@ -502,12 +502,14 @@ export class StockController {
       if (aggregate && quote?.price != null) {
         // Re-run with the live quote once it's known, rather than serving
         // the durable-fallback price when a real live one was available all
-        // along -- getStockDetail is cheap (Mongo-only) so a second call is
-        // fine.
+        // along. The Upstox financials already fetched by the first call are
+        // passed through (prefetchedFinancials) so this re-run never makes a
+        // second upstream Upstox request; the rest is Mongo-only.
         aggregate = await getStockDetail(symbol, {
           livePrice: {
             price: quote.price, change: quote.change, changePct: quote.changePct,
           },
+          prefetchedFinancials: aggregate.companyFinancials,
         }).catch(() => aggregate);
       }
 
@@ -533,6 +535,7 @@ export class StockController {
             description: aggregate.overview.description,
           },
           research: aggregate.research,
+          companyFinancials: aggregate.companyFinancials,
           summaryMetrics: aggregate.summaryMetrics,
           sectionStatus: {
             identity: aggregate.identity.status,
@@ -544,6 +547,7 @@ export class StockController {
             corporateActions: aggregate.research.corporateActions.status,
             analystData: aggregate.research.analystData.status,
             news: aggregate.research.news.status,
+            companyFinancials: aggregate.companyFinancials?.status || 'UNAVAILABLE',
           },
         } : {}),
       };

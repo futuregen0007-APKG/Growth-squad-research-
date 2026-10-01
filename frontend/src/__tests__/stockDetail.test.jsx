@@ -175,6 +175,105 @@ describe('StockDetail runtime safety', () => {
     expect(screen.getByTestId('stock-detail-invalid')).toBeInTheDocument();
   });
 
+  it('shows volatility as an unsigned level (no leading "+") and reads "Updated" from details.dataAsOf', async () => {
+    stockApi.fetchStockBySymbol.mockResolvedValue({ symbol: 'TCS', ticker: 'TCS', name: 'Tata Consultancy Services' });
+    stockApi.fetchCompanyDetails.mockResolvedValue({ volatility: 21.07, oneYearReturn: 4.5, dataAsOf: '2026-09-30T10:00:00.000Z', research: null });
+
+    renderStockDetail('/stock/TCS');
+
+    await waitFor(() => expect(screen.getByText('Volatility').nextSibling).toHaveTextContent('21.07%'));
+    expect(screen.getByText('Volatility').nextSibling.textContent).toBe('21.07%');
+    expect(screen.getByText('Volatility').nextSibling.textContent.startsWith('+')).toBe(false);
+    // 1Y return is a genuinely signed figure and keeps its sign.
+    expect(screen.getByText('1Y return').nextSibling.textContent).toBe('+4.50%');
+    const updated = screen.getByTestId('stock-detail-updated');
+    expect(updated.textContent).not.toBe('—');
+    expect(updated.textContent).toBe(new Date('2026-09-30T10:00:00.000Z').toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }));
+  });
+
+  const upstoxFinancials = {
+    provider: 'UPSTOX',
+    status: 'PARTIAL',
+    dataCoveragePct: 80,
+    profile: { status: 'AVAILABLE', asOf: '2026-10-01T07:40:44.314Z', fromCache: true, error: null, description: 'Tata Consultancy Services Ltd is an India-based company.' },
+    annualFinancials: {
+      incomeStatement: {
+        status: 'AVAILABLE', asOf: '2026-10-01T07:40:44.314Z', fromCache: true, error: null, statementType: 'CONSOLIDATED',
+        rows: [
+          { label: 'revenue', displayLabel: 'Total income', verifiedLabel: 'Total income', verifiedDefinition: 'TOTAL_INCOME', definitionCheck: 'VERIFIED', financialYear: 'FY2026', value: 271423, changePct: 4.68, unit: 'INR_CRORE' },
+          { label: 'operating_profit', displayLabel: 'Profit before tax', verifiedLabel: 'Profit before tax', verifiedDefinition: 'PROFIT_BEFORE_TAX', definitionCheck: 'VERIFIED', financialYear: 'FY2026', value: 65487, changePct: 0.24, unit: 'INR_CRORE' },
+        ],
+        unavailableMetrics: [{ key: 'ebitda', label: 'EBITDA', reason: 'Not provided by this data source (Upstox reports no EBITDA or depreciation line).' }],
+      },
+      balanceSheet: {
+        status: 'AVAILABLE', asOf: '2026-10-01T07:40:44.314Z', fromCache: false, error: null, statementType: 'CONSOLIDATED',
+        rows: [{ label: 'total_asset', displayLabel: 'Total Assets', verifiedLabel: null, verifiedDefinition: null, definitionCheck: 'NOT_REQUIRED', financialYear: 'FY2026', value: 182372, changePct: null, unit: 'INR_CRORE' }],
+        unavailableMetrics: [{ key: 'debt', label: 'Debt / Borrowings', reason: 'Not provided by this data source: no borrowings line.' }],
+      },
+      cashFlow: {
+        status: 'PROVIDER_ERROR', asOf: null, fromCache: false, error: { code: 'RATE_LIMITED', message: 'Upstox cash-flow request was rate limited.' }, rows: [],
+        unavailableMetrics: [{ key: 'capex', label: 'CapEx', reason: 'Not provided by this data source.' }],
+      },
+    },
+    perShareFinancials: [{ label: 'eps_basic', displayLabel: 'EPS (Basic)', financialYear: 'FY2026', value: 136.01, unit: 'INR_PER_SHARE' }],
+    currentRatios: { status: 'AVAILABLE', asOf: '2026-10-01T07:40:44.314Z', fromCache: false, error: null, pointInTime: true, ratios: [{ name: 'ROE', companyValue: 45.89, companyValueUnit: 'PERCENT', sectorValue: 8.65, sectorValueUnit: 'PERCENT' }] },
+  };
+
+  it('renders Upstox statements by fiscal year, hides wholly-unavailable metrics behind a toggle with their reasons, and shows a failed section\'s own error', async () => {
+    stockApi.fetchStockBySymbol.mockResolvedValue({ symbol: 'TCS', ticker: 'TCS', name: 'Tata Consultancy Services' });
+    stockApi.fetchCompanyDetails.mockResolvedValue({ research: { financials: { rows: [] } }, companyFinancials: upstoxFinancials });
+
+    renderStockDetail('/stock/TCS');
+    await waitFor(() => expect(screen.getByTestId('stock-detail-page')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Financials'));
+
+    const income = await screen.findByTestId('statement-income');
+    expect(income).toHaveTextContent('Total income');
+    expect(income).toHaveTextContent('Profit before tax');
+    expect(income).toHaveTextContent('FY2026');
+    expect(income).toHaveTextContent('(cached)');
+    expect(income).not.toHaveTextContent('EBITDA');
+    fireEvent.click(screen.getByTestId('statement-income-unavailable').querySelector('button'));
+    expect(income).toHaveTextContent('EBITDA');
+    expect(income).toHaveTextContent('Not provided by this data source');
+
+    expect(screen.getByTestId('statement-balance')).toHaveTextContent('Total Assets');
+    expect(screen.getByTestId('statement-balance')).not.toHaveTextContent(/Debt \/ Borrowings:/);
+    expect(screen.getByTestId('statement-cashflow')).toHaveTextContent('Upstox cash-flow request was rate limited.');
+    expect(screen.getByTestId('per-share-financials')).toHaveTextContent('₹ per share');
+    expect(screen.getByTestId('per-share-financials')).toHaveTextContent('136.01');
+    const ratios = screen.getByTestId('current-ratios');
+    expect(ratios).toHaveTextContent('not annual history');
+    expect(ratios).toHaveTextContent('45.89%');
+    expect(ratios).not.toHaveTextContent('FY2026');
+  });
+
+  it('lists every scoring input as used or missing so the confidence label explains itself', async () => {
+    stockApi.fetchStockBySymbol.mockResolvedValue({ symbol: 'TCS', ticker: 'TCS', name: 'Tata Consultancy Services' });
+    stockApi.fetchCompanyDetails.mockResolvedValue({
+      research: {
+        analystData: {
+          ownScore: {
+            score: 61, scoreLabel: 'Moderate', confidence: 'HIGH', scoreStatus: 'COMPLETE', dataCoveragePct: 44, totalMetrics: 9,
+            availableMetrics: ['quality', 'oneYearReturn', 'volatility', 'maxDrawdown'],
+            missingMetrics: ['revenueGrowth', 'profitGrowth', 'operatingMargin', 'debtTrend', 'valuation'],
+            inputSources: {},
+          },
+          providerAnalystData: { available: false },
+        },
+      },
+    });
+
+    renderStockDetail('/stock/TCS');
+    await waitFor(() => expect(screen.getByTestId('stock-detail-page')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Analyst View'));
+
+    expect(await screen.findByText(/HIGH \(4 of 9 verified inputs\)/)).toBeInTheDocument();
+    expect(screen.getByTestId('score-input-revenueGrowth')).toHaveTextContent('Missing');
+    expect(screen.getByTestId('score-input-profitGrowth')).toHaveTextContent('Missing');
+    expect(screen.getByTestId('score-input-volatility')).toHaveTextContent('Used');
+  });
+
   it('does not crash when one optional request fails and other data is still usable', async () => {
     stockApi.fetchStockBySymbol.mockResolvedValue({ symbol: 'HAL', ticker: 'HAL', name: 'Hindustan Aeronautics' });
     stockApi.fetchCompanyDetails.mockRejectedValue(new Error('details failed'));
