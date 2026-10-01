@@ -41,7 +41,7 @@ const upstoxSuccess = async () => buildStockDetailFinancials({
       incomeStatement: {
         available: true, status: 'AVAILABLE', asOf: '2026-10-01T07:40:44.314Z', fromCache: false, error: null,
         data: {
-          units: 'INR_CRORE',
+          units: 'INR_CRORE', statementType: 'CONSOLIDATED', period: 'YEARLY',
           metrics: [
             { label: 'revenue', financialYear: 'FY2026', value: 271423, changePct: 4.68, verifiedDefinition: 'TOTAL_INCOME', verifiedLabel: 'Total income' },
             { label: 'revenue', financialYear: 'FY2025', value: 259286, changePct: 5.7, verifiedDefinition: 'TOTAL_INCOME', verifiedLabel: 'Total income' },

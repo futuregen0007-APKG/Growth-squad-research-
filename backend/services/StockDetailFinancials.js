@@ -99,7 +99,7 @@ const mapIncomeRow = (metric) => {
         withheldReason: 'Provider figure did not reconcile to Profit Before Tax for this year; withheld rather than mislabeled.',
       };
   }
-  return { ...base, displayLabel: verified ? metric.verifiedLabel : prettify(metric.label) };
+  return verified ? { ...base, displayLabel: metric.verifiedLabel } : { ...base, displayLabel: 'Provider-reported value (definition unverified)', value: null, changePct: null, withheldReason: 'Accounting definition did not reconcile to the full statement.' };
 };
 
 const mapUnambiguousRow = (statementKey, metric) => {
@@ -110,8 +110,8 @@ const mapUnambiguousRow = (statementKey, metric) => {
     verifiedLabel: null,
     verifiedDefinition: null,
     financialYear: metric.financialYear,
-    value: metric.value ?? null,
-    changePct: metric.changePct ?? null,
+    value: known ? metric.value ?? null : null,
+    changePct: known ? metric.changePct ?? null : null,
     unit: UPSTOX_UNIT,
     definitionCheck: known ? 'NOT_REQUIRED' : 'UNVERIFIED',
   };
@@ -122,12 +122,14 @@ const buildStatementBlock = (statementKey, section) => {
   // EarningsAnnualFinancials applies the same gate: rows are only trusted
   // when the section's own unit is the crore unit every row assumes.
   const unitOk = data?.units === UPSTOX_UNIT;
-  const metrics = unitOk && Array.isArray(data?.metrics) ? data.metrics : [];
+  const annualOk = data?.statementType === 'CONSOLIDATED' && data?.period === 'YEARLY';
+  const metrics = unitOk && annualOk && Array.isArray(data?.metrics) ? data.metrics : [];
   const rows = metrics
-    .filter((m) => m?.label && m.financialYear)
+    .filter((m) => m?.label && /^FY20\d{2}$/.test(m.financialYear || ''))
     .map((m) => (statementKey === 'incomeStatement' ? mapIncomeRow(m) : mapUnambiguousRow(statementKey, m)));
   return {
     ...sectionMeta(section),
+    ...(data && !annualOk ? { status: 'UNAVAILABLE', error: { code: 'STATEMENT_BASIS_MISMATCH', message: 'Only consolidated annual statements are supported here.' } } : {}),
     ...(data && !unitOk ? { status: 'UNAVAILABLE', error: { code: 'UNIT_MISMATCH', message: `Unexpected statement unit ${data.units}; figures withheld.` } } : {}),
     statementType: data?.statementType || null,
     period: data?.period || null,
@@ -137,27 +139,22 @@ const buildStatementBlock = (statementKey, section) => {
 };
 
 /**
- * selectVerifiedGrowth - the growth figure Stock Detail feeds into its score:
- * Upstox's own `changePct` for the most recent financial year whose row is
- * definition-verified AND whose prior-year row is verified with the SAME
- * definition (so the change never compares two differently-defined
- * figures). Returns null when no such year exists -- never derived here.
+ * Calculate YoY only from consecutive annual values with the same verified
+ * accounting definition. Conflicting duplicates or an unsupported latest
+ * year withhold growth; provider percentage fields are not score inputs.
  */
 export const selectVerifiedGrowth = (rows, label) => {
   const allowed = ALLOWED_VERIFIED_DEFINITIONS[label] || [];
   const byYear = new Map(
     (rows || []).filter((r) => r.label === label && fyNumber(r.financialYear) != null).map((r) => [fyNumber(r.financialYear), r]),
   );
-  const candidates = [...byYear.values()]
-    .filter((r) => allowed.includes(r.verifiedDefinition) && Number.isFinite(r.changePct))
-    .sort((a, b) => fyNumber(b.financialYear) - fyNumber(a.financialYear));
-  for (const row of candidates) {
-    const prior = byYear.get(fyNumber(row.financialYear) - 1);
-    if (prior && prior.verifiedDefinition === row.verifiedDefinition) {
-      return {
-        value: row.changePct, financialYear: row.financialYear, verifiedDefinition: row.verifiedDefinition, verifiedLabel: row.verifiedLabel, provider: 'UPSTOX',
-      };
-    }
+  const latestYear = Math.max(...byYear.keys());
+  const row = byYear.get(latestYear), prior = byYear.get(latestYear - 1);
+  const sameYear = (rows || []).filter(r => r.label === label && fyNumber(r.financialYear) === latestYear);
+  const previousYear = (rows || []).filter(r => r.label === label && fyNumber(r.financialYear) === latestYear - 1);
+  const conflicts = list => new Set(list.map(r => JSON.stringify([r.value, r.verifiedDefinition]))).size > 1;
+  if (row && prior && !conflicts(sameYear) && !conflicts(previousYear) && allowed.includes(row.verifiedDefinition) && prior.verifiedDefinition === row.verifiedDefinition && Number.isFinite(row.value) && Number.isFinite(prior.value) && prior.value > 0) {
+    return { value: Math.round((row.value - prior.value) / prior.value * 10000) / 100, financialYear: row.financialYear, verifiedDefinition: row.verifiedDefinition, verifiedLabel: row.verifiedLabel, provider: 'UPSTOX', methodology: 'YoY from comparable consecutive annual figures' };
   }
   return null;
 };
@@ -194,8 +191,8 @@ export const buildStockDetailFinancials = (searchResult, { failure = null } = {}
   };
 
   const incomeData = sections.incomeStatement?.available ? sections.incomeStatement.data : null;
-  const perShareFinancials = (Array.isArray(incomeData?.epsMetrics) ? incomeData.epsMetrics : [])
-    .filter((m) => m?.label && m.financialYear)
+  const perShareFinancials = (incomeData?.statementType === 'CONSOLIDATED' && incomeData?.period === 'YEARLY' && Array.isArray(incomeData?.epsMetrics) ? incomeData.epsMetrics : [])
+    .filter((m) => ['eps_basic', 'eps_diluted'].includes(m?.label) && m.unit === UPSTOX_PER_SHARE_UNIT && /^FY20\d{2}$/.test(m.financialYear || ''))
     .map((m) => ({
       label: m.label,
       displayLabel: EPS_LABELS[m.label] || prettify(m.label),
@@ -220,16 +217,17 @@ export const buildStockDetailFinancials = (searchResult, { failure = null } = {}
   };
 
   const peRatio = currentRatios.ratios.find((r) => r.name === 'P/E');
-  const pe = Number.isFinite(peRatio?.companyValue) ? peRatio.companyValue : null;
+  const pe = peRatio?.companyValueUnit === 'NUMBER' && Number.isFinite(peRatio?.companyValue) ? peRatio.companyValue : null;
 
-  const availableCount = PAGE_SECTIONS.filter((key) => sections[key]?.available).length;
+  const trustedSections = { profile, ...annualFinancials, keyRatios: currentRatios };
+  const availableCount = PAGE_SECTIONS.filter((key) => trustedSections[key]?.status === 'AVAILABLE').length;
   const status = availableCount === PAGE_SECTIONS.length ? 'AVAILABLE' : (availableCount > 0 ? 'PARTIAL' : 'UNAVAILABLE');
 
   return {
     provider: 'UPSTOX',
     status,
     ...resolution,
-    missingSections: PAGE_SECTIONS.filter((key) => !sections[key]?.available),
+    missingSections: PAGE_SECTIONS.filter((key) => trustedSections[key]?.status !== 'AVAILABLE'),
     dataCoveragePct: Math.round((availableCount / PAGE_SECTIONS.length) * 100),
     configurationError: Boolean(searchResult?.data?.configurationError),
     error: failure || null,

@@ -106,7 +106,7 @@ export const buildFinancialSnapshot = (facts = []) => {
     EBITDA_MARGIN: {},
     PAT: {},
     ADJUSTED_PAT: {},
-    EPS: {},
+    EPS: {}, BASIC_EPS: {}, DILUTED_EPS: {}, PBT: {}, TOTAL_ASSETS: {}, TOTAL_LIABILITIES: {}, INVESTING_CASH_FLOW: {}, FINANCING_CASH_FLOW: {},
     OPERATING_CASH_FLOW: {},
     FREE_CASH_FLOW: {},
     DEBT: {},
@@ -139,7 +139,9 @@ export const buildFinancialSnapshot = (facts = []) => {
         metricHistory.PAT[year] = { ...evidence, value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
       } else if (rawMetric === 'ADJUSTED_PAT') {
         metricHistory.ADJUSTED_PAT[year] = { ...evidence, value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
-      } else if (rawMetric === 'EPS' || rawMetric === 'DILUTED_EPS') {
+      } else if (['BASIC_EPS', 'DILUTED_EPS', 'PBT', 'TOTAL_ASSETS', 'TOTAL_LIABILITIES', 'INVESTING_CASH_FLOW', 'FINANCING_CASH_FLOW'].includes(rawMetric)) {
+        metricHistory[rawMetric][year] = { ...evidence, value: numVal, period, unit: fact.metrics.unit };
+      } else if (rawMetric === 'EPS') {
         metricHistory.EPS[year] = { ...evidence, value: numVal, period, unit: 'INR' };
       } else if (rawMetric === 'OPERATING_CASH_FLOW' || rawMetric === 'CASH_FLOW_OPERATIONS') {
         metricHistory.OPERATING_CASH_FLOW[year] = { ...evidence, value: numVal, period, unit: fact.metrics?.unit || 'INR_CRORE' };
@@ -248,11 +250,7 @@ export const buildFinancialSnapshot = (facts = []) => {
   }
 
   // Build Chronological 5-Year Annual Series (e.g. FY2022 to FY2026)
-  const allYears = [...new Set([
-    ...revYears, ...patYears, ...ebitdaYears, ...marginYears, ...debtYears,
-    ...Object.keys(metricHistory.EPS).map(Number),
-    ...Object.keys(metricHistory.ROE).map(Number)
-  ])].sort((a, b) => a - b);
+  const allYears = [...new Set(Object.values(metricHistory).flatMap(series => Object.keys(series).map(Number)))].sort((a, b) => a - b);
 
   const annualSeries = allYears.map(yr => ({
     year: yr,
@@ -263,6 +261,13 @@ export const buildFinancialSnapshot = (facts = []) => {
     pat: metricHistory.PAT[yr]?.value ?? null,
     adjustedPat: metricHistory.ADJUSTED_PAT[yr]?.value ?? null,
     eps: metricHistory.EPS[yr]?.value ?? null,
+    basicEps: metricHistory.BASIC_EPS[yr]?.value ?? null,
+    dilutedEps: metricHistory.DILUTED_EPS[yr]?.value ?? null,
+    pbt: metricHistory.PBT[yr]?.value ?? null,
+    totalAssets: metricHistory.TOTAL_ASSETS[yr]?.value ?? null,
+    totalLiabilities: metricHistory.TOTAL_LIABILITIES[yr]?.value ?? null,
+    investingCashFlow: metricHistory.INVESTING_CASH_FLOW[yr]?.value ?? null,
+    financingCashFlow: metricHistory.FINANCING_CASH_FLOW[yr]?.value ?? null,
     operatingCashFlow: metricHistory.OPERATING_CASH_FLOW[yr]?.value ?? null,
     freeCashFlow: metricHistory.FREE_CASH_FLOW[yr]?.value ?? null,
     debt: metricHistory.DEBT[yr]?.value ?? null,
@@ -487,6 +492,7 @@ export const calculateCompanyExecutionScore = ({ facts = [], promises = [], prof
         capitalAllocation: null
       },
       weightsUsed: {},
+      scoreMissingReasons: { financialDelivery: 'Insufficient verified comparable annual history to calculate a score.' },
       financialSnapshot,
       guidanceSuccessRate: null
     };
@@ -495,9 +501,9 @@ export const calculateCompanyExecutionScore = ({ facts = [], promises = [], prof
   const financialScore = calculateFinancialDeliveryScore(financialSnapshot);
   const guidanceScore = calculateGuidanceAccuracyScore(promises);
   const guidanceSuccessRate = calculateGuidanceSuccessRate(promises);
-  const strategicScore = calculateStrategicExecutionScore(facts);
-  const operationalScore = calculateOperationalDeliveryScore(facts);
-  const capitalScore = calculateCapitalAllocationScore(financialSnapshot, facts);
+  const strategicScore = financialFacts !== null && !facts.some(f => ['STRATEGY', 'EXPANSION', 'ACQUISITION', 'CONTRACT', 'PRODUCT'].includes(f.category)) ? null : calculateStrategicExecutionScore(facts);
+  const operationalScore = financialFacts !== null && !facts.some(f => ['OPERATIONAL_PERFORMANCE', 'ORDER_BOOK', 'FINANCIAL_PERFORMANCE'].includes(f.category)) ? null : calculateOperationalDeliveryScore(facts);
+  const capitalScore = financialFacts !== null && financialSnapshot.debtChangePercent === null && financialSnapshot.debtTrend !== 'Zero Debt' ? null : calculateCapitalAllocationScore(financialSnapshot, facts);
 
   let overallScore;
   let weightsUsed = {};
@@ -533,6 +539,14 @@ export const calculateCompanyExecutionScore = ({ facts = [], promises = [], prof
     };
   }
 
+  if (financialFacts !== null) {
+    const components = { financialDelivery: financialScore, guidanceAccuracy: guidanceScore, strategicExecution: strategicScore, operationalDelivery: operationalScore, capitalAllocation: capitalScore };
+    const availableWeight = Object.entries(weightsUsed).reduce((sum, [key, weight]) => sum + (components[key] !== null ? weight : 0), 0);
+    const baseWeights = { ...weightsUsed };
+    weightsUsed = Object.fromEntries(Object.entries(baseWeights).map(([key, weight]) => [key, components[key] !== null ? Number((weight / availableWeight * 100).toFixed(2)) : 0]));
+    overallScore = Object.entries(baseWeights).reduce((sum, [key, weight]) => sum + (components[key] !== null ? components[key] * weight / availableWeight : 0), 0);
+  }
+
   const roundedExecutionScore = Math.round(overallScore);
   const ratingLabel = getExecutionRatingLabel(roundedExecutionScore);
 
@@ -549,6 +563,7 @@ export const calculateCompanyExecutionScore = ({ facts = [], promises = [], prof
       capitalAllocation: capitalScore
     },
     weightsUsed,
+    scoreMissingReasons: Object.fromEntries(Object.entries({ financialDelivery: financialScore === null ? 'Insufficient comparable annual financial history.' : null, guidanceAccuracy: guidanceScore === null ? 'No verified guidance outcomes.' : null, strategicExecution: strategicScore === null ? 'No verified strategy or expansion evidence.' : null, operationalDelivery: operationalScore === null ? 'No verified operational delivery evidence.' : null, capitalAllocation: capitalScore === null ? 'No verified comparable debt or capital-allocation inputs.' : null }).filter(([, reason]) => reason)),
     financialSnapshot
   };
 };

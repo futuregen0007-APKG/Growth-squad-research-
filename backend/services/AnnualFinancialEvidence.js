@@ -27,7 +27,7 @@ export function assessAnnualFact(fact) {
   // the extraction's own FY tag. Structured callers without a source retain
   // their existing contract; they are not advertised as primary-source verified.
   if (fact.source?.url && !annualEvidence) return reject('ANNUAL_PERIOD_UNVERIFIED');
-  const monetary = !/^(EPS|DILUTED_EPS|ROE|ROCE|NIM|GNPA|.*MARGIN)$/.test(metric);
+  const monetary = !/^(EPS|BASIC_EPS|DILUTED_EPS|ROE|ROCE|NIM|GNPA|.*MARGIN)$/.test(metric);
   if (monetary && /\b(?:lac|lacs|lakh|lakhs)\b/i.test(text) && fact.metrics?.unit === 'INR_CRORE') return reject('SOURCE_UNIT_MISMATCH');
   if (/^(DEBT|TOTAL_DEBT|BORROWINGS|NET_DEBT)$/.test(metric) && /\bdeposits?\b/i.test(text)) return reject('DEPOSITS_ARE_NOT_DEBT');
   const unit = fact.metrics?.unit || (monetary ? 'INR_CRORE' : /EPS/.test(metric) ? 'INR' : 'PERCENTAGE');
@@ -57,7 +57,7 @@ export function selectAnnualFacts(facts) {
   }
   // Use one statement basis per metric across years, preferring consolidated
   // when present. Never combine standalone and consolidated in a growth rate.
-  const canonical = m => ({ TOTAL_REVENUE: 'REVENUE', TURNOVER: 'REVENUE', NET_PROFIT: 'PAT', PROFIT_AFTER_TAX: 'PAT', DILUTED_EPS: 'EPS', TOTAL_DEBT: 'DEBT', BORROWINGS: 'DEBT', CASH_FLOW_OPERATIONS: 'OPERATING_CASH_FLOW', FCF: 'FREE_CASH_FLOW' }[m] || m);
+  const canonical = m => ({ TOTAL_REVENUE: 'REVENUE', TURNOVER: 'REVENUE', NET_PROFIT: 'PAT', PROFIT_AFTER_TAX: 'PAT', TOTAL_DEBT: 'DEBT', BORROWINGS: 'DEBT', CASH_FLOW_OPERATIONS: 'OPERATING_CASH_FLOW', FCF: 'FREE_CASH_FLOW' }[m] || m);
   const metricBasis = new Map();
   for (const c of candidates) {
     c.metric = canonical(String(c.fact.metrics.metric).toUpperCase());

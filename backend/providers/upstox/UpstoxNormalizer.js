@@ -238,9 +238,9 @@ const buildStatement = (raw, {
   return {
     symbol,
     isin,
-    statementType: String(statementType || 'consolidated').toUpperCase(),
-    period: String(period || 'YEARLY').toUpperCase(),
-    units: UPSTOX_UNIT,
+    statementType: String(data.type || statementType || 'consolidated').toUpperCase(),
+    period: String(data.time_period || period || 'YEARLY').toUpperCase(),
+    units: data.units_in && !/^crores?$/i.test(data.units_in) ? `UNSUPPORTED_${String(data.units_in).toUpperCase()}` : UPSTOX_UNIT,
     provider: 'UPSTOX',
     fetchedAt,
     metrics,

@@ -254,10 +254,10 @@ describe('StockDetail runtime safety', () => {
       research: {
         analystData: {
           ownScore: {
-            score: 61, scoreLabel: 'Moderate', confidence: 'HIGH', scoreStatus: 'COMPLETE', dataCoveragePct: 44, totalMetrics: 9,
+            score: 61, scoreLabel: 'Moderate', confidence: 'MEDIUM', scoreStatus: 'PARTIAL', dataCoveragePct: 44, totalMetrics: 9,
             availableMetrics: ['quality', 'oneYearReturn', 'volatility', 'maxDrawdown'],
             missingMetrics: ['revenueGrowth', 'profitGrowth', 'operatingMargin', 'debtTrend', 'valuation'],
-            inputSources: {},
+            inputSources: {}, inputWeights: { quality: 25, oneYearReturn: 25, volatility: 25, maxDrawdown: 25 },
           },
           providerAnalystData: { available: false },
         },
@@ -268,10 +268,21 @@ describe('StockDetail runtime safety', () => {
     await waitFor(() => expect(screen.getByTestId('stock-detail-page')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Analyst View'));
 
-    expect(await screen.findByText(/HIGH \(4 of 9 verified inputs\)/)).toBeInTheDocument();
+    expect(await screen.findByText(/MEDIUM \(4 of 9 verified inputs\)/)).toBeInTheDocument();
     expect(screen.getByTestId('score-input-revenueGrowth')).toHaveTextContent('Missing');
     expect(screen.getByTestId('score-input-profitGrowth')).toHaveTextContent('Missing');
     expect(screen.getByTestId('score-input-volatility')).toHaveTextContent('Used');
+    expect(screen.getByTestId('score-input-volatility')).toHaveTextContent('Weight: 25%');
+    expect(screen.getByTestId('score-input-debtTrend')).toHaveTextContent('Weight: 0%');
+  });
+
+  it('uses the actual quote timestamp ahead of an older history date', async () => {
+    stockApi.fetchStockBySymbol.mockResolvedValue({ symbol: 'TCS', name: 'TCS', timestamp: '2026-10-01T12:00:00Z' });
+    stockApi.fetchCompanyDetails.mockResolvedValue({ dataAsOf: '2026-09-28T00:00:00Z' });
+    renderStockDetail('/stock/TCS');
+    const updated = await screen.findByTestId('stock-detail-updated');
+    await waitFor(() => expect(updated).toHaveTextContent('1/10/2026'));
+    expect(updated).not.toHaveTextContent('28/9/2026');
   });
 
   it('does not crash when one optional request fails and other data is still usable', async () => {

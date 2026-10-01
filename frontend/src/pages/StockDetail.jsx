@@ -56,7 +56,7 @@ const fyOrder = (fy) => Number(String(fy || '').replace(/^FY/, '')) || 0;
 function SourceLine({ meta, testId }) {
   if (!meta) return null;
   if (meta.status === 'AVAILABLE' && meta.asOf) {
-    return <p className="mt-2 text-[10px] text-gs-textDim" data-testid={testId}>Source: Upstox · Fetched {formatFetchedAt(meta.asOf)} ({meta.fromCache ? 'cached' : 'live fetch'})</p>;
+    return <p className="mt-2 text-[10px] text-gs-textDim" data-testid={testId}>Source: Upstox · Fetched {formatFetchedAt(meta.asOf)} ({meta.fromCache ? 'cached' : 'live fetch'}) · {Date.now() - Date.parse(meta.asOf) > 6 * 60 * 60 * 1000 ? 'Fetch older than 6h' : 'Fetched within 6h'}</p>;
   }
   return <p className="mt-2 text-[10px] text-gs-textDim" data-testid={testId}>Source: Upstox · {meta.error?.message || 'Not available for this company right now.'}</p>;
 }
@@ -130,7 +130,7 @@ function PerShareBlock({ items, meta }) {
   const labels = [...new Set((items || []).map((m) => m.label))];
   return <section className="border border-gs-border bg-gs-panel/20 p-3" data-testid="per-share-financials">
     <h3 className="font-display text-sm font-semibold text-gs-text">Per-share</h3>
-    {items?.length ? <div className="mt-2 overflow-x-auto"><div className="text-[10px] text-gs-textDim">Annual · Units: ₹ per share (not ₹ Cr)</div>
+    {items?.length ? <div className="mt-2 overflow-x-auto"><div className="text-[10px] text-gs-textDim">Annual · CONSOLIDATED · Units: ₹ per share (not ₹ Cr)</div>
       <table className="mt-1 w-full text-[12px]"><thead><tr className="text-left text-[10px] text-gs-textDim"><th className="py-1 pr-3 font-normal">Metric</th>{years.map((fy) => <th key={fy} className="py-1 pr-3 text-right font-normal">{fy}</th>)}</tr></thead>
         <tbody className="divide-y divide-gs-border">{labels.map((label) => { const rows = items.filter((m) => m.label === label); return <tr key={label}><td className="py-1.5 pr-3 text-gs-textMuted">{rows[0].displayLabel}</td>{years.map((fy) => <td key={fy} className="py-1.5 pr-3 text-right font-mono text-gs-text">{formatPerShare(rows.find((m) => m.financialYear === fy)?.value)}</td>)}</tr>; })}</tbody>
       </table></div>
@@ -176,6 +176,7 @@ function ScoreInputs({ ownScore }) {
       <span className={available.has(key) ? 'text-gs-pos' : 'text-gs-textDim'}>{available.has(key) ? 'Used' : 'Missing'}</span>
       <span className="ml-2 text-gs-textMuted">{label}</span>
       {available.has(key) && sources[key] && <span className="ml-1 text-gs-textDim">({sources[key]})</span>}
+      <span className="ml-1 text-gs-textDim">Weight: {ownScore.inputWeights?.[key] ?? 0}%</span>
       {!available.has(key) && <span className="ml-1 text-gs-textDim">(no verified value; excluded from the score)</span>}
     </li>)}</ul>
   </div>;
@@ -222,9 +223,9 @@ export default function StockDetail() {
       isin: first(source.isinId, source.isin, stock?.isin),
       bse: first(source.exchangeCodeBse, source.bseCode, stock?.bseCode),
       nse: first(source.exchangeCodeNse, source.nseCode, stock?.nseCode, symbol),
-      provider: first(details?.provider, details?.dataProvider, details?.source, 'Market data provider'),
+      provider: first(details?.summaryMetrics?.priceSource, 'Angel One quote / Upstox financials / NSE history'),
       // dataAsOf: the aggregation's own freshness (StockController); timestamp: the live quote's exchange time.
-      timestamp: first(details?.dataAsOf, stock?.timestamp),
+      timestamp: first(stock?.lastUpdate, stock?.lastUpdated, stock?.updatedAt, stock?.timestamp, details?.dataAsOf),
     };
   }, [details, stock, symbol]);
 
@@ -258,10 +259,7 @@ export default function StockDetail() {
         {activeTab === 'overview' && <div className="space-y-4"><div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_250px]"><section className="border-l-2 border-l-gs-gold/60 pl-4"><div className="gs-label">About Company</div><p className="mt-2 line-clamp-4 max-w-3xl text-sm leading-6 text-gs-textMuted">{safeText(company.description)}</p><button type="button" className="mt-2 text-[11px] font-mono text-gs-gold hover:underline">Read more</button><SourceLine meta={details?.companyFinancials?.profile} testId="overview-description-source" /></section><section className="border border-gs-border bg-gs-panel/30 p-3"><Field label="Industry" value={company.industry} /><Field label="Sector" value={company.sector} /><Field label="ISIN" value={company.isin} /><Field label="NSE Symbol" value={company.nse} /><Field label="BSE Code" value={company.bse} /></section></div><StateMessage>Price history is available from the provider on the live chart surface.</StateMessage></div>}
         {activeTab === 'financials' && <div className="space-y-4">
           <CompanyFinancialsPanel financials={details?.companyFinancials} />
-          {Array.isArray(tabData.financials) && tabData.financials.length > 0 && <details className="border border-gs-border bg-gs-panel/20 p-3" data-testid="legacy-financial-rows">
-            <summary className="cursor-pointer text-[11px] text-gs-textDim">Separate source: {safeText(research.financials?.sourceProvider)} summary ({safeText(research.financials?.dataMode)}) — not merged with the statements above</summary>
-            <DataRows data={tabData.financials} label="financial" />
-          </details>}
+
         </div>}
         {activeTab === 'keyMetrics' && <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{(tabData.keyMetrics || []).slice(0, 24).map((entry) => <Metric key={entry.label} label={entry.label} value={entry.value} />)}{!(tabData.keyMetrics || []).length && <StateMessage>No key metrics data reported by the provider.</StateMessage>}</div>}
         {activeTab === 'shareholding' && <DataRows data={tabData.shareholding} label="shareholding" />}

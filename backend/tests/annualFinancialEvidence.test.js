@@ -83,7 +83,8 @@ const sections = { incomeStatement: { available: true, fromCache: true, data: {
 
 test('on-demand annual statements replace extracted values without merging or writing', () => {
   const providerFacts = annualFactsFromSections('HDFCBANK', sections);
-  assert.equal(providerFacts.length, 4, 'PBT and unknown definitions excluded');
+  assert.equal(providerFacts.length, 5, 'PBT mapped separately; unknown definitions excluded');
+  assert.equal(providerFacts.filter(f => f.metrics.metric === 'EBITDA').length, 0);
   const old = { ...annual(2025, 470915.93), period: 'FY2026' };
   const result = calculateCompanyExecutionScore({ facts: [old, annual(2023, 999999), annual(2022, 99999)], financialFacts: providerFacts });
   const s = result.financialSnapshot;

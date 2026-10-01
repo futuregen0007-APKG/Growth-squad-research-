@@ -165,7 +165,7 @@ const METRIC_SCORERS = {
 // given stock (see computeVerifiedScore) — never renormalized in a way that
 // lets a missing metric quietly boost the others beyond their documented
 // share. OpenAI never selects, scores, or reweights any of this.
-const METRIC_WEIGHTS = {
+export const METRIC_WEIGHTS = {
   revenueGrowth: 15,
   profitGrowth: 15,
   quality: 10,

@@ -1,3 +1,4 @@
+import AnnualFinancialHistory from '../components/financials/AnnualFinancialHistory';
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import apiClient from '../services/apiClient';
@@ -299,7 +300,7 @@ function CompanyCard({ report, onOpen }) {
         {/* Verified Facts & Sources Metadata */}
         <div className="flex items-center justify-between text-[11px] font-mono text-gs-textDim pt-1">
           <span>{factsCount > 0 ? `${factsCount} facts · ${sourcesCount} primary sources` : 'No verified evidence yet'}</span>
-          <span className="capitalize">Confidence: <strong className="text-gs-text uppercase">{confidence}</strong></span>
+          <span className="capitalize">Historical research confidence: <strong className="text-gs-text uppercase">{confidence}</strong></span>
         </div>
 
         {/* Card Action Footer */}
@@ -1198,7 +1199,6 @@ function CompanyReport({ symbol, onBack }) {
   const sourceDocs = report.sourceDocuments || [];
   const risks = report.risksAndNegatives || [];
   const strategic = report.businessDevelopments || [];
-  const annualSeries = snapshot.annualSeries || [];
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto pb-12">
@@ -1270,9 +1270,9 @@ function CompanyReport({ symbol, onBack }) {
             </div>
 
             <div className="border-l border-gs-border/60 pl-4 space-y-1 text-xs font-mono">
-              <div className="text-gs-textDim">Confidence: <strong className="text-gs-text uppercase">{confidence}</strong></div>
+              <div className="text-gs-textDim">Historical research confidence: <strong className="text-gs-text uppercase">{confidence}</strong></div>
               <div className="text-gs-textDim text-[11px] max-w-[170px] leading-tight text-gs-textMuted">
-                {report.confidence?.reason || 'Verified evidence from primary audited filings.'}
+                {report.confidenceReason || report.confidence?.reason || 'Historical research evidence coverage is reported separately from financial data.'}
               </div>
             </div>
           </div>
@@ -1282,35 +1282,37 @@ function CompanyReport({ symbol, onBack }) {
       {/* Execution Score Component Breakdown */}
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">
-          <div className="text-[11px] font-mono text-gs-textDim uppercase">Financial Delivery (30%)</div>
+          <div className="text-[11px] font-mono text-gs-textDim uppercase">Financial Delivery ({report.weightsUsed?.financialDelivery ?? 0}%)</div>
           <div className="font-display text-2xl font-bold text-gs-text mt-1">{breakdown.financialDelivery ?? '—'}</div>
           <div className="text-[10px] font-mono text-gs-textDim mt-0.5">Revenue & Profit Trajectory</div>
         </Card>
 
         <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">
-          <div className="text-[11px] font-mono text-gs-textDim uppercase">Guidance Accuracy (25%)</div>
+          <div className="text-[11px] font-mono text-gs-textDim uppercase">Guidance Accuracy ({report.weightsUsed?.guidanceAccuracy ?? 0}%)</div>
           <div className="font-display text-2xl font-bold text-gs-gold mt-1">{breakdown.guidanceAccuracy ?? 'N/A'}</div>
           <div className="text-[10px] font-mono text-gs-textDim mt-0.5">{promises.length ? `${promises.length} targets verified` : 'Qualitative only'}</div>
         </Card>
 
         <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">
-          <div className="text-[11px] font-mono text-gs-textDim uppercase">Strategic Execution (20%)</div>
+          <div className="text-[11px] font-mono text-gs-textDim uppercase">Strategic Execution ({report.weightsUsed?.strategicExecution ?? 0}%)</div>
           <div className="font-display text-2xl font-bold text-emerald-400 mt-1">{breakdown.strategicExecution ?? '—'}</div>
           <div className="text-[10px] font-mono text-gs-textDim mt-0.5">Expansions & Contracts</div>
         </Card>
 
         <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">
-          <div className="text-[11px] font-mono text-gs-textDim uppercase">Operational Delivery (15%)</div>
+          <div className="text-[11px] font-mono text-gs-textDim uppercase">Operational Delivery ({report.weightsUsed?.operationalDelivery ?? 0}%)</div>
           <div className="font-display text-2xl font-bold text-blue-400 mt-1">{breakdown.operationalDelivery ?? '—'}</div>
           <div className="text-[10px] font-mono text-gs-textDim mt-0.5">Capacity & Client wins</div>
         </Card>
 
         <Card className="bg-gs-panel/40 border-gs-border p-3 text-center col-span-2 sm:col-span-1">
-          <div className="text-[11px] font-mono text-gs-textDim uppercase">Capital Allocation (10%)</div>
+          <div className="text-[11px] font-mono text-gs-textDim uppercase">Capital Allocation ({report.weightsUsed?.capitalAllocation ?? 0}%)</div>
           <div className="font-display text-2xl font-bold text-purple-400 mt-1">{breakdown.capitalAllocation ?? '—'}</div>
           <div className="text-[10px] font-mono text-gs-textDim mt-0.5">Debt & ROCE discipline</div>
         </Card>
       </div>
+
+      {Object.keys(report.scoreMissingReasons || {}).length > 0 && <div className="text-xs text-gs-textDim">Missing score inputs (excluded from weights):<ul className="mt-1 space-y-1">{Object.entries(report.scoreMissingReasons).map(([key, reason]) => <li key={key}>{reason}</li>)}</ul></div>}
 
       {/* Main Tabbed Interface */}
       <div className="space-y-4">
@@ -1381,7 +1383,7 @@ function CompanyReport({ symbol, onBack }) {
           <div className="space-y-6">
             {(snapshot.quality?.excludedFactsCount > 0 || snapshot.quality?.historicalExcludedFactsCount > 0) && (
               <div role="status" className="p-3 border border-gs-gold/40 rounded text-sm text-gs-gold">
-                Conflicting historical financial extracts were excluded. The annual table and growth calculations use Upstox statements; missing values remain N/A.
+                Legacy financial extracts failed annual selection rules and were excluded. This warning concerns historical research; the financial table below uses separate Upstox statements.
               </div>
             )}
             <div className="text-xs font-mono text-gs-textDim" role="status">
@@ -1450,92 +1452,7 @@ function CompanyReport({ symbol, onBack }) {
                 </Badge>
               </div>
 
-              {annualSeries.length > 0 ? (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs font-mono text-left border-collapse">
-                    <thead>
-                      <tr className="border-b border-gs-border text-gs-textDim bg-gs-panel/40">
-                        <th className="py-2.5 px-3">Metric</th>
-                        {annualSeries.map(s => (
-                          <th key={s.year} className="py-2.5 px-3 text-right font-bold text-gs-gold">{s.period}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gs-border/40 text-gs-text">
-                      <tr className="hover:bg-gs-panel/20">
-                        <td className="py-2 px-3 font-semibold text-gs-text">{snapshot.revenueLabel || 'Revenue / income'} (₹ Cr)</td>
-                        {annualSeries.map(s => (
-                          <td key={s.year} className="py-2 px-3 text-right font-medium">{s.revenue != null ? s.revenue : 'N/A'}</td>
-                        ))}
-                      </tr>
-                      <tr className="hover:bg-gs-panel/20">
-                        <td className="py-2 px-3 text-gs-textDim">EBITDA (₹ Cr)</td>
-                        {annualSeries.map(s => (
-                          <td key={s.year} className="py-2 px-3 text-right">{s.ebitda != null ? s.ebitda : 'N/A'}</td>
-                        ))}
-                      </tr>
-                      <tr className="hover:bg-gs-panel/20">
-                        <td className="py-2 px-3 text-gs-textDim">EBITDA Margin (%)</td>
-                        {annualSeries.map(s => (
-                          <td key={s.year} className="py-2 px-3 text-right">{s.ebitdaMargin != null ? `${s.ebitdaMargin}%` : 'N/A'}</td>
-                        ))}
-                      </tr>
-                      <tr className="hover:bg-gs-panel/20">
-                        <td className="py-2 px-3 font-semibold text-gs-pos">{snapshot.patLabel || 'Profit after tax'} (₹ Cr)</td>
-                        {annualSeries.map(s => (
-                          <td key={s.year} className="py-2 px-3 text-right font-medium text-gs-pos">{s.pat != null ? s.pat : 'N/A'}</td>
-                        ))}
-                      </tr>
-                      <tr className="hover:bg-gs-panel/20">
-                        <td className="py-2 px-3 text-gs-textDim">Adjusted {snapshot.patLabel || 'Profit after tax'} (₹ Cr)</td>
-                        {annualSeries.map(s => (
-                          <td key={s.year} className="py-2 px-3 text-right">{s.adjustedPat != null ? s.adjustedPat : 'N/A'}</td>
-                        ))}
-                      </tr>
-                      <tr className="hover:bg-gs-panel/20">
-                        <td className="py-2 px-3 text-gs-textDim">{snapshot.epsLabel || 'EPS'} (₹)</td>
-                        {annualSeries.map(s => (
-                          <td key={s.year} className="py-2 px-3 text-right">{s.eps != null ? `₹${s.eps}` : 'N/A'}</td>
-                        ))}
-                      </tr>
-                      <tr className="hover:bg-gs-panel/20">
-                        <td className="py-2 px-3 text-gs-textDim">Operating Cash Flow (₹ Cr)</td>
-                        {annualSeries.map(s => (
-                          <td key={s.year} className="py-2 px-3 text-right">{s.operatingCashFlow != null ? s.operatingCashFlow : 'N/A'}</td>
-                        ))}
-                      </tr>
-                      <tr className="hover:bg-gs-panel/20">
-                        <td className="py-2 px-3 text-gs-textDim">Free Cash Flow (₹ Cr)</td>
-                        {annualSeries.map(s => (
-                          <td key={s.year} className="py-2 px-3 text-right">{s.freeCashFlow != null ? s.freeCashFlow : 'N/A'}</td>
-                        ))}
-                      </tr>
-                      <tr className="hover:bg-gs-panel/20">
-                        <td className="py-2 px-3 text-gs-textDim">Total Debt (₹ Cr)</td>
-                        {annualSeries.map(s => (
-                          <td key={s.year} className="py-2 px-3 text-right">{s.debt != null ? s.debt : 'N/A'}</td>
-                        ))}
-                      </tr>
-                      <tr className="hover:bg-gs-panel/20">
-                        <td className="py-2 px-3 text-gs-textDim">Return on Equity (ROE %)</td>
-                        {annualSeries.map(s => (
-                          <td key={s.year} className="py-2 px-3 text-right">{s.roe != null ? `${s.roe}%` : 'N/A'}</td>
-                        ))}
-                      </tr>
-                      <tr className="hover:bg-gs-panel/20">
-                        <td className="py-2 px-3 text-gs-textDim">Return on Capital (ROCE %)</td>
-                        {annualSeries.map(s => (
-                          <td key={s.year} className="py-2 px-3 text-right">{s.roce != null ? `${s.roce}%` : 'N/A'}</td>
-                        ))}
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <div className="p-8 text-center bg-gs-panel/30 border border-gs-border rounded font-mono text-xs text-gs-textDim">
-                  No multi-year financial series found. Run Historical AI Research to discover official annual filings.
-                </div>
-              )}
+              <AnnualFinancialHistory snapshot={snapshot} metadata={report.financialDataStatus} />
             </Card>
           </div>
         )}

@@ -28,10 +28,10 @@ test('annual table uses provider definitions and actual growth window, with miss
   });
   const table = await screen.findByRole('table');
   expect(table).toHaveTextContent('Total income (₹ Cr)');
-  expect(screen.getByText('495462.81')).toBeInTheDocument();
-  expect(screen.getByText('79219.46')).toBeInTheDocument();
+  expect(screen.getByText('4,95,462.81')).toBeInTheDocument();
+  expect(screen.getByText('79,219.46')).toBeInTheDocument();
   expect(document.body).toHaveTextContent('FY2025–FY2026 (1 year(s) elapsed)');
-  expect(screen.getByText(/Conflicting historical financial extracts were excluded/)).toBeInTheDocument();
+  expect(screen.getByText(/Legacy financial extracts failed annual selection rules/)).toBeInTheDocument();
   expect(document.body).toHaveTextContent('Financial source: UPSTOX');
   expect(screen.queryByText(/5-Year Verified Financial Track Record/)).not.toBeInTheDocument();
   expect(screen.queryByText('Diluted EPS (₹)')).not.toBeInTheDocument();
