@@ -4,6 +4,12 @@
  * `npm run earnings:review -- --secret=X --symbol=TCS --list`
  * `npm run earnings:review -- --secret=X --symbol=TCS --accept=<id> --reviewer=<name> --evidence-status=VERIFIED_EXCHANGE_COPY`
  * `npm run earnings:review -- --secret=X --symbol=TCS --reject=<id> --reviewer=<name> --reason="..."`
+ * `npm run earnings:review -- --secret=X --symbol=TCS --lock=<id> --reviewer=<name> [--reason="..."]`
+ * `npm run earnings:review -- --secret=X --symbol=TCS --unlock=<id> --reviewer=<name>`
+ *
+ * --lock / --unlock: the explicit human-review lock for
+ * scripts/reevaluatePromises.js (stop automatically re-checking this
+ * candidate, with who/when/why on record). Same secret requirement.
  *
  * Phase 4F: --accept now REQUIRES --evidence-status (VERIFIED_PRIMARY or
  * VERIFIED_EXCHANGE_COPY) -- an explicit assertion that the reviewer
@@ -268,6 +274,59 @@ export const rejectCandidate = async (symbol, candidateId, { reviewer, secret, r
   return { ok: true, message: `Rejected "${candidateId}" for ${symbol}${reason ? ` (${reason})` : ''}. It will never be promoted; re-run generation for a fresh candidate.` };
 };
 
+/**
+ * lockCandidate / unlockCandidate - the explicit human-review lock read by
+ * scripts/reevaluatePromises.js: a locked candidate (any reviewStatus) is
+ * never automatically re-checked, with who/when/why on record. Distinct from
+ * REJECTED (terminal) and ACCEPTED (still receives re-evaluation proposals).
+ * Touches only reevaluation.locked/lockedBy/lockedAt/lockReason; same
+ * authorization as accept/reject.
+ */
+export const lockCandidate = async (symbol, candidateId, { reviewer, secret, reason = null } = {}) => {
+  if (!isAuthorized(secret)) {
+    return { ok: false, error: 'Unauthorized: EARNINGS_REVIEW_SECRET is not set, or the provided secret does not match.' };
+  }
+  if (!reviewer) {
+    return { ok: false, error: 'A --reviewer name is required for the audit trail.' };
+  }
+  const candidate = await PromiseCandidate.findOne({ symbol, id: candidateId }).lean();
+  if (!candidate) {
+    return { ok: false, error: `No candidate with id "${candidateId}" found for ${symbol}.` };
+  }
+  // MongoDB cannot $set a dotted path through a null sub-document (the default for reevaluation).
+  if (!candidate.reevaluation) {
+    await PromiseCandidate.updateOne({ symbol, id: candidateId, reevaluation: null }, { $set: { reevaluation: {} } });
+  }
+  await PromiseCandidate.updateOne({ symbol, id: candidateId }, {
+    $set: {
+      'reevaluation.locked': true, 'reevaluation.lockedBy': reviewer, 'reevaluation.lockedAt': new Date(), 'reevaluation.lockReason': reason || null,
+    },
+  });
+  return { ok: true, message: `Locked "${candidateId}" for ${symbol}${reason ? ` (${reason})` : ''}. It will not be automatically re-evaluated until unlocked.` };
+};
+
+export const unlockCandidate = async (symbol, candidateId, { reviewer, secret } = {}) => {
+  if (!isAuthorized(secret)) {
+    return { ok: false, error: 'Unauthorized: EARNINGS_REVIEW_SECRET is not set, or the provided secret does not match.' };
+  }
+  if (!reviewer) {
+    return { ok: false, error: 'A --reviewer name is required for the audit trail.' };
+  }
+  const candidate = await PromiseCandidate.findOne({ symbol, id: candidateId }).lean();
+  if (!candidate) {
+    return { ok: false, error: `No candidate with id "${candidateId}" found for ${symbol}.` };
+  }
+  if (!candidate.reevaluation?.locked) {
+    return { ok: true, idempotent: true, message: `Candidate "${candidateId}" is not locked. No changes made.` };
+  }
+  await PromiseCandidate.updateOne({ symbol, id: candidateId }, {
+    $set: {
+      'reevaluation.locked': false, 'reevaluation.lockedBy': null, 'reevaluation.lockedAt': null, 'reevaluation.lockReason': null,
+    },
+  });
+  return { ok: true, message: `Unlocked "${candidateId}" for ${symbol} (by ${reviewer}). It is eligible for automatic re-evaluation again.` };
+};
+
 /** Read-only -- listing candidates does not require the secret, only mutating actions do. */
 export const listCandidates = async (symbol) => {
   const records = await listCandidatesForSymbol(symbol);
@@ -276,7 +335,7 @@ export const listCandidates = async (symbol) => {
 
 const parseArgs = (argv) => {
   const args = {
-    symbol: null, secret: null, reviewer: null, accept: null, reject: null, list: false,
+    symbol: null, secret: null, reviewer: null, accept: null, reject: null, lock: null, unlock: null, list: false,
     evidenceStatus: null, reason: null,
   };
   for (const arg of argv) {
@@ -285,6 +344,8 @@ const parseArgs = (argv) => {
     else if (arg.startsWith('--reviewer=')) args.reviewer = arg.replace('--reviewer=', '').trim();
     else if (arg.startsWith('--accept=')) args.accept = arg.replace('--accept=', '').trim();
     else if (arg.startsWith('--reject=')) args.reject = arg.replace('--reject=', '').trim();
+    else if (arg.startsWith('--lock=')) args.lock = arg.replace('--lock=', '').trim();
+    else if (arg.startsWith('--unlock=')) args.unlock = arg.replace('--unlock=', '').trim();
     else if (arg.startsWith('--evidence-status=')) args.evidenceStatus = arg.replace('--evidence-status=', '').trim();
     else if (arg.startsWith('--reason=')) args.reason = arg.replace('--reason=', '').trim();
     else if (arg === '--list') args.list = true;
@@ -296,7 +357,7 @@ const run = async () => {
   const args = parseArgs(process.argv.slice(2));
   args.secret = resolveSecret(args.secret);
   if (!args.symbol) {
-    console.error('Usage: npm run earnings:review -- --secret=<secret> --symbol=TCS [--list | --accept=<id> --reviewer=<name> --evidence-status=<VERIFIED_PRIMARY|VERIFIED_EXCHANGE_COPY> [--reason=<notes>] | --reject=<id> --reviewer=<name> [--reason=<notes>]]');
+    console.error('Usage: npm run earnings:review -- --secret=<secret> --symbol=TCS [--list | --accept=<id> --reviewer=<name> --evidence-status=<VERIFIED_PRIMARY|VERIFIED_EXCHANGE_COPY> [--reason=<notes>] | --reject=<id> --reviewer=<name> [--reason=<notes>] | --lock=<id> --reviewer=<name> [--reason=<text>] | --unlock=<id> --reviewer=<name>]');
     process.exit(1);
   }
 
@@ -324,8 +385,16 @@ const run = async () => {
     const result = await rejectCandidate(args.symbol, args.reject, { reviewer: args.reviewer, secret: args.secret, reason: args.reason });
     console.log(result.ok ? result.message : `ERROR: ${result.error}`);
     if (!result.ok) process.exitCode = 1;
+  } else if (args.lock) {
+    const result = await lockCandidate(args.symbol, args.lock, { reviewer: args.reviewer, secret: args.secret, reason: args.reason });
+    console.log(result.ok ? result.message : `ERROR: ${result.error}`);
+    if (!result.ok) process.exitCode = 1;
+  } else if (args.unlock) {
+    const result = await unlockCandidate(args.symbol, args.unlock, { reviewer: args.reviewer, secret: args.secret });
+    console.log(result.ok ? result.message : `ERROR: ${result.error}`);
+    if (!result.ok) process.exitCode = 1;
   } else {
-    console.error('Specify one of --list, --accept=<id>, or --reject=<id>.');
+    console.error('Specify one of --list, --accept=<id>, --reject=<id>, --lock=<id>, or --unlock=<id>.');
     process.exitCode = 1;
   }
 

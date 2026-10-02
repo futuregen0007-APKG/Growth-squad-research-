@@ -2,7 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isDueForReevaluation, resolveCandidateMetric, reevaluateCandidate, buildCandidateUpdate, runReevaluation, parseArgs,
+  isDueForDriftCheck, computeEvidenceHash, NO_TIER_A_MATCH, createCuratedRecordLoader, passesCuratedVisibilityGate,
+  runScheduledReevaluation, flattenReevaluationSet,
 } from '../scripts/reevaluatePromises.js';
+import { classifyUpstreamFreshness, DEFAULT_FRESH_WITHIN_MS, UPSTREAM_JOB_NAMES } from '../utils/upstreamFreshness.js';
 
 /**
  * reevaluatePromises.test.js
@@ -52,14 +55,97 @@ const factMatch = (actualValue, extra = {}) => ({
   ...extra,
 });
 
-test('due selection: open outcome + closed period + reporting window passed; never REJECTED; a human INSUFFICIENT_EVIDENCE is left alone', () => {
+/**
+ * applyUpdate - in-memory stand-in for MongoDB's updateOne semantics on the
+ * shapes this job writes: dotted $set paths (creating intermediate objects)
+ * and $push onto an array. Mirrors what the real write does, so a test
+ * catches an update that would clobber lock/hash/history fields.
+ */
+const applyUpdate = (doc, { $set = {}, $push = {} } = {}) => {
+  const next = structuredClone(doc);
+  const walk = (key) => {
+    const parts = key.split('.');
+    let cur = next;
+    for (const part of parts.slice(0, -1)) {
+      if (cur[part] === null || cur[part] === undefined) cur[part] = {};
+      cur = cur[part];
+    }
+    return [cur, parts[parts.length - 1]];
+  };
+  for (const [key, value] of Object.entries($set)) { const [obj, leaf] = walk(key); obj[leaf] = structuredClone(value); }
+  for (const [key, value] of Object.entries($push)) { const [obj, leaf] = walk(key); obj[leaf] = [...(obj[leaf] || []), structuredClone(value)]; }
+  return next;
+};
+
+test('due selection: open outcome + closed period + reporting window passed; never REJECTED; INSUFFICIENT_EVIDENCE revisited whoever set it', () => {
   assert.equal(isDueForReevaluation(candidate(), { asOf: AS_OF }), true);
   assert.equal(isDueForReevaluation(candidate({ promise: { targetPeriod: 'FY2027' } }), { asOf: AS_OF }), false);
   assert.equal(isDueForReevaluation(candidate(), { asOf: new Date('2025-05-15T00:00:00Z') }), false, 'inside the 60-day reporting window');
   assert.equal(isDueForReevaluation(candidate({ reviewStatus: 'REJECTED' }), { asOf: AS_OF }), false);
+  assert.equal(isDueForReevaluation(candidate({ reviewStatus: 'REJECTED', outcome: { status: 'INSUFFICIENT_EVIDENCE' } }), { asOf: AS_OF }), false);
   assert.equal(isDueForReevaluation(candidate({ outcome: { status: 'MISSED' } }), { asOf: AS_OF }), false);
-  assert.equal(isDueForReevaluation(candidate({ outcome: { status: 'INSUFFICIENT_EVIDENCE' } }), { asOf: AS_OF }), false);
+  // A human-set INSUFFICIENT_EVIDENCE (this job never ran on it: no reevaluation.lastRunAt) is now due.
+  assert.equal(isDueForReevaluation(candidate({ outcome: { status: 'INSUFFICIENT_EVIDENCE' } }), { asOf: AS_OF }), true);
+  assert.equal(isDueForReevaluation(candidate({ outcome: { status: 'INSUFFICIENT_EVIDENCE' }, reevaluation: null }), { asOf: AS_OF }), true);
   assert.equal(isDueForReevaluation(candidate({ outcome: { status: 'INSUFFICIENT_EVIDENCE' }, reevaluation: { lastRunAt: new Date('2026-09-25') } }), { asOf: AS_OF }), true);
+  assert.equal(isDueForReevaluation(candidate({ outcome: { status: 'INSUFFICIENT_EVIDENCE' }, promise: { targetPeriod: 'FY2027' } }), { asOf: AS_OF }), false, 'period must still be closed');
+});
+
+test('a locked candidate is never due, whatever its status or review state', () => {
+  const lock = { locked: true, lockedBy: 'reviewer', lockedAt: new Date('2026-09-01'), lockReason: 'leave alone' };
+  for (const reviewStatus of ['PENDING_REVIEW', 'ACCEPTED']) {
+    for (const status of ['PENDING', 'INSUFFICIENT_EVIDENCE', 'ACHIEVED', 'EXCEEDED', 'MISSED']) {
+      const c = candidate({ reviewStatus, outcome: { status }, reevaluation: lock });
+      assert.equal(isDueForReevaluation(c, { asOf: AS_OF }), false, `${reviewStatus}/${status} open pool`);
+      assert.equal(isDueForDriftCheck(c), false, `${reviewStatus}/${status} drift pool`);
+    }
+  }
+  // locked:false (the schema default) does not block.
+  assert.equal(isDueForReevaluation(candidate({ reevaluation: { locked: false } }), { asOf: AS_OF }), true);
+});
+
+test('an ACCEPTED candidate whose committed JSON record is QUARANTINED is skipped; not-yet-deployed is allowed; unreadable file fails closed', () => {
+  const accepted = (status = 'INSUFFICIENT_EVIDENCE') => candidate({ reviewStatus: 'ACCEPTED', outcome: { status } });
+  const quarantined = { found: true, record: { id: 'TCS-FY2025-CAND-001', evidenceIntegrity: { status: 'QUARANTINED' } }, error: null };
+  const publicSafe = { found: true, record: { id: 'TCS-FY2025-CAND-001', evidenceIntegrity: { status: 'VERIFIED_PRIMARY' } }, error: null };
+  const notDeployed = { found: false, record: null, error: null };
+  assert.equal(isDueForReevaluation(accepted(), { asOf: AS_OF, curated: quarantined }), false);
+  assert.equal(isDueForDriftCheck(accepted('ACHIEVED'), { curated: quarantined }), false);
+  assert.equal(isDueForReevaluation(accepted(), { asOf: AS_OF, curated: publicSafe }), true);
+  assert.equal(isDueForReevaluation(accepted(), { asOf: AS_OF, curated: notDeployed }), true);
+  assert.equal(passesCuratedVisibilityGate(accepted(), { found: false, record: null, error: 'bad json' }), false);
+  // The gate only constrains ACCEPTED candidates.
+  assert.equal(passesCuratedVisibilityGate(candidate(), quarantined), true);
+
+  // The loader reads promises/<SYMBOL>.json once per symbol (read-only) and finds by id.
+  let reads = 0;
+  const load = createCuratedRecordLoader({
+    promisesDir: '/fake', existsFn: () => true,
+    readFileFn: () => { reads += 1; return JSON.stringify({ records: [{ id: 'TCS-FY2025-CAND-001', evidenceIntegrity: { status: 'QUARANTINED' } }] }); },
+  });
+  assert.equal(load('TCS', 'TCS-FY2025-CAND-001').record.evidenceIntegrity.status, 'QUARANTINED');
+  assert.equal(load('TCS', 'TCS-FY2025-CAND-999').found, false);
+  assert.equal(reads, 1);
+  const broken = createCuratedRecordLoader({ promisesDir: '/fake', existsFn: () => true, readFileFn: () => '{not json' });
+  assert.ok(broken('TCS', 'x').error);
+});
+
+test('runReevaluation skips a QUARANTINED accepted candidate entirely (no lookup, no write)', async () => {
+  const c = candidate({ reviewStatus: 'ACCEPTED', outcome: { status: 'INSUFFICIENT_EVIDENCE' } });
+  let searched = 0;
+  const writes = [];
+  const stats = await runReevaluation({
+    findCandidatesFn: async () => [structuredClone(c)],
+    updateCandidateFn: async (cand, update) => { writes.push(update); },
+    outcomeSearchFn: async () => { searched += 1; return factMatch(27); },
+    historicalFactsFn: async () => { searched += 1; return null; },
+    loadCuratedRecordFn: () => ({ found: true, record: { id: c.id, evidenceIntegrity: { status: 'QUARANTINED' } }, error: null }),
+    asOf: AS_OF,
+  });
+  assert.equal(stats.due, 0);
+  assert.equal(stats.skippedNotPublic, 1);
+  assert.equal(searched, 0);
+  assert.equal(writes.length, 0);
 });
 
 test('metric resolution never guesses: stored metric first, then only unambiguous categories', () => {
@@ -129,10 +215,9 @@ test('a run is scoped by symbol, bounded by batch size, writes nothing on a dry 
   ].map((c) => [c.id, c]));
   const findCandidatesFn = async ({ symbols }) => [...store.values()].filter((c) => !symbols || symbols.includes(c.symbol)).map((c) => structuredClone(c));
   const writes = [];
-  const updateCandidateFn = async (c, $set) => {
+  const updateCandidateFn = async (c, update) => {
     writes.push(c.id);
-    const current = store.get(c.id);
-    store.set(c.id, { ...current, ...('outcome' in $set ? { outcome: $set.outcome, outcomeEvidence: $set.outcomeEvidence } : {}), reevaluation: $set.reevaluation });
+    store.set(c.id, applyUpdate(store.get(c.id), update));
   };
   const outcomeSearchFn = async (profile, promise) => (promise.metric === 'PAT'
     ? { ...factMatch(48000), actualUnit: 'INR_CRORE' }
@@ -162,4 +247,321 @@ test('CLI arguments accept --symbol=X, --symbol X and --symbols A,B', () => {
   assert.deepEqual(parseArgs(['--symbols', 'TCS,INFY,HDFCBANK', '--expect-target', 'h/db']).symbols, ['TCS', 'INFY', 'HDFCBANK']);
   assert.equal(parseArgs([]).symbols, null);
   assert.equal(parseArgs(['--dry-run']).dryRun, true);
+});
+
+// ---------------------------------------------------------------------------
+// Completed-outcome evidence drift (tier-(a) fingerprint), budget sharing,
+// upstream freshness reporting, and whole-job idempotency.
+// ---------------------------------------------------------------------------
+
+const completed = (overrides = {}) => candidate({
+  ...overrides,
+  outcome: {
+    status: 'ACHIEVED', actualValue: 27, actualUnit: 'PERCENT', evaluationDate: '2025-04-10', explanation: 'MET', ...(overrides.outcome || {}),
+  },
+});
+
+const makeStore = (list) => {
+  const store = new Map(list.map((c) => [c.id, structuredClone(c)]));
+  return {
+    store,
+    findCandidatesFn: async ({ symbols }) => [...store.values()].filter((c) => !symbols || symbols.includes(c.symbol)).map((c) => structuredClone(c)),
+    updateCandidateFn: async (c, update) => { store.set(c.id, applyUpdate(store.get(c.id), update)); },
+  };
+};
+
+const NOT_DEPLOYED = () => ({ found: false, record: null, error: null });
+const H27 = computeEvidenceHash(factMatch(27));
+const H25 = computeEvidenceHash(factMatch(25));
+
+test('evidence hash: sha256 over the load-bearing fields, a fixed sentinel when tier (a) found nothing', () => {
+  assert.match(H27, /^[0-9a-f]{64}$/);
+  assert.equal(computeEvidenceHash(factMatch(27)), H27, 'deterministic');
+  assert.notEqual(H25, H27);
+  assert.notEqual(computeEvidenceHash(factMatch(27, { outcomeSourceUrl: 'https://nsearchives.nseindia.com/restated.pdf' })), H27, 'a new source version is a change');
+  assert.equal(computeEvidenceHash(factMatch(27, { outcomeStatement: 'reworded' })), H27, 'non-load-bearing fields are ignored');
+  assert.equal(computeEvidenceHash(factMatch(27, { outcomeSourceDate: new Date('2025-04-10T00:00:00Z') })), computeEvidenceHash(factMatch(27, { outcomeSourceDate: '2025-04-10T00:00:00.000Z' })));
+  assert.equal(computeEvidenceHash(null), NO_TIER_A_MATCH);
+});
+
+test('drift pool selection: numeric completions only; never PARTIAL / QUALITATIVE_ONLY / REJECTED; needs a metric and a numeric target', () => {
+  for (const status of ['ACHIEVED', 'EXCEEDED', 'MISSED']) assert.equal(isDueForDriftCheck(completed({ outcome: { status } })), true, status);
+  for (const status of ['PARTIAL', 'QUALITATIVE_ONLY', 'PENDING', 'INSUFFICIENT_EVIDENCE']) assert.equal(isDueForDriftCheck(completed({ outcome: { status } })), false, status);
+  assert.equal(isDueForDriftCheck(completed({ reviewStatus: 'REJECTED' })), false);
+  assert.equal(isDueForDriftCheck(completed({ promise: { metric: null, category: 'ORDER_BOOK' } })), false);
+  assert.equal(isDueForDriftCheck(completed({ promise: { targetValue: null } })), false);
+});
+
+test('first observation of a completed candidate stores a baseline hash only: no full lookup, no history, no outcome change', async () => {
+  const { store, findCandidatesFn, updateCandidateFn } = makeStore([completed()]);
+  let fullCalls = 0;
+  const stats = await runReevaluation({
+    findCandidatesFn, updateCandidateFn, asOf: AS_OF, loadCuratedRecordFn: NOT_DEPLOYED,
+    outcomeSearchFn: async () => { fullCalls += 1; return factMatch(27); },
+    historicalFactsFn: async () => factMatch(27),
+  });
+  const after = store.get('TCS-FY2025-CAND-001');
+  assert.equal(stats.drift.baselined, 1);
+  assert.equal(fullCalls, 0);
+  assert.equal(after.reevaluation.evidenceHash, H27);
+  assert.equal(after.outcome.status, 'ACHIEVED');
+  assert.equal((after.reevaluation.history || []).length, 0);
+});
+
+test('an unchanged tier-(a) hash is skipped WITHOUT calling the full (LLM / paid) lookup', async () => {
+  const { store, findCandidatesFn, updateCandidateFn } = makeStore([completed({ reevaluation: { evidenceHash: H27, history: [] } })]);
+  let fullCalls = 0;
+  let tierACalls = 0;
+  const stats = await runReevaluation({
+    findCandidatesFn, updateCandidateFn, asOf: AS_OF, loadCuratedRecordFn: NOT_DEPLOYED,
+    outcomeSearchFn: async () => { fullCalls += 1; throw new Error('the full lookup must not run when evidence is unchanged'); },
+    historicalFactsFn: async () => { tierACalls += 1; return factMatch(27); },
+  });
+  const after = store.get('TCS-FY2025-CAND-001');
+  assert.equal(tierACalls, 1);
+  assert.equal(fullCalls, 0, 'searchActualOutcomesLocalFirst never invoked');
+  assert.equal(stats.drift.unchanged, 1);
+  assert.equal(stats.drift.failures, 0);
+  assert.equal(after.reevaluation.evidenceHash, H27);
+  assert.deepEqual(after.reevaluation.history, []);
+  assert.equal(new Date(after.reevaluation.evidenceHashCheckedAt).getTime(), AS_OF.getTime(), 'rotation timestamp refreshed');
+});
+
+test('changed evidence on an ACCEPTED completed candidate: full re-check, history entry, proposal only -- outcome never written', async () => {
+  const original = completed({ reviewStatus: 'ACCEPTED', reevaluation: { evidenceHash: H27, history: [] } });
+  const { store, findCandidatesFn, updateCandidateFn } = makeStore([original]);
+  let fullCalls = 0;
+  const writes = [];
+  const stats = await runReevaluation({
+    findCandidatesFn,
+    asOf: AS_OF,
+    runId: 'run-drift',
+    loadCuratedRecordFn: () => ({ found: true, record: { id: original.id, evidenceIntegrity: { status: 'VERIFIED_PRIMARY' } }, error: null }),
+    updateCandidateFn: async (c, update) => { writes.push(update); await updateCandidateFn(c, update); },
+    outcomeSearchFn: async () => { fullCalls += 1; return factMatch(25); }, // restated below the 26% floor
+    historicalFactsFn: async () => factMatch(25),
+  });
+  const after = store.get(original.id);
+  assert.equal(fullCalls, 1);
+  assert.equal(stats.drift.evidenceChanged, 1);
+  assert.equal(stats.drift.outcomeChanged, 1);
+  assert.equal(stats.drift.proposed, 1);
+  assert.ok(!Object.keys(writes[0].$set).some((k) => k === 'outcome' || k.startsWith('outcome.') || k.startsWith('outcomeEvidence')), 'no outcome field in the write');
+  assert.deepEqual(after.outcome, original.outcome, 'human-reviewed outcome untouched');
+  assert.equal(after.reevaluation.proposedOutcome.status, 'MISSED');
+  assert.equal(after.reevaluation.appliedToOutcome, false);
+  assert.equal(after.reevaluation.evidenceHash, H25);
+  assert.equal(after.reevaluation.history.length, 1);
+  const [entry] = after.reevaluation.history;
+  assert.equal(entry.trigger, 'EVIDENCE_DRIFT');
+  assert.equal(entry.previousOutcome, 'ACHIEVED');
+  assert.equal(entry.newOutcome, 'MISSED');
+  assert.equal(entry.previousEvidenceHash, H27);
+  assert.equal(entry.newEvidenceHash, H25);
+  assert.equal(entry.applied, false);
+  assert.match(entry.reason, /fingerprint changed/);
+});
+
+test('changed evidence on a PENDING_REVIEW completed candidate is applied after validation, with an applied history entry', async () => {
+  const { store, findCandidatesFn, updateCandidateFn } = makeStore([completed({ reevaluation: { evidenceHash: H27, history: [] } })]);
+  await runReevaluation({
+    findCandidatesFn, updateCandidateFn, asOf: AS_OF, loadCuratedRecordFn: NOT_DEPLOYED,
+    outcomeSearchFn: async () => factMatch(25), historicalFactsFn: async () => factMatch(25),
+  });
+  const after = store.get('TCS-FY2025-CAND-001');
+  assert.equal(after.outcome.status, 'MISSED');
+  assert.equal(after.outcome.actualValue, 25);
+  assert.equal(after.reevaluation.history.length, 1);
+  assert.equal(after.reevaluation.history[0].applied, true);
+});
+
+test('evidence that disappears from tier (a) never turns a completed outcome into MISSED -- only INSUFFICIENT_EVIDENCE', async () => {
+  const { store, findCandidatesFn, updateCandidateFn } = makeStore([completed({ reevaluation: { evidenceHash: H27, history: [] } })]);
+  await runReevaluation({
+    findCandidatesFn, updateCandidateFn, asOf: AS_OF, loadCuratedRecordFn: NOT_DEPLOYED,
+    outcomeSearchFn: async () => null, historicalFactsFn: async () => null, // e.g. the fact was quarantined
+  });
+  const after = store.get('TCS-FY2025-CAND-001');
+  assert.notEqual(after.outcome.status, 'MISSED');
+  assert.equal(after.reevaluation.evidenceHash, NO_TIER_A_MATCH);
+  assert.equal(after.reevaluation.history[0].newOutcome, 'INSUFFICIENT_EVIDENCE');
+});
+
+test('changed evidence that recomputes to the SAME verdict refreshes the hash without a history entry', async () => {
+  const original = completed({ reviewStatus: 'ACCEPTED', reevaluation: { evidenceHash: H27, history: [] } });
+  const { store, findCandidatesFn, updateCandidateFn } = makeStore([original]);
+  const restated = factMatch(27.4, { outcomeSourceUrl: 'https://nsearchives.nseindia.com/corporate/TCS_restated.pdf' });
+  let fullCalls = 0;
+  const stats = await runReevaluation({
+    findCandidatesFn, updateCandidateFn, asOf: AS_OF, loadCuratedRecordFn: NOT_DEPLOYED,
+    outcomeSearchFn: async () => { fullCalls += 1; return restated; }, historicalFactsFn: async () => restated,
+  });
+  const after = store.get(original.id);
+  assert.equal(fullCalls, 1, 'a real change in evidence does trigger the full re-check');
+  assert.equal(stats.drift.evidenceChanged, 1);
+  assert.equal(stats.drift.outcomeChanged, 0);
+  assert.equal(stats.historyEntries, 0);
+  assert.equal(after.reevaluation.evidenceHash, computeEvidenceHash(restated));
+  assert.deepEqual(after.reevaluation.history, []);
+  assert.equal(after.reevaluation.proposedOutcome ?? null, null, 'no proposal written for an unchanged verdict');
+  assert.deepEqual(after.outcome, original.outcome);
+});
+
+test('one shared batch budget: due open-status candidates first, drift checks only get the remaining slots', async () => {
+  const { findCandidatesFn, updateCandidateFn } = makeStore([
+    candidate({ id: 'TCS-FY2025-CAND-001' }),
+    completed({ id: 'TCS-FY2025-CAND-002' }),
+  ]);
+  let tierACalls = 0;
+  const args = {
+    findCandidatesFn,
+    updateCandidateFn,
+    asOf: AS_OF,
+    loadCuratedRecordFn: NOT_DEPLOYED,
+    outcomeSearchFn: async () => null,
+    historicalFactsFn: async () => { tierACalls += 1; return null; },
+  };
+  const first = await runReevaluation({ ...args, batchSize: 1 });
+  assert.equal(first.processed, 1);
+  assert.equal(first.drift.checked, 0);
+  assert.equal(tierACalls, 0);
+  const second = await runReevaluation({ ...args, batchSize: 2 });
+  assert.equal(second.processed, 1);
+  assert.equal(second.drift.checked, 1);
+});
+
+test('flattenReevaluationSet writes dotted reevaluation.* paths so lock/hash/history are never clobbered', () => {
+  const flat = flattenReevaluationSet({ outcome: { status: 'MISSED' }, reevaluation: { lastRunAt: AS_OF, proposedOutcome: { status: 'MISSED' } } });
+  assert.deepEqual(Object.keys(flat).sort(), ['outcome', 'reevaluation.lastRunAt', 'reevaluation.proposedOutcome']);
+  const before = completed({ reevaluation: { evidenceHash: H27, history: [{ trigger: 'EVIDENCE_DRIFT' }], locked: false } });
+  const after = applyUpdate(before, { $set: flat });
+  assert.equal(after.reevaluation.evidenceHash, H27);
+  assert.equal(after.reevaluation.history.length, 1);
+});
+
+test('upstream freshness classification: FRESH / STALE / FAILED / NEVER_RUN', () => {
+  const now = AS_OF;
+  const daysAgo = (n) => new Date(now.getTime() - n * 24 * 60 * 60 * 1000);
+  assert.equal(DEFAULT_FRESH_WITHIN_MS, 10 * 24 * 60 * 60 * 1000);
+  assert.equal(classifyUpstreamFreshness(null, { now }), 'NEVER_RUN');
+  assert.equal(classifyUpstreamFreshness({ jobName: 'x', status: 'RUNNING', startedAt: daysAgo(0) }, { now }), 'NEVER_RUN', 'first run still in flight');
+  assert.equal(classifyUpstreamFreshness({ status: 'SUCCESS', lastSuccessAt: daysAgo(2) }, { now }), 'FRESH');
+  assert.equal(classifyUpstreamFreshness({ status: 'SUCCESS', lastSuccessAt: daysAgo(10) }, { now }), 'FRESH', 'window boundary is inclusive');
+  assert.equal(classifyUpstreamFreshness({ status: 'SUCCESS', lastSuccessAt: daysAgo(11) }, { now }), 'STALE');
+  assert.equal(classifyUpstreamFreshness({ status: 'FAILED', lastSuccessAt: daysAgo(5), lastFailureAt: daysAgo(1) }, { now }), 'FAILED');
+  assert.equal(classifyUpstreamFreshness({ status: 'FAILED', lastFailureAt: daysAgo(1) }, { now }), 'FAILED', 'failure with no success ever');
+  assert.equal(classifyUpstreamFreshness({ status: 'SUCCESS', lastSuccessAt: daysAgo(1), lastFailureAt: daysAgo(4) }, { now }), 'FRESH', 'an older failure is superseded');
+  assert.equal(classifyUpstreamFreshness({ status: 'RUNNING', lastSuccessAt: daysAgo(30), lastFailureAt: daysAgo(40) }, { now }), 'STALE');
+  assert.equal(classifyUpstreamFreshness({ lastSuccessAt: daysAgo(3) }, { now, freshWithinMs: 24 * 60 * 60 * 1000 }), 'STALE', 'custom window');
+});
+
+test('upstream freshness lands in completeRun stats and never changes candidate evaluation (FAILED vs FRESH upstream)', async () => {
+  const fixtures = () => [
+    candidate({ id: 'TCS-FY2025-CAND-001' }),
+    candidate({
+      id: 'TCS-FY2025-CAND-002',
+      outcome: { status: 'INSUFFICIENT_EVIDENCE' },
+      promise: { metric: 'PAT', category: 'PROFITABILITY', targetType: 'ABSOLUTE', targetValue: 45000, targetUnit: 'INR_CRORE' },
+    }),
+    completed({ id: 'TCS-FY2025-CAND-003', reevaluation: { evidenceHash: H27, history: [] } }),
+  ];
+  const runWith = async (statusDoc) => {
+    const { store, findCandidatesFn, updateCandidateFn } = makeStore(fixtures());
+    const completeCalls = [];
+    const looked = [];
+    const stats = await runScheduledReevaluation({
+      getStatusFn: async (jobName) => { looked.push(jobName); return statusDoc; },
+      completeRunFn: async (jobName, runId, payload) => { completeCalls.push({ jobName, runId, payload }); },
+      jobName: 'promise-reevaluation:test',
+      runId: 'run-x',
+      findCandidatesFn,
+      updateCandidateFn,
+      asOf: AS_OF,
+      loadCuratedRecordFn: NOT_DEPLOYED,
+      outcomeSearchFn: async (profile, promise) => (promise.metric === 'PAT' ? null : factMatch(25)),
+      historicalFactsFn: async () => factMatch(25),
+    });
+    return {
+      store, stats, completeCalls, looked,
+    };
+  };
+  const failed = await runWith({ status: 'FAILED', lastSuccessAt: new Date('2026-08-01'), lastFailureAt: new Date('2026-09-28') });
+  const fresh = await runWith({ status: 'SUCCESS', lastSuccessAt: new Date('2026-09-28') });
+
+  assert.deepEqual(failed.looked, [UPSTREAM_JOB_NAMES.xbrlRefresh, UPSTREAM_JOB_NAMES.transcriptRefresh]);
+  assert.deepEqual({ ...UPSTREAM_JOB_NAMES }, { xbrlRefresh: 'xbrl-batch:cron-xbrl-refresh', transcriptRefresh: 'transcripts-batch:cron-transcript-refresh' });
+  assert.equal(failed.completeCalls.length, 1);
+  assert.equal(failed.completeCalls[0].payload.status, 'SUCCESS');
+  assert.deepEqual(failed.completeCalls[0].payload.stats.upstreamFreshness, {
+    xbrlRefresh: { status: 'FAILED', lastSuccessAt: '2026-08-01T00:00:00.000Z' },
+    transcriptRefresh: { status: 'FAILED', lastSuccessAt: '2026-08-01T00:00:00.000Z' },
+  });
+  assert.equal(fresh.completeCalls[0].payload.stats.upstreamFreshness.xbrlRefresh.status, 'FRESH');
+
+  // Identical candidate results regardless of upstream health.
+  assert.deepEqual([...failed.store.values()], [...fresh.store.values()]);
+  const { upstreamFreshness: ignoredA, ...failedRest } = failed.stats;
+  const { upstreamFreshness: ignoredB, ...freshRest } = fresh.stats;
+  assert.deepEqual(failedRest, freshRest);
+  // Missing evidence stayed INSUFFICIENT_EVIDENCE, never MISSED.
+  assert.equal(failed.store.get('TCS-FY2025-CAND-002').outcome.status, 'INSUFFICIENT_EVIDENCE');
+
+  // A status lookup failure is reported, not thrown, and the run still completes.
+  const { findCandidatesFn, updateCandidateFn } = makeStore(fixtures());
+  const broken = await runScheduledReevaluation({
+    getStatusFn: async () => { throw new Error('db down'); },
+    completeRunFn: null,
+    findCandidatesFn,
+    updateCandidateFn,
+    asOf: AS_OF,
+    loadCuratedRecordFn: NOT_DEPLOYED,
+    outcomeSearchFn: async () => null,
+    historicalFactsFn: async () => null,
+  });
+  assert.equal(broken.upstreamFreshness.xbrlRefresh.status, 'UNKNOWN');
+  assert.equal(broken.processed, 2);
+});
+
+test('idempotency: a second run over the same data adds no history, changes no outcome, creates no records', async () => {
+  const { store, findCandidatesFn, updateCandidateFn } = makeStore([
+    candidate({ id: 'TCS-FY2025-CAND-001' }), // open -> resolves on run 1
+    candidate({
+      id: 'TCS-FY2025-CAND-002',
+      outcome: { status: 'INSUFFICIENT_EVIDENCE' },
+      promise: { metric: 'PAT', category: 'PROFITABILITY', targetType: 'ABSOLUTE', targetValue: 45000, targetUnit: 'INR_CRORE' },
+    }), // human-set, stays insufficient
+    completed({ id: 'TCS-FY2025-CAND-003', reviewStatus: 'ACCEPTED', reevaluation: { evidenceHash: H27, history: [] } }), // drift -> proposal
+    completed({ id: 'TCS-FY2025-CAND-004' }), // baseline
+    completed({ id: 'TCS-FY2025-CAND-005', reevaluation: { locked: true, lockedBy: 'r', lockReason: 'hold' } }), // locked: untouched
+  ]);
+  const lockedBefore = structuredClone(store.get('TCS-FY2025-CAND-005'));
+  const args = {
+    findCandidatesFn,
+    updateCandidateFn,
+    asOf: AS_OF,
+    loadCuratedRecordFn: NOT_DEPLOYED,
+    outcomeSearchFn: async (profile, promise) => (promise.metric === 'PAT' ? null : factMatch(25)),
+    historicalFactsFn: async () => factMatch(25),
+  };
+  const snapshot = () => [...store.values()].map((c) => ({
+    id: c.id, outcome: c.outcome, proposed: c.reevaluation?.proposedOutcome?.status ?? null, history: (c.reevaluation?.history || []).length,
+  }));
+
+  const run1 = await runReevaluation(args);
+  assert.equal(run1.historyEntries, 2, 'CAND-001 PENDING -> MISSED, CAND-003 ACHIEVED -> proposed MISSED');
+  const after1 = snapshot();
+  const run2 = await runReevaluation(args);
+  const after2 = snapshot();
+  const run3 = await runReevaluation(args);
+
+  assert.equal(run2.historyEntries, 0);
+  assert.equal(run3.historyEntries, 0);
+  assert.equal(run2.drift.outcomeChanged, 0);
+  assert.equal(run3.drift.evidenceChanged, 0, 'by run 3 every completed candidate is baselined and unchanged');
+  assert.deepEqual(after2, after1);
+  assert.deepEqual(snapshot(), after1);
+  assert.equal(store.size, 5);
+  assert.deepEqual(store.get('TCS-FY2025-CAND-005'), lockedBefore, 'a locked candidate is never written');
+  assert.equal(store.get('TCS-FY2025-CAND-003').outcome.status, 'ACHIEVED', 'ACCEPTED outcome only ever proposed');
+  assert.equal(store.get('TCS-FY2025-CAND-002').outcome.status, 'INSUFFICIENT_EVIDENCE');
 });

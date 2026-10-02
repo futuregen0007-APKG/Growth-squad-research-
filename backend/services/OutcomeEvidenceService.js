@@ -269,7 +269,7 @@ export const searchActualOutcomeFromHistoricalFacts = async (profile, promise) =
   if (!promise?.targetPeriod || !promise?.metric) return null;
 
   const facts = await CompanyHistoricalFact.find({
-    symbol: profile.symbol, dataOrigin: 'REAL_RESEARCH', 'metrics.actualValue': { $ne: null },
+    symbol: profile.symbol, dataOrigin: 'REAL_RESEARCH', 'metrics.actualValue': { $ne: null }, 'quarantine.quarantined': { $ne: true },
   }).sort({ date: -1 }).lean();
 
   for (const record of facts) {

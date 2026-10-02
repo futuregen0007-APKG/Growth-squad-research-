@@ -111,6 +111,20 @@ const promiseCandidateSchema = new mongoose.Schema({
   // human decision is never overwritten: the freshly computed result is
   // stored here as `proposedOutcome` for the reviewer, and `outcome` is left
   // untouched.
+  //
+  // Additive fields (all defaulted, so every pre-existing document reads unchanged):
+  // - locked/lockedBy/lockedAt/lockReason: an explicit human-review lock set
+  //   ONLY by scripts/earningsReview.js --lock / --unlock. A locked candidate
+  //   is never selected by the re-evaluation job, whatever its status. Distinct
+  //   from REJECTED (terminal) and ACCEPTED (still receives proposals).
+  // - evidenceHash: sha256 fingerprint of the cheap tier-(a) CompanyHistoricalFact
+  //   match (or the literal 'NO_TIER_A_MATCH'), used to detect evidence drift on
+  //   completed outcomes without re-running the costly lookup tiers every week.
+  // - evidenceHashCheckedAt: when that fingerprint was last recomputed (rotation
+  //   key so a bounded batch cycles through every completed candidate).
+  // - history: append-only audit trail of every outcome change (applied or only
+  //   proposed), with the previous/new outcome and evidence fingerprint. Entries
+  //   are only ever $push-ed, never rewritten or removed.
   reevaluation: {
     type: new mongoose.Schema({
       lastRunAt: { type: Date, default: null },
@@ -120,6 +134,25 @@ const promiseCandidateSchema = new mongoose.Schema({
       proposedOutcome: { type: mongoose.Schema.Types.Mixed, default: null },
       proposedOutcomeEvidence: { type: mongoose.Schema.Types.Mixed, default: null },
       runId: { type: String, default: null },
+      locked: { type: Boolean, default: false },
+      lockedBy: { type: String, default: null },
+      lockedAt: { type: Date, default: null },
+      lockReason: { type: String, default: null },
+      evidenceHash: { type: String, default: null },
+      evidenceHashCheckedAt: { type: Date, default: null },
+      history: {
+        type: [new mongoose.Schema({
+          at: { type: Date, required: true },
+          trigger: { type: String, enum: ['EVIDENCE_DRIFT', 'OPEN_STATUS_RECHECK'], required: true },
+          previousOutcome: { type: String, default: null },
+          previousEvidenceHash: { type: String, default: null },
+          newOutcome: { type: String, default: null },
+          newEvidenceHash: { type: String, default: null },
+          reason: { type: String, default: null },
+          applied: { type: Boolean, default: false },
+        }, { _id: false })],
+        default: [],
+      },
     }, { _id: false }),
     default: null,
   },
