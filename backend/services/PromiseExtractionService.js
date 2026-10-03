@@ -23,6 +23,7 @@
  *    metric/targetUnit/operator -- anything else is dropped, never defaulted.
  */
 import crypto from 'node:crypto';
+import mongoose from 'mongoose';
 import { openai } from './openaiClient.js';
 import { getCache, setCache } from '../utils/redisClient.js';
 import { logger } from '../utils/logger.js';
@@ -288,9 +289,32 @@ export class PromiseExtractionFailure extends Error {
 // A transcript or results filing with less text than this has no usable text layer (a scan or an empty file).
 const MIN_DOCUMENT_TEXT_CHARS = 200;
 
+// Durable checkpoint of each page-batch's validated result, so an interrupted or retried run never pays
+// for the same pages twice. Redis (when reachable) is the fast path; this Mongo collection is the one a
+// batch job can always reach. Keyed by the same content hash (prompt version, document, page text), so a
+// changed prompt or document is never served a stale answer. Holds model output only -- never financial
+// statement data -- and expires with a TTL index.
+export const EXTRACTION_CHECKPOINT_COLLECTION = 'promiseextractioncheckpoints';
+const CHECKPOINT_TTL_SECONDS = OPENAI_CACHE_TTL_SECONDS;
+let checkpointIndexEnsured = false;
+const checkpointCollection = () => (mongoose.connection.readyState === 1 ? mongoose.connection.db.collection(EXTRACTION_CHECKPOINT_COLLECTION) : null);
+const readCheckpoint = async (key) => {
+  const col = checkpointCollection();
+  if (!col) return null;
+  try { return (await col.findOne({ _id: key }))?.result ?? null; } catch { return null; }
+};
+const writeCheckpoint = async (key, result) => {
+  const col = checkpointCollection();
+  if (!col) return;
+  try {
+    if (!checkpointIndexEnsured) { await col.createIndex({ createdAt: 1 }, { expireAfterSeconds: CHECKPOINT_TTL_SECONDS, name: 'checkpoint_ttl' }); checkpointIndexEnsured = true; }
+    await col.updateOne({ _id: key }, { $set: { result, createdAt: new Date() } }, { upsert: true });
+  } catch { /* a checkpoint that cannot be written only costs a re-read later */ }
+};
+
 const extractPromisesFromPageBatch = async (pages, context) => {
   const cacheKey = `promiseextract:${hashBatchForCache(pages, context)}`;
-  const cached = await getCache(cacheKey);
+  const cached = (await getCache(cacheKey)) ?? (await readCheckpoint(cacheKey));
   if (cached) return cached;
 
   if (!openai || !process.env.OPENAI_API_KEY) {
@@ -305,7 +329,9 @@ const extractPromisesFromPageBatch = async (pages, context) => {
       messages: [{ role: 'user', content: buildPrompt(pages, context) }],
       temperature: 0.1,
       response_format: { type: 'json_object' },
-    }, { timeout: 60000 }));
+      // 429 (tokens-per-minute) is retried with the SDK's backoff, which honours retry-after, instead of
+      // failing the whole document; a rejected request is not billed.
+    }, { timeout: 60000, maxRetries: 8 }));
     const parsed = JSON.parse(response.choices?.[0]?.message?.content || '{}');
     const raw = Array.isArray(parsed.promises) ? parsed.promises : [];
 
@@ -334,6 +360,7 @@ const extractPromisesFromPageBatch = async (pages, context) => {
     });
 
     await setCache(cacheKey, validated, OPENAI_CACHE_TTL_SECONDS);
+    await writeCheckpoint(cacheKey, validated);
     return validated;
   } catch (error) {
     logger.warn(`[PromiseExtractionService] Extraction failed for ${context.symbol} (pages ${pages.map((p) => p.pageNumber).join(',')}): ${error.message}`);

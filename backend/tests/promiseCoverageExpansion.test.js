@@ -6,7 +6,7 @@ import {
 import { acceptExtractedPromise, numberInText, excerptOnPage, findGuidancePages } from '../services/PromiseExtractionService.js';
 import { searchActualOutcomeFromHistoricalFacts, searchActualOutcomesLocalFirst, describeXbrlFact } from '../services/OutcomeEvidenceService.js';
 import CompanyHistoricalFact from '../models/CompanyHistoricalFact.js';
-import { resolveCuratedRecordOutcome, evaluatePromiseOutcome } from '../utils/promiseOutcome.js';
+import { resolveCuratedRecordOutcome, evaluatePromiseOutcome, resolveRecordOutcome } from '../utils/promiseOutcome.js';
 import { classifyNseAnnouncement } from '../providers/NseAnnouncementProvider.js';
 import { withFactsRows, incompleteRows } from '../scripts/earningsXbrlBatch.js';
 import { buildManagementDelivery } from '../services/PromisesVsActualsService.js';
@@ -291,6 +291,14 @@ test('plain "revenue" guidance is never scored against a total-income actual', (
 test('a record with no numeric target keeps its recorded status unless it is marked qualitative', () => {
   assert.equal(resolveCuratedRecordOutcome(record({ targetValue: null, operator: 'AT_LEAST' }, { status: 'PENDING' })).outcome, 'PENDING');
   assert.equal(resolveCuratedRecordOutcome(record({ targetValue: null, operator: 'QUALITATIVE' }, { status: 'ACHIEVED' })).outcome, 'QUALITATIVE_ONLY');
+});
+
+test('a qualitative promise mirrored into the legacy schema (target 0, unit OTHER, direction OTHER) stays QUALITATIVE_ONLY, matching the curated record', () => {
+  const mirrored = { promise: { metric: 'REVENUE_GROWTH', targetValue: 0, targetUnit: 'OTHER', direction: 'OTHER', operator: null, targetPeriod: 'Q2 FY2026' }, verification: { status: 'FULFILLED' } };
+  assert.equal(resolveRecordOutcome(mirrored).outcome, 'QUALITATIVE_ONLY');
+  // A real zero target with a direction is still evaluated, never mistaken for the marker.
+  const realZero = { promise: { metric: 'DEBT', targetValue: 0, targetUnit: 'INR_CRORE', direction: 'AT_MOST', operator: 'LTE', targetPeriod: 'FY2026' }, outcome: { actualValue: 0, actualUnit: 'INR_CRORE' } };
+  assert.notEqual(resolveRecordOutcome(realZero, { asOf: new Date('2026-10-01') }).outcome, 'QUALITATIVE_ONLY');
 });
 
 test('metric labels name the actual metric (Attrition), and only an unidentified metric reads as "Other"', () => {

@@ -341,8 +341,15 @@ if (isMainModule) {
           if (result.error) totals.errors += 1;
           const failed = Boolean(result.error) || (result.discovered > 0 && result.promiseFailures + result.downloadFailed >= result.discovered);
           consecutiveFailures = failed ? consecutiveFailures + 1 : 0;
-          const line = { at: new Date().toISOString(), symbol, seconds: Math.round((Date.now() - t0) / 1000), ...result };
+          // Cumulative model usage on every line (and in the job heartbeat below), so the spend of an
+          // interrupted run is still known exactly from what it wrote before it stopped.
+          const line = {
+            at: new Date().toISOString(), symbol, seconds: Math.round((Date.now() - t0) / 1000), ...result,
+            cumulativeModelCalls: modelUsage.calls, cumulativePromptTokens: modelUsage.promptTokens, cumulativeCompletionTokens: modelUsage.completionTokens, cumulativeEstimatedUsd: Number(estimateModelCostUsd(modelUsage).toFixed(4)),
+          };
           fs.appendFileSync(ledger, `${JSON.stringify(line)}\n`);
+          // eslint-disable-next-line no-await-in-loop
+          if (runId) await heartbeat(jobName, runId, { lastSymbol: symbol, companies: totals.companies, estimatedUsd: line.cumulativeEstimatedUsd, modelCalls: modelUsage.calls }).catch(() => {});
           // Durable rotation marker (Render's filesystem is ephemeral, so the ledger above is not enough).
           if (!args.dryRun) {
             // eslint-disable-next-line no-await-in-loop

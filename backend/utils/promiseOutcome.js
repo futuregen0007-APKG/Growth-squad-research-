@@ -641,6 +641,13 @@ export const resolveRecordOutcome = (record, { asOf = new Date() } = {}) => {
   const targetValue = promise.targetValue ?? record.targetValue;
   const actualValue = outcome.actualValue ?? record.actualValue;
 
+  // scripts/earningsImport.js mirrors a curated QUALITATIVE promise into the legacy schema (which requires
+  // a number) as targetValue 0, unit OTHER, direction OTHER, no operator. That is a qualitative marker,
+  // not a zero target -- never scored.
+  if (!promise.operator && String(promise.direction || '').toUpperCase() === 'OTHER' && String(promise.targetUnit || '').toUpperCase() === 'OTHER' && Number(targetValue) === 0) {
+    return evaluatePromiseOutcome({ targetValue: null, targetType: 'QUALITATIVE' });
+  }
+
   if (isMissingNumber(targetValue)) {
     // A legacy record that genuinely lacks a target field keeps its stored status (nothing to recompute from).
     if (!promise.operator && !promise.targetType && storedCanonical) return { outcome: storedCanonical };
