@@ -26,11 +26,15 @@ import crypto from 'node:crypto';
 import { openai } from './openaiClient.js';
 import { getCache, setCache } from '../utils/redisClient.js';
 import { logger } from '../utils/logger.js';
-import { extractPdfPages, findRelevantPages } from './FactExtractionService.js';
+import { extractPdfPages } from './FactExtractionService.js';
 import { Semaphore } from '../utils/semaphore.js';
 import { calculatePromiseStatus } from './ManagementPromiseService.js';
 import { searchActualOutcomesLocalFirst } from './OutcomeEvidenceService.js';
-import { validateCandidatePromiseRecord, CANDIDATE_STATUS_MAP } from '../utils/earningsIntelligenceValidation.js';
+import {
+  validateCandidatePromiseRecord, PROMISE_DOCUMENT_TYPES, PROMISE_EVIDENCE_SOURCE_TYPE,
+} from '../utils/earningsIntelligenceValidation.js';
+import { EXTRACTABLE_METRICS } from '../utils/promiseMetrics.js';
+import { toCandidateOutcomeStatus } from '../utils/promiseOutcome.js';
 
 // ---------------------------------------------------------------------------
 // Path 1 (Phase 5C, pre-existing, restored verbatim) -- deterministic,
@@ -125,25 +129,48 @@ export const extractPromisesFromDocument = (document = {}) => {
 // Path 2 (this session) -- LLM-based extraction over a raw PDF buffer, for
 // the universe-scale automated backfill pipeline (scripts/backfillPromises.js).
 // ---------------------------------------------------------------------------
-const PROMPT_VERSION = 'promise-extraction-v1';
+// v2: precise metric vocabulary (no catch-all "margin" or level/growth mix-ups),
+// a range's upper bound, who said it, company vs segment scope, stated
+// reporting / currency basis -- plus deterministic checks below that the model
+// output must pass before it can become a candidate.
+export const PROMPT_VERSION = 'promise-extraction-v2';
+export const EXTRACTION_VERSION = 'v2';
 const OPENAI_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60;
 const PAGES_PER_OPENAI_CALL = 5;
 
-// Only earnings-call transcripts and financial-results filings realistically
-// contain forward-looking management guidance -- annual reports/investor
-// presentations are not sent to this stage (mirrors the fact-extraction
-// stage's own default document-type scope).
-export const PROMISE_ELIGIBLE_SOURCE_TYPES = new Set(['EARNINGS_CALL_TRANSCRIPT', 'FINANCIAL_RESULTS']);
+// Earnings-call transcripts, financial-results filings and investor / analyst
+// presentations filed with the exchange -- the documents where management
+// states forward guidance. One shared list (utils/earningsIntelligenceValidation.js).
+export const PROMISE_ELIGIBLE_SOURCE_TYPES = new Set(PROMISE_DOCUMENT_TYPES);
 
-const VALID_METRICS = new Set([
-  'REVENUE', 'REVENUE_GROWTH', 'EBITDA', 'EBITDA_MARGIN', 'PAT', 'PAT_GROWTH',
-  'ORDER_BOOK', 'ORDER_INTAKE', 'ARR', 'BOOKINGS', 'CAPEX', 'DEBT', 'DEBT_REDUCTION',
-  'MARGIN', 'MARKET_SHARE', 'CUSTOMER_COUNT', 'EMPLOYEE_COUNT', 'EMPLOYEE_PERCENTAGE', 'FREE_CASH_FLOW',
-  'LARGE_DEALS', 'EXPORT_REVENUE', 'NIM', 'CREDIT_GROWTH', 'DEPOSIT_GROWTH', 'CASA',
-  'OTHER_QUANTIFIABLE', 'OTHER',
-]);
+const VALID_METRICS = new Set(EXTRACTABLE_METRICS);
 const VALID_UNITS = new Set(['INR_CRORE', 'INR_LAKH', 'USD_MILLION', 'USD_BILLION', 'PERCENTAGE', 'COUNT', 'OTHER']);
 const VALID_OPERATORS = new Set(['GTE', 'LTE', 'EQ', 'RANGE']);
+const VALID_SPEAKERS = new Set(['MANAGEMENT', 'ANALYST', 'MODERATOR', 'UNKNOWN']);
+const VALID_REPORTING_BASIS = new Set(['CONSOLIDATED', 'STANDALONE', 'UNSTATED']);
+const VALID_CURRENCY_BASIS = new Set(['CONSTANT_CURRENCY', 'REPORTED_CURRENCY', 'UNSTATED']);
+
+const normalizeText = (value) => String(value || '')
+  .replace(/[‘’′]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-')
+  .replace(/\s+/g, ' ').trim().toLowerCase();
+
+/** excerptOnPage - pure. The WHOLE excerpt (whitespace/quote-normalised) appears in that page's real text. */
+export const excerptOnPage = (excerpt, pageText) => {
+  const needle = normalizeText(excerpt);
+  return needle.length >= 12 && normalizeText(pageText).includes(needle);
+};
+
+/**
+ * numberInText - pure. `value` appears in `text` as a written number
+ * ("1,500", "1500", "15.5", "15.50", "₹28,000"). Guards against a value the
+ * model inferred or computed rather than read (e.g. a midpoint of "14%-16%"
+ * stored as 15, or a figure absent from the excerpt altogether).
+ */
+export const numberInText = (value, text) => {
+  if (!Number.isFinite(value)) return false;
+  const tokens = String(text || '').replace(/(\d),(?=\d)/g, '$1').match(/\d+(?:\.\d+)?/g) || [];
+  return tokens.some((t) => Math.abs(Number(t) - value) < 1e-9);
+};
 
 let openaiSemaphore = new Semaphore(1);
 export const configurePromiseExtractionConcurrency = (n) => { if (n) openaiSemaphore = new Semaphore(n); };
@@ -152,32 +179,90 @@ const hashBatchForCache = (pages, context) => crypto.createHash('sha256')
   .update(`${PROMPT_VERSION}:${context.symbol}:${context.url}:${pages.map((p) => p.pageNumber).join(',')}:${pages.map((p) => p.text).join('|')}`)
   .digest('hex');
 
-const buildPrompt = (pages, context) => `You are extracting VERIFIABLE, QUANTIFIABLE management promises (forward-looking targets/guidance with a real number and a real future period) from pages of a real, official primary-source document (${context.sourceType}) for ${context.companyName} (${context.symbol}).
+const buildPrompt = (pages, context) => `You are extracting VERIFIABLE, QUANTIFIABLE management guidance (forward-looking targets with a real number and a real future period) from pages of an official exchange filing (${context.sourceType}) for ${context.companyName} (${context.symbol}), published ${context.publicationDate ? new Date(context.publicationDate).toISOString().slice(0, 10) : 'on an unknown date'}. Indian fiscal years run April-March: FY2027 = April 2026 to March 2027.
 
-Extract ONLY a promise that states a specific numeric target for a specific FUTURE period, using genuinely forward-looking language ("we expect", "our guidance is", "we target", "we plan to", "we will"). Do NOT extract:
-- vague aspirations without a number, or qualitative-only commentary
-- a statement describing something ALREADY delivered/achieved/signed/recruited/completed in the past or current-quarter tense ("we delivered", "we signed", "we did", "we recruited", "we achieved") -- that is a historical RESULT, not a promise, even if it contains a number
-Never invent a number or period. If nothing qualifies on a page, do not include it.
+Extract ONLY a target that a member of ${context.companyName}'s MANAGEMENT states, for a specific FUTURE period, with a specific number, in forward-looking language ("we expect", "our guidance is", "we target", "we plan to", "we will"). Do NOT extract:
+- anything an analyst, investor or moderator says, even if management does not contradict it
+- a question
+- vague aspirations without a number, qualitative commentary, or a number that is only an example or a hypothetical ("if we assume ...")
+- a historical RESULT in past or current-period tense ("we delivered", "we signed", "we achieved", "stood at", "for the quarter we did"), even with a number
+- an economy-wide, industry-wide or market-wide forecast (GDP growth, industry capacity, sector demand) -- only the company's OWN figures
+- a number you would have to compute, average or convert: targetValue (and targetValueMax) must be written in the excerpt exactly as you return them
+- a multi-year CAGR or a cumulative amount over several years as if it were one year's target (only extract it if the speaker names the single fiscal year it applies to)
+- a production, delivery or shipment count recorded as an order metric (orders are contracts won, not units built)
+Never invent a number, period or metric. If nothing qualifies on a page, return nothing for it.
 
-targetPeriod MUST use a full 4-digit fiscal year, never a 2-digit abbreviation: "FY2027" (not "FY27"), "Q1 FY2027" (not "Q1 FY27").
+Metric -- pick the most precise; never use a level for a growth rate or the reverse:
+- REVENUE = an absolute revenue amount; REVENUE_GROWTH = a % growth rate of revenue / top line / sales
+- PAT = an absolute profit amount; PAT_GROWTH = a % growth rate of profit; PAT_MARGIN = net profit as % of revenue
+- EBITDA = an absolute amount; EBITDA_MARGIN; EBIT_MARGIN (also "operating margin" when it means EBIT); GROSS_MARGIN; MARGIN only when the speaker does not say which margin
+- banks/NBFCs/insurers: CREDIT_GROWTH (loans/advances/credit), DEPOSIT_GROWTH, NIM, CASA, GNPA, NNPA, CREDIT_COST, COST_TO_INCOME, ROA, ROE, AUM_GROWTH, PREMIUM_GROWTH, VNB_MARGIN
+- others: ORDER_BOOK (backlog), ORDER_INTAKE (new orders / inflow), BOOKINGS (TCV), LARGE_DEALS, ARR, CAPEX, CAPACITY, VOLUME, DEBT (gross), NET_DEBT, FREE_CASH_FLOW, OPERATING_CASH_FLOW, WORKING_CAPITAL_DAYS, ROCE, TAX_RATE, DIVIDEND_PAYOUT, ATTRITION, EMPLOYEE_COUNT, CUSTOMER_COUNT, MARKET_SHARE, EXPORT_REVENUE, EPS
+- OTHER_QUANTIFIABLE only if none of these fits
+
+targetPeriod MUST use a full 4-digit fiscal year: "FY2027", "Q1 FY2027", "H1 FY2027" (never "FY27"). Use the period the speaker names; resolve "this year"/"next year" only against the publication date above.
+operator: GTE for "at least / over / minimum", LTE for "at most / below / maximum / up to", RANGE for "X to Y" (then targetValue = X and targetValueMax = Y), EQ for a single point ("about", "around", "of").
+scope: COMPANY when the target covers the whole company; SEGMENT when it covers one business, product, geography or subsidiary (name it in "segment").
 
 Return strictly valid JSON:
 {
   "promises": [
     {
       "pageNumber": <exact integer from the "=== PAGE N ===" marker>,
-      "statement": "the promise in one sentence",
-      "metric": "REVENUE|REVENUE_GROWTH|EBITDA|EBITDA_MARGIN|PAT|PAT_GROWTH|ORDER_BOOK|ORDER_INTAKE|ARR|BOOKINGS|CAPEX|DEBT|DEBT_REDUCTION|MARGIN|MARKET_SHARE|CUSTOMER_COUNT|EMPLOYEE_COUNT|EMPLOYEE_PERCENTAGE|FREE_CASH_FLOW|LARGE_DEALS|EXPORT_REVENUE|NIM|CREDIT_GROWTH|DEPOSIT_GROWTH|CASA|OTHER_QUANTIFIABLE|OTHER",
+      "statement": "the target in one sentence",
+      "speaker": "MANAGEMENT|ANALYST|MODERATOR|UNKNOWN",
+      "metric": "one key from the list above",
       "targetValue": number,
+      "targetValueMax": number or null,
       "targetUnit": "INR_CRORE|INR_LAKH|USD_MILLION|USD_BILLION|PERCENTAGE|COUNT|OTHER",
-      "targetPeriod": "full 4-digit fiscal year, e.g. FY2027 or Q1 FY2027 -- never FY27",
+      "targetPeriod": "FY2027 / Q1 FY2027 / H1 FY2027",
       "operator": "GTE|LTE|EQ|RANGE",
-      "excerpt": "the EXACT sentence from that page supporting this promise"
+      "scope": "COMPANY|SEGMENT",
+      "segment": "segment name or null",
+      "reportingBasis": "CONSOLIDATED|STANDALONE|UNSTATED",
+      "currencyBasis": "CONSTANT_CURRENCY|REPORTED_CURRENCY|UNSTATED",
+      "excerpt": "the EXACT sentence(s) from that page, copied verbatim, that state this target"
     }
   ]
 }
 
 ${pages.map((p) => `=== PAGE ${p.pageNumber} ===\n${p.text.slice(0, 4000)}`).join('\n\n')}`;
+
+// Pages worth sending to the model for guidance. Broader than the fact stage's filter
+// (FactExtractionService.findRelevantPages), which has no words for growth, capex, loans, deposits or
+// forward-looking language -- so bank and capex guidance pages were never read. Still a filter: a
+// page with none of these words (a cover, a disclaimer, a list of attendees) is not sent.
+// A page is sent only when it has BOTH forward-looking language and a business measure: a results-only
+// slide ("Revenue grew 12% in FY26") or a cover / disclaimer page carries no guidance and is skipped.
+const FORWARD_LOOKING_WORDS = /guidance|\bguide[ds]?\b|outlook|target|aspir|comfort range|expect|anticipat|we will|we would|should be|going forward|next (year|fiscal|quarter)|this (year|fiscal)|coming (year|quarter)|plan(ning)? to|aim(ing)? to|confident of|looking at|estimate[sd]? (at|to)/i;
+const MEASURE_WORDS = /growth|margin|revenue|top ?line|profit|ebitda|capex|capital expenditure|order (book|inflow|intake)|tcv|deal|attrition|hiring|loan|advances|credit|deposit|\bnim\b|casa|npa|cost[- ]to[- ]income|aum|premium|volume|capacity|market share|debt|crore|%/i;
+export const findGuidancePages = (pages) => pages.filter((p) => p.text.length > 100 && FORWARD_LOOKING_WORDS.test(p.text) && MEASURE_WORDS.test(p.text));
+
+/**
+ * acceptExtractedPromise - pure. The deterministic gate every model-proposed
+ * promise must pass before it becomes a candidate. Returns { ok, reason }.
+ * The model's own flags are only trusted to EXCLUDE (an analyst / segment /
+ * hypothetical is dropped); nothing it says can make a promise pass a check
+ * that the real page text does not support.
+ */
+export const acceptExtractedPromise = (p, pageText) => {
+  const upper = (v) => String(v || '').toUpperCase();
+  if (!p?.excerpt) return { ok: false, reason: 'no excerpt' };
+  if (!excerptOnPage(p.excerpt, pageText)) return { ok: false, reason: 'excerpt not found verbatim on the cited page' };
+  if (/\?/.test(p.excerpt)) return { ok: false, reason: 'excerpt is a question' };
+  if (upper(p.speaker) !== 'MANAGEMENT') return { ok: false, reason: `speaker is ${upper(p.speaker) || 'not stated'}, not management` };
+  if (!VALID_METRICS.has(upper(p.metric))) return { ok: false, reason: `metric ${p.metric} is not a recognised metric` };
+  if (!VALID_UNITS.has(upper(p.targetUnit))) return { ok: false, reason: `unit ${p.targetUnit} is not recognised` };
+  if (!VALID_OPERATORS.has(upper(p.operator))) return { ok: false, reason: `operator ${p.operator} is not recognised` };
+  if (!Number.isFinite(p.targetValue)) return { ok: false, reason: 'no numeric target' };
+  if (!numberInText(p.targetValue, p.excerpt)) return { ok: false, reason: `target value ${p.targetValue} is not written in the excerpt` };
+  if (upper(p.operator) === 'RANGE') {
+    if (!Number.isFinite(p.targetValueMax) || p.targetValueMax < p.targetValue) return { ok: false, reason: 'range target without a valid upper bound' };
+    if (!numberInText(p.targetValueMax, p.excerpt)) return { ok: false, reason: `range upper bound ${p.targetValueMax} is not written in the excerpt` };
+  }
+  if (!p.targetPeriod) return { ok: false, reason: 'no target period' };
+  return { ok: true, reason: null };
+};
 
 // Deterministic safety net -- never trust the LLM alone to follow the
 // 4-digit-year instruction. Converts "FY27"/"Q1 FY27" (2-digit) into
@@ -225,23 +310,28 @@ const extractPromisesFromPageBatch = async (pages, context) => {
     const raw = Array.isArray(parsed.promises) ? parsed.promises : [];
 
     const validated = raw.filter((p) => (
-      p.excerpt
-      && Number.isInteger(p.pageNumber) && pageTextByNumber.has(p.pageNumber) && pageTextByNumber.get(p.pageNumber).includes(p.excerpt.slice(0, 40))
-      && VALID_METRICS.has(String(p.metric || '').toUpperCase())
-      && VALID_UNITS.has(String(p.targetUnit || '').toUpperCase())
-      && VALID_OPERATORS.has(String(p.operator || '').toUpperCase())
-      && Number.isFinite(p.targetValue)
-      && p.targetPeriod
-    )).map((p) => ({
-      pageNumber: p.pageNumber,
-      statement: p.statement,
-      metric: String(p.metric).toUpperCase(),
-      targetValue: p.targetValue,
-      targetUnit: String(p.targetUnit).toUpperCase(),
-      targetPeriod: normalizeTargetPeriod(p.targetPeriod),
-      operator: String(p.operator).toUpperCase(),
-      excerpt: p.excerpt,
-    }));
+      Number.isInteger(p.pageNumber) && pageTextByNumber.has(p.pageNumber)
+      && acceptExtractedPromise(p, pageTextByNumber.get(p.pageNumber)).ok
+    )).map((p) => {
+      const upper = (v) => String(v || '').toUpperCase();
+      const scope = upper(p.scope) === 'SEGMENT' ? 'SEGMENT' : 'COMPANY';
+      return {
+        pageNumber: p.pageNumber,
+        statement: p.statement,
+        metric: upper(p.metric),
+        targetValue: p.targetValue,
+        targetValueMax: upper(p.operator) === 'RANGE' ? p.targetValueMax : null,
+        targetUnit: upper(p.targetUnit),
+        targetPeriod: normalizeTargetPeriod(p.targetPeriod),
+        operator: upper(p.operator),
+        speaker: VALID_SPEAKERS.has(upper(p.speaker)) ? upper(p.speaker) : 'UNKNOWN',
+        scope,
+        segment: scope === 'SEGMENT' && p.segment ? String(p.segment).slice(0, 120) : null,
+        reportingBasis: VALID_REPORTING_BASIS.has(upper(p.reportingBasis)) ? upper(p.reportingBasis) : 'UNSTATED',
+        currencyBasis: VALID_CURRENCY_BASIS.has(upper(p.currencyBasis)) ? upper(p.currencyBasis) : 'UNSTATED',
+        excerpt: p.excerpt,
+      };
+    });
 
     await setCache(cacheKey, validated, OPENAI_CACHE_TTL_SECONDS);
     return validated;
@@ -264,7 +354,7 @@ export const extractPromisesFromPdfBuffer = async (buffer, context) => {
   if (pages.reduce((total, page) => total + page.text.length, 0) < MIN_DOCUMENT_TEXT_CHARS) {
     throw new PromiseExtractionFailure('The PDF has no extractable text layer (a scan or an empty file), so it could not be read for guidance');
   }
-  const relevantPages = findRelevantPages(pages);
+  const relevantPages = findGuidancePages(pages);
 
   const batches = [];
   for (let i = 0; i < relevantPages.length; i += PAGES_PER_OPENAI_CALL) batches.push(relevantPages.slice(i, i + PAGES_PER_OPENAI_CALL));
@@ -329,33 +419,60 @@ export const buildPromiseCandidate = async (extracted, context, sequence, { outc
   let outcome = { status: 'PENDING', actualValue: null, actualUnit: null, evaluationDate: null, explanation: null };
   let outcomeEvidence = null;
   let evidenceConfidence = 0.5;
+  const statementText = [extracted.statement, extracted.excerpt].filter(Boolean).join(' \n ');
+  const targetBasis = {
+    statementBasis: extracted.reportingBasis && extracted.reportingBasis !== 'UNSTATED' ? extracted.reportingBasis : null,
+    currencyBasis: extracted.currencyBasis && extracted.currencyBasis !== 'UNSTATED' ? extracted.currencyBasis : null,
+    scope: extracted.scope === 'SEGMENT' ? `SEGMENT${extracted.segment ? `: ${extracted.segment}` : ''}` : null,
+  };
+  const verdictFor = (match, unavailableReason = null) => calculatePromiseStatus({
+    targetValue: extracted.targetValue,
+    targetValueMax: extracted.targetValueMax ?? null,
+    actualValue: match ? match.actualValue : null,
+    operator: extracted.operator,
+    metric: extracted.metric,
+    targetPeriod: extracted.targetPeriod,
+    actualPeriod: match?.actualPeriod ?? null,
+    targetUnit: extracted.targetUnit,
+    actualUnit: match?.actualUnit ?? extracted.targetUnit,
+    targetBasis,
+    actualBasis: match?.basis ? { statementBasis: match.basis.statementBasis, currencyBasis: match.basis.currencyBasis, scope: 'COMPANY' } : {},
+    evidenceUnavailableReason: unavailableReason,
+  });
 
   try {
     const match = await outcomeSearchFn(context.profile, {
-      metric: extracted.metric, targetPeriod: extracted.targetPeriod, targetValue: extracted.targetValue, targetUnit: extracted.targetUnit,
+      metric: extracted.metric,
+      targetPeriod: extracted.targetPeriod,
+      targetValue: extracted.targetValue,
+      targetUnit: extracted.targetUnit,
+      statementText,
+      reportingBasis: targetBasis.statementBasis,
     });
     if (match && match.actualValue != null && match.outcomeSourceUrl) {
-      const verification = calculatePromiseStatus({
-        targetValue: extracted.targetValue, actualValue: match.actualValue, operator: extracted.operator,
-        metric: extracted.metric, targetPeriod: extracted.targetPeriod, targetUnit: extracted.targetUnit, actualUnit: match.actualUnit,
-      });
-      const mappedStatus = CANDIDATE_STATUS_MAP[verification.status];
-      if (mappedStatus && !['PENDING', 'INSUFFICIENT_EVIDENCE', 'QUALITATIVE_ONLY'].includes(mappedStatus)) {
+      const verification = verdictFor(match);
+      if (['MET', 'EXCEEDED', 'MISSED'].includes(verification.outcome)) {
         outcome = {
-          status: mappedStatus, actualValue: match.actualValue, actualUnit: targetUnit,
+          status: toCandidateOutcomeStatus(verification.outcome), actualValue: match.actualValue, actualUnit: targetUnit,
           evaluationDate: toIsoDateOnly(match.outcomeSourceDate) || promiseDate,
           explanation: verification.calculationExplanation || match.outcomeStatement || null,
         };
         outcomeEvidence = {
-          sourceTitle: match.outcomeSource || 'IndianAPI company financials',
+          sourceTitle: match.outcomeSource || 'Exchange results filing',
           sourceType: 'FINANCIAL_RESULTS',
           sourceUrl: match.outcomeSourceUrl,
           publishedAt: toIsoDateOnly(match.outcomeSourceDate) || outcome.evaluationDate,
           pageNumber: null,
-          excerpt: (match.outcomeStatement || 'Matched via IndianAPI structured financial data.').slice(0, 2000),
+          excerpt: (match.outcomeStatement || 'Matched from a structured exchange filing.').slice(0, 2000),
         };
         evidenceConfidence = Math.min(0.75, typeof match.confidence === 'number' ? match.confidence : 0.75);
+      } else {
+        // A figure was found but is not like-for-like (scope / basis / period): recorded with the reason, never compared.
+        outcome = { ...outcome, status: toCandidateOutcomeStatus(verification.outcome), explanation: verification.reason || verification.calculationExplanation };
       }
+    } else {
+      const verification = verdictFor(null, match?.unavailableReason || null);
+      outcome = { ...outcome, status: toCandidateOutcomeStatus(verification.outcome), explanation: verification.reason || null };
     }
   } catch (err) {
     logger.warn(`[PromiseExtractionService] Outcome lookup failed for ${context.symbol}: ${err.message}`);
@@ -379,22 +496,29 @@ export const buildPromiseCandidate = async (extracted, context, sequence, { outc
       metric: extracted.metric ? String(extracted.metric).toUpperCase() : null,
       targetUnit,
       operator,
+      // v2: who/what the target covers, as the speaker stated it (never assumed).
+      scope: extracted.scope || null,
+      segment: extracted.segment || null,
+      reportingBasis: extracted.reportingBasis && extracted.reportingBasis !== 'UNSTATED' ? extracted.reportingBasis : null,
+      currencyBasis: extracted.currencyBasis && extracted.currencyBasis !== 'UNSTATED' ? extracted.currencyBasis : null,
+      speaker: extracted.speaker || null,
     },
     outcome,
     promiseEvidence: {
       sourceTitle: context.title || 'Official BSE/NSE exchange filing',
-      sourceType: context.sourceType === 'EARNINGS_CALL_TRANSCRIPT' ? 'EARNINGS_TRANSCRIPT' : 'FINANCIAL_RESULTS',
+      sourceType: PROMISE_EVIDENCE_SOURCE_TYPE[context.sourceType] || 'EXCHANGE_FILING',
       sourceUrl: context.url,
       publishedAt: promiseDate,
       pageNumber: extracted.pageNumber,
       excerpt: extracted.excerpt,
     },
     outcomeEvidence,
+    extractionVersion: EXTRACTION_VERSION,
     verification: {
       verifiedAt: new Date().toISOString().slice(0, 10),
       verifiedBy: 'AUTOMATED_CANDIDATE_GENERATOR',
       evidenceConfidence,
-      notes: 'Automatically generated by PromiseExtractionService from an already-downloaded, real BSE/NSE exchange filing. Requires human review before promotion (npm run earnings:review).',
+      notes: `Automatically generated (${PROMPT_VERSION}) from a real BSE/NSE exchange filing; the excerpt was checked verbatim against the cited page and the target value against the excerpt. Not public until it passes the review gate (npm run earnings:review / earnings:auto-review).`,
     },
   };
 

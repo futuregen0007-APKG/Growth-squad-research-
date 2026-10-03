@@ -32,30 +32,18 @@
  */
 
 import { getCompanyTimeline as getCuratedCompanyTimeline, computeFaithScoreCoverage } from './CuratedEarningsIntelligenceService.js';
-import { calculatePromiseStatus, getCompanyPromises as getLegacyCompanyPromises, getCompanySummary } from './ManagementPromiseService.js';
+import mongoose from 'mongoose';
+import { getCompanyPromises as getLegacyCompanyPromises, getCompanySummary } from './ManagementPromiseService.js';
+import { PROMISE_DOCUMENT_TYPES as PROMISE_ELIGIBLE_SOURCE_TYPES } from '../utils/earningsIntelligenceValidation.js';
 import { calculateTargetHitRate, EXECUTION_SCORE_METHODOLOGY } from './ExecutionScoreService.js';
 import { loadEarningsAnnualFinancials } from './EarningsAnnualFinancials.js';
 import {
-  describeTargetPeriod, detectStatedBasis, canonicalOutcomeFromStoredStatus, canonicalUnit, toCandidateOutcomeStatus,
+  describeTargetPeriod, canonicalUnit, toCandidateOutcomeStatus, resolveCuratedRecordOutcome,
 } from '../utils/promiseOutcome.js';
 import { normalizePeriod } from '../utils/financialNormalization.js';
 import { logger } from '../utils/logger.js';
 
-const METRIC_LABELS = {
-  REVENUE: 'Revenue', REVENUE_GROWTH: 'Revenue growth', EBITDA: 'EBITDA', EBITDA_MARGIN: 'EBITDA margin',
-  MARGIN: 'Operating margin', PAT: 'Profit after tax', PAT_GROWTH: 'PAT growth', PROFITABILITY: 'Profitability',
-  ORDER_BOOK: 'Order book', ORDER_INTAKE: 'Order intake', ARR: 'ARR', BOOKINGS: 'Bookings', CAPEX: 'Capex',
-  DEBT: 'Debt', DEBT_REDUCTION: 'Debt reduction', MARKET_SHARE: 'Market share', CUSTOMER_COUNT: 'Customer count',
-  EMPLOYEE_COUNT: 'Employee count', EMPLOYEE_PERCENTAGE: 'Employee share', FREE_CASH_FLOW: 'Free cash flow',
-  LARGE_DEALS: 'Large deals', EXPORT_REVENUE: 'Export revenue', NIM: 'Net interest margin', CREDIT_GROWTH: 'Credit growth',
-  LOAN_GROWTH: 'Loan growth', DEPOSIT_GROWTH: 'Deposit growth', CASA: 'CASA ratio', ASSET_QUALITY: 'Asset quality',
-  GUIDANCE: 'Guidance', PRODUCT_LAUNCH: 'Product launch', EXPANSION: 'Expansion',
-  OTHER_QUANTIFIABLE: 'Other (quantified)', OTHER: 'Other',
-};
-const metricLabelFor = (key) => {
-  const upper = String(key || 'OTHER').toUpperCase();
-  return METRIC_LABELS[upper] || upper.charAt(0) + upper.slice(1).toLowerCase().replace(/_/g, ' ');
-};
+import { metricLabelFor } from '../utils/promiseMetrics.js';
 
 // Never auto-grouped as revisions of one another: too coarse to be "the same target".
 const UNGROUPABLE_METRICS = new Set(['OTHER', 'OTHER_QUANTIFIABLE', 'GUIDANCE']);
@@ -83,6 +71,9 @@ const fromCuratedEntry = (entry) => ({
     operator: entry.target?.operator ?? null,
     direction: null,
     type: entry.target?.type ?? null,
+    reportingBasis: entry.target?.reportingBasis ?? null,
+    currencyBasis: entry.target?.currencyBasis ?? null,
+    scope: entry.target?.scope ?? null,
   },
   actual: {
     value: entry.outcome?.actualValue ?? null,
@@ -91,7 +82,8 @@ const fromCuratedEntry = (entry) => ({
     evaluationDate: entry.outcome?.evaluationDate ?? null,
     explanation: entry.outcome?.explanation ?? null,
   },
-  storedStatus: entry.status,
+  // The timeline's `status` is already the recomputed outcome; the original stored value is `storedStatus`.
+  storedStatus: entry.storedStatus ?? entry.status,
   promiseEvidence: entry.promiseEvidence ? {
     url: entry.promiseEvidence.sourceUrl, title: entry.promiseEvidence.sourceTitle, page: entry.promiseEvidence.pageNumber ?? null,
     excerpt: entry.promiseEvidence.excerpt, publishedAt: entry.promiseEvidence.publishedAt, type: entry.promiseEvidence.sourceType,
@@ -153,49 +145,33 @@ const fromLegacyDocument = (doc) => {
  * recomputeOutcome - the fresh verdict for one record (see module header:
  * stored target/actual are read, the stored status is NOT trusted).
  */
-export const recomputeOutcome = (record, { asOf = new Date() } = {}) => {
-  const targetBasis = detectStatedBasis(record.statement, record.originalExcerpt, record.promiseEvidence?.excerpt);
-  // The actual's basis is read from the outcome SOURCE's own words only, never the curator's narrative.
-  const actualBasis = detectStatedBasis(record.outcomeEvidence?.excerpt);
-  const storedCanonical = canonicalOutcomeFromStoredStatus(record.storedStatus);
-  const hasActual = record.actual.value !== null && record.actual.value !== undefined;
-  // A curator who recorded INSUFFICIENT_EVIDENCE with a note gives the most specific reason available.
-  const evidenceUnavailableReason = !hasActual && storedCanonical === 'INSUFFICIENT_EVIDENCE' && record.actual.explanation
-    ? record.actual.explanation
-    : null;
-
-  const verdict = calculatePromiseStatus({
+export const recomputeOutcome = (record, { asOf = new Date() } = {}) => resolveCuratedRecordOutcome({
+  promise: {
+    statement: record.statement,
+    originalExcerpt: record.originalExcerpt,
     targetValue: record.target.value,
     targetValueMax: record.target.valueMax,
     targetUnit: record.target.unit,
-    actualValue: hasActual ? record.actual.value : null,
-    actualUnit: record.actual.unit ?? record.target.unit,
     operator: record.target.operator,
     direction: record.target.direction,
-    metric: record.metric || record.category || '',
     targetType: record.target.type,
     targetPeriod: record.targetPeriod,
+    metric: record.metric,
+    category: record.category,
+    reportingBasis: record.target.reportingBasis ?? null,
+    currencyBasis: record.target.currencyBasis ?? null,
+    scope: record.target.scope ?? null,
+  },
+  outcome: {
+    status: record.storedStatus,
+    actualValue: record.actual.value,
+    actualUnit: record.actual.unit ?? record.target.unit,
     actualPeriod: record.actual.period,
-    targetBasis,
-    actualBasis,
-    asOf,
-    evidenceUnavailableReason,
-  });
-
-  // A human-resolved met/missed verdict with no single actual figure (rare)
-  // has nothing numeric to recompute from; it is kept rather than downgraded.
-  if (!hasActual && verdict.outcome === 'INSUFFICIENT_EVIDENCE' && ['MET', 'EXCEEDED', 'MISSED'].includes(storedCanonical)) {
-    return {
-      ...verdict,
-      outcome: storedCanonical,
-      reason: null,
-      calculationExplanation: `No single actual figure is recorded; the curated verdict (${record.storedStatus}) is shown as recorded. ${record.actual.explanation || ''}`.trim(),
-      targetBasis,
-      actualBasis,
-    };
-  }
-  return { ...verdict, targetBasis, actualBasis };
-};
+    explanation: record.actual.explanation,
+  },
+  promiseEvidence: { excerpt: record.promiseEvidence?.excerpt ?? null },
+  outcomeEvidence: record.outcomeEvidence ? { excerpt: record.outcomeEvidence.excerpt ?? null } : null,
+}, { asOf });
 
 /**
  * assignRevisions - groups versions of the SAME target and labels them.
@@ -355,15 +331,53 @@ const defaultFinancialScore = async (symbol) => {
   };
 };
 
+export const TARGET_HIT_RATE_METHODOLOGY = 'Target-hit rate = (met + exceeded) / (met + exceeded + missed) among completed, evaluable targets. Pending, insufficient-evidence and qualitative targets are excluded from both sides; only the latest version of a revised target counts. Outcomes are recomputed from the stored target and actual with the current rules.';
+
 /**
- * getPromisesVsActuals - returns null only for an unsupported symbol (the
- * route answers 404). Every dependency is injectable so tests never touch
- * Mongo, the network or the clock.
+ * defaultResearchState - what research has actually been done for a symbol's
+ * guidance, read straight from the document registry and candidate store, so
+ * an empty table can say WHICH kind of empty it is. Never throws: a database
+ * that is not connected reports UNKNOWN rather than guessing.
  */
-export const getPromisesVsActuals = async (symbol, {
+const defaultResearchState = async (symbol) => {
+  if (mongoose.connection.readyState !== 1) return { status: 'UNKNOWN', documentsRead: 0, documentsFailed: 0, documentsPending: 0, candidatesPendingReview: 0, candidatesRejected: 0 };
+  const db = mongoose.connection.db;
+  const [docs, candidates] = await Promise.all([
+    db.collection('companydocumentregistries').aggregate([
+      { $match: { symbol, sourceType: { $in: [...PROMISE_ELIGIBLE_SOURCE_TYPES] } } },
+      { $group: { _id: { extraction: '$extractionStatus', promise: '$promiseExtractionStatus' }, n: { $sum: 1 } } },
+    ]).toArray(),
+    db.collection('promisecandidates').aggregate([{ $match: { symbol } }, { $group: { _id: '$reviewStatus', n: { $sum: 1 } } }]).toArray(),
+  ]);
+  const state = { documentsRead: 0, documentsFailed: 0, documentsPending: 0, candidatesPendingReview: 0, candidatesRejected: 0 };
+  for (const d of docs) {
+    if (d._id.extraction === 'FAILED' || d._id.promise === 'FAILED') state.documentsFailed += d.n;
+    else if (d._id.extraction === 'EXTRACTED' && d._id.promise === 'EXTRACTED') state.documentsRead += d.n;
+    else state.documentsPending += d.n;
+  }
+  for (const c of candidates) {
+    if (c._id === 'PENDING_REVIEW') state.candidatesPendingReview += c.n;
+    else if (c._id === 'REJECTED') state.candidatesRejected += c.n;
+  }
+  const status = state.candidatesPendingReview > 0 ? 'CANDIDATES_PENDING_REVIEW'
+    : state.documentsRead > 0 ? 'RESEARCHED'
+      : state.documentsFailed > 0 ? 'SOURCES_FAILED'
+        : state.documentsPending > 0 ? 'RESEARCH_IN_PROGRESS'
+          : 'NOT_RESEARCHED';
+  return { status, ...state };
+};
+
+/**
+ * buildManagementDelivery - the ONE computation of a company's management
+ * delivery (rows, revisions, recomputed outcomes, target-hit rate, counts,
+ * coverage). Promises vs Actuals, the company report, its overview cards and
+ * the company cards all read this, so their counts cannot disagree.
+ * Returns null only for an unsupported symbol.
+ */
+export const buildManagementDelivery = async (symbol, {
   getTimelineFn = getCuratedCompanyTimeline,
   getLegacyPromisesFn = getLegacyCompanyPromises,
-  financialScoreFn = defaultFinancialScore,
+  getResearchStateFn = defaultResearchState,
   asOf = new Date(),
 } = {}) => {
   const normalized = String(symbol || '').toUpperCase().trim();
@@ -399,25 +413,31 @@ export const getPromisesVsActuals = async (symbol, {
   // fed with the RECOMPUTED outcomes of the counted rows, so a HIGH label can
   // only appear when there genuinely are >=10 completed targets over >=8 quarters.
   const evidenceCoverage = computeFaithScoreCoverage(
-    counting.map((row) => ({ promise: { targetPeriod: row.targetPeriod }, outcome: { status: toCandidateOutcomeStatus(row.outcome) } })),
+    counting.map((row) => ({ promise: { targetPeriod: row.targetPeriod }, outcome: { status: toCandidateOutcomeStatus(row.outcome) }, canonicalOutcome: row.outcome })),
     { coverageStatus: timeline.coverageStatus, dataAsOf: timeline.lastVerifiedAt },
   );
 
-  let financialPerformanceScore;
-  try {
-    const financial = await financialScoreFn(normalized);
-    financialPerformanceScore = { ...financial, excludesGuidanceAccuracy: true, unavailableReason: financial?.value == null ? 'Insufficient verified comparable annual history to calculate a score.' : null };
-  } catch (err) {
-    logger.warn(`[PromisesVsActuals] financial score unavailable for ${normalized}: ${err.message}`);
-    financialPerformanceScore = {
-      value: null, ratingLabel: null, weightsUsed: {}, scoreBreakdown: {}, scoreMissingReasons: {}, guidanceAccuracyScore: null,
-      methodology: EXECUTION_SCORE_METHODOLOGY, excludesGuidanceAccuracy: true, unavailableReason: `Financial score could not be computed right now: ${err.message}`,
-    };
-  }
+  const researchState = await Promise.resolve(getResearchStateFn(normalized)).catch((err) => {
+    logger.warn(`[PromisesVsActuals] research-state lookup failed for ${normalized}: ${err.message}`);
+    return { status: 'UNKNOWN' };
+  });
 
+  // Distinct, specific empty states -- never one generic "no data":
+  //   NOT_RESEARCHED           no guidance document (transcript / presentation) has been read for this company yet
+  //   GUIDANCE_PENDING_REVIEW  guidance was extracted but no record has passed the evidence-review gate yet
+  //   NO_MEASURABLE_GUIDANCE   documents were read and nothing numeric qualified (or only qualitative statements are on file)
+  //   SOURCES_FAILED           the only guidance documents found could not be downloaded or read
+  //   GUIDANCE_UNVERIFIED      published targets exist, but none has a completed, comparable outcome yet
   let emptyState = null;
-  if (!rows.length) emptyState = 'NO_GUIDANCE';
-  else if (rows.every((row) => row.outcome === 'QUALITATIVE_ONLY')) emptyState = 'NO_MEASURABLE_GUIDANCE';
+  if (!rows.length) {
+    emptyState = {
+      CANDIDATES_PENDING_REVIEW: 'GUIDANCE_PENDING_REVIEW',
+      RESEARCHED: 'NO_MEASURABLE_GUIDANCE',
+      SOURCES_FAILED: 'SOURCES_FAILED',
+      RESEARCH_IN_PROGRESS: 'NOT_RESEARCHED',
+      NOT_RESEARCHED: 'NOT_RESEARCHED',
+    }[researchState.status] || 'NO_GUIDANCE';
+  } else if (rows.every((row) => row.outcome === 'QUALITATIVE_ONLY')) emptyState = 'NO_MEASURABLE_GUIDANCE';
   else if (hitRate.completed === 0) emptyState = 'GUIDANCE_UNVERIFIED';
 
   const yearsCovered = [...new Set(rows.map((row) => row.year))].sort();
@@ -431,16 +451,17 @@ export const getPromisesVsActuals = async (symbol, {
     lastVerifiedAt: timeline.lastVerifiedAt ?? null,
     asOf: new Date(asOf).toISOString(),
     emptyState,
+    researchState,
     rows,
     annualSummary: buildAnnualSummary(rows),
-    summary: {
-      managementDeliveryScore: {
+    disclaimer: timeline.disclaimer || null,
+    managementDeliveryScore: {
         targetHitRate: hitRate.targetHitRate,
         targetHitRateDenominator: hitRate.completed,
         targetHitRateNumerator: hitRate.hits,
         targetHitRateConfidence: evidenceCoverage.confidence,
-        targetHitRateMethodology: 'Target-hit rate = (met + exceeded) / (met + exceeded + missed) among completed, evaluable targets. Pending, insufficient-evidence and qualitative targets are excluded from both sides; only the latest version of a revised target counts. Outcomes are recomputed from the stored target and actual with the current rules.',
-        // The existing curated Faith Score, untouched: confidence-weighted, computed from stored curated statuses.
+        targetHitRateMethodology: TARGET_HIT_RATE_METHODOLOGY,
+        // Faith Score: confidence-weighted, over the same recomputed outcomes (CuratedEarningsIntelligenceService).
         faithScore: dataSource === 'CURATED' ? (timeline.summary?.faithScore ?? null) : null,
         faithScoreLabel: dataSource === 'CURATED' ? (timeline.summary?.faithScoreLabel ?? null) : null,
         faithScoreStatus: dataSource === 'CURATED' ? (timeline.summary?.scoreStatus ?? null) : null,
@@ -455,11 +476,39 @@ export const getPromisesVsActuals = async (symbol, {
         totalTargets: rows.length,
         evidenceCoverage,
         yearsCovered,
-      },
-      financialPerformanceScore,
     },
-    disclaimer: timeline.disclaimer || null,
   };
 };
 
-export default { getPromisesVsActuals, recomputeOutcome, assignRevisions, buildAnnualSummary };
+/**
+ * getPromisesVsActuals - buildManagementDelivery plus the separate Financial /
+ * Execution score. Returns null only for an unsupported symbol (the route
+ * answers 404). Every dependency is injectable so tests never touch Mongo,
+ * the network or the clock.
+ */
+export const getPromisesVsActuals = async (symbol, {
+  financialScoreFn = defaultFinancialScore,
+  ...deliveryOptions
+} = {}) => {
+  const delivery = await buildManagementDelivery(symbol, deliveryOptions);
+  if (!delivery) return null;
+
+  let financialPerformanceScore;
+  try {
+    const financial = await financialScoreFn(delivery.symbol);
+    financialPerformanceScore = { ...financial, excludesGuidanceAccuracy: true, unavailableReason: financial?.value == null ? 'Insufficient verified comparable annual history to calculate a score.' : null };
+  } catch (err) {
+    logger.warn(`[PromisesVsActuals] financial score unavailable for ${delivery.symbol}: ${err.message}`);
+    financialPerformanceScore = {
+      value: null, ratingLabel: null, weightsUsed: {}, scoreBreakdown: {}, scoreMissingReasons: {}, guidanceAccuracyScore: null,
+      methodology: EXECUTION_SCORE_METHODOLOGY, excludesGuidanceAccuracy: true, unavailableReason: `Financial score could not be computed right now: ${err.message}`,
+    };
+  }
+
+  const { managementDeliveryScore, ...rest } = delivery;
+  return { ...rest, summary: { managementDeliveryScore, financialPerformanceScore } };
+};
+
+export default {
+  getPromisesVsActuals, buildManagementDelivery, recomputeOutcome, assignRevisions, buildAnnualSummary,
+};

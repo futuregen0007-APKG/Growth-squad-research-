@@ -58,6 +58,30 @@ const promiseCandidateSchema = new mongoose.Schema({
     targetValueMax: { type: Number, default: null },
     metric: { type: String, default: null },
     revisesPromiseId: { type: String, default: null },
+    // v2 extraction (null on earlier candidates): what the target covers and on which basis, as the
+    // speaker stated it -- used to refuse a comparison with a figure of a different scope or basis.
+    scope: { type: String, default: null }, // COMPANY | SEGMENT
+    segment: { type: String, default: null },
+    reportingBasis: { type: String, default: null }, // CONSOLIDATED | STANDALONE (null = not stated)
+    currencyBasis: { type: String, default: null }, // CONSTANT_CURRENCY | REPORTED_CURRENCY (null = not stated)
+    metricDefinition: { type: String, default: null },
+    speaker: { type: String, default: null }, // MANAGEMENT for every v2 candidate (others are dropped)
+  },
+  // Which extraction produced this record: null = v1 (no precise metric, no range upper bound, no speaker
+  // check); 'v2' = services/PromiseExtractionService.js PROMPT_VERSION promise-extraction-v2.
+  extractionVersion: { type: String, default: null, index: true },
+  // Result of the deterministic evidence-review gate (scripts/autoReviewCandidates.js): why a candidate was
+  // promoted, or the specific reasons it stays pending for a human. Rewritten on each gate run.
+  autoReview: {
+    type: new mongoose.Schema({
+      checkedAt: { type: Date, default: null },
+      decision: { type: String, default: null }, // ACCEPTED | KEPT_PENDING | REITERATION
+      reasons: { type: [String], default: [] },
+      groupKey: { type: String, default: null },
+      reiterationOf: { type: String, default: null },
+      sourceVerified: { type: Boolean, default: null },
+    }, { _id: false }),
+    default: null,
   },
 
   outcome: {
@@ -104,6 +128,19 @@ const promiseCandidateSchema = new mongoose.Schema({
   // generator; these two fields are null until a human acts on the record.
   reviewedBy: { type: String, default: null },
   reviewedAt: { type: Date, default: null },
+  // The reviewer's evidence assertion, written by acceptCandidate (scripts/earningsReview.js) together with
+  // reviewStatus ACCEPTED. Kept on the document so an accepted record is durably public from the database
+  // (isPubliclyVisibleRecord requires it) even where the committed promises/<SYMBOL>.json copy cannot be
+  // written -- e.g. a scheduled job on Render's ephemeral filesystem. Null until accepted.
+  evidenceIntegrity: {
+    type: new mongoose.Schema({
+      status: { type: String, default: null },
+      auditedAt: { type: String, default: null },
+      auditedBy: { type: String, default: null },
+      notes: { type: String, default: null },
+    }, { _id: false }),
+    default: null,
+  },
 
   // Additive audit trail written ONLY by scripts/reevaluatePromises.js. For a
   // PENDING_REVIEW candidate the job also updates `outcome` directly (it is
@@ -159,10 +196,20 @@ const promiseCandidateSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // A generation run over the same source documents must never create a
-// duplicate candidate for the same symbol/period/category/evidence URL.
+// duplicate candidate for the same symbol / period / metric / scope / evidence
+// URL. The precise metric and scope are part of the key: the earlier key
+// (symbol, period, coarse category, URL) made two different targets from one
+// transcript -- e.g. a gross-margin and an EBITDA-margin target, both category
+// MARGIN -- overwrite each other. v1 records carry metric/scope null, so they
+// keep exactly their old uniqueness. scripts/migratePromiseCandidateIndex.js
+// replaces the old index on an existing database.
+export const CANDIDATE_UNIQUE_INDEX_NAME = 'unique_candidate_per_symbol_period_category_metric_scope_source';
+export const LEGACY_CANDIDATE_UNIQUE_INDEX_NAME = 'unique_candidate_per_symbol_period_category_source';
 promiseCandidateSchema.index(
-  { symbol: 1, 'promise.targetPeriod': 1, 'promise.category': 1, 'promiseEvidence.sourceUrl': 1 },
-  { unique: true, name: 'unique_candidate_per_symbol_period_category_source' },
+  {
+    symbol: 1, 'promise.targetPeriod': 1, 'promise.category': 1, 'promise.metric': 1, 'promise.scope': 1, 'promise.segment': 1, 'promiseEvidence.sourceUrl': 1,
+  },
+  { unique: true, name: CANDIDATE_UNIQUE_INDEX_NAME },
 );
 
 export default mongoose.models.PromiseCandidate || mongoose.model('PromiseCandidate', promiseCandidateSchema);

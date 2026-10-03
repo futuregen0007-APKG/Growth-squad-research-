@@ -59,6 +59,12 @@ services:
     rootDir: backend
     plan: starter
     # A week after the XBRL refresh, by which point that week's earnings-call transcripts are usually filed too.
+    # Discovers earnings-call transcripts AND investor presentations, rotating fairly over every supported
+    # company (least recently attempted first, settled companies included so a new quarter's call is found),
+    # through the current fiscal year. Then the deterministic evidence-review gate runs in the same service
+    # (no extra Render service): only candidates whose excerpt is re-found verbatim on the exchange copy,
+    # with metric and period stated, are published; everything else stays pending with its reason.
+    # Needs MONGODB_URI, OPENAI_API_KEY and EARNINGS_REVIEW_SECRET in the env group.
     schedule: "0 3 * * 3"
     buildCommand: npm ci --omit=dev
     startCommand: >
@@ -66,6 +72,8 @@ services:
       --expect-target cluster0.yxgjqf0.mongodb.net/test
       --concurrency 2 --openai-concurrency 3 --batch-size 15
       --max-runtime-min 45 --max-cost-usd 5 --label cron-transcript-refresh
+      && node scripts/autoReviewCandidates.js
+      --expect-target cluster0.yxgjqf0.mongodb.net/test --only-unreviewed --label cron-auto-review
     envVarGroups:
       - growth-squad-earnings
 

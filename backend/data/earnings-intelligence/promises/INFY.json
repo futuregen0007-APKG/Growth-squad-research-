@@ -14,7 +14,8 @@
         "targetType": "ABSOLUTE",
         "targetValue": 55000,
         "targetUnit": "COUNT",
-        "operator": "EXACT"
+        "operator": "EXACT",
+        "metric": "GRADUATE_HIRING"
       },
       "symbol": "INFY",
       "promiseEvidence": {

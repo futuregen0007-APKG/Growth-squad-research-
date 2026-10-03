@@ -89,13 +89,25 @@ test('the Management Guidance badge counts the same curated source as the tab bo
   expect(await screen.findByRole('button', { name: /Management Guidance \(3\)/ })).toBeInTheDocument();
 });
 
-test('no guidance at all renders the no-measurable-guidance state and an unavailable (not 0) hit rate', async () => {
-  renderWith({ rows: [], annualSummary: [], emptyState: 'NO_GUIDANCE', summary: summary() });
+test('researched with nothing measurable renders that state and an unavailable (not 0) hit rate', async () => {
+  renderWith({ rows: [], annualSummary: [], emptyState: 'NO_MEASURABLE_GUIDANCE', researchState: { status: 'RESEARCHED', documentsRead: 14 }, summary: summary() });
   await openTab();
   expect(await screen.findByText('No measurable guidance found for this company')).toBeInTheDocument();
+  expect(screen.getByText(/14 earnings-call transcript\(s\) \/ presentation\(s\) were read in full/)).toBeInTheDocument();
   expect(screen.queryByText('Guidance found, outcome not yet verified')).not.toBeInTheDocument();
   expect(screen.getByText('Score unavailable — no completed, evaluable targets yet')).toBeInTheDocument();
   expect(apiClient.get).toHaveBeenCalledWith('/api/earnings-intelligence/TCS/promises-vs-actuals');
+});
+
+test.each([
+  ['NOT_RESEARCHED', { status: 'NOT_RESEARCHED' }, 'Guidance not researched yet'],
+  ['GUIDANCE_PENDING_REVIEW', { status: 'CANDIDATES_PENDING_REVIEW', candidatesPendingReview: 8 }, 'Guidance found, awaiting evidence review'],
+  ['SOURCES_FAILED', { status: 'SOURCES_FAILED', documentsFailed: 3 }, 'Guidance documents could not be read'],
+])('empty state %s has its own message, never "no guidance"', async (emptyState, researchState, title) => {
+  renderWith({ rows: [], annualSummary: [], emptyState, researchState, summary: summary() });
+  await openTab();
+  expect(await screen.findByText(title)).toBeInTheDocument();
+  expect(screen.queryByText('No measurable guidance found for this company')).not.toBeInTheDocument();
 });
 
 test('guidance that exists but is not yet verifiable renders a different message and lists the pending reason on expand', async () => {

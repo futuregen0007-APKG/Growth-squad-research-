@@ -46,6 +46,23 @@ export const CANDIDATE_STATUS_MAP = Object.freeze({
   QUALITATIVE_ONLY: 'QUALITATIVE_ONLY',
 });
 
+/**
+ * PROMISE_DOCUMENT_TYPES - registry document types read for management
+ * guidance: earnings-call transcripts, financial-results filings and the
+ * investor / analyst presentations companies file with the exchange (where
+ * many state their outlook on a slide). The one list: promise extraction,
+ * the promise backfill, the coverage audit and Promises vs Actuals all import
+ * it, so "which documents were researched" cannot drift between them.
+ */
+export const PROMISE_DOCUMENT_TYPES = Object.freeze(['EARNINGS_CALL_TRANSCRIPT', 'FINANCIAL_RESULTS', 'INVESTOR_PRESENTATION']);
+
+/** Registry sourceType -> curated EVIDENCE_SOURCE_TYPES value for a candidate's promiseEvidence. */
+export const PROMISE_EVIDENCE_SOURCE_TYPE = Object.freeze({
+  EARNINGS_CALL_TRANSCRIPT: 'EARNINGS_TRANSCRIPT',
+  FINANCIAL_RESULTS: 'FINANCIAL_RESULTS',
+  INVESTOR_PRESENTATION: 'EARNINGS_PRESENTATION',
+});
+
 export const PROMISE_OPERATORS = ['AT_LEAST', 'AT_MOST', 'EXACT', 'RANGE', 'QUALITATIVE'];
 export const TARGET_TYPES = ['PERCENTAGE', 'ABSOLUTE', 'QUALITATIVE'];
 export const TARGET_UNITS = ['PERCENT', 'INR_CRORE', 'INR_LAKH', 'USD_MILLION', 'USD_BILLION', 'COUNT'];
@@ -287,6 +304,10 @@ export const validateManagementPromiseRecord = (record, context = {}) => {
   }
   if (promise.revisesPromiseId != null && !isNonEmptyString(promise.revisesPromiseId)) errors.push('promise.revisesPromiseId: must be a non-empty string or null');
   if (promise.metric != null && !isNonEmptyString(promise.metric)) errors.push('promise.metric: must be a non-empty string or null');
+  // v2 extraction fields (optional, absent on older records): what the target covers, as stated.
+  if (promise.scope != null && !['COMPANY', 'SEGMENT'].includes(promise.scope)) errors.push('promise.scope: must be COMPANY, SEGMENT or null');
+  if (promise.reportingBasis != null && !['CONSOLIDATED', 'STANDALONE'].includes(promise.reportingBasis)) errors.push('promise.reportingBasis: must be CONSOLIDATED, STANDALONE or null');
+  if (promise.currencyBasis != null && !['CONSTANT_CURRENCY', 'REPORTED_CURRENCY'].includes(promise.currencyBasis)) errors.push('promise.currencyBasis: must be CONSTANT_CURRENCY, REPORTED_CURRENCY or null');
 
   const outcome = record.outcome || {};
   if (!OUTCOME_STATUSES.includes(outcome.status)) errors.push(`outcome.status: must be one of ${OUTCOME_STATUSES.join(', ')}`);

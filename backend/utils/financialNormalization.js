@@ -32,16 +32,24 @@ const UNIT_MULTIPLIERS = {
   OTHER: 1,
 };
 
+// The curated / candidate schema spells the percent unit "PERCENT"; the legacy schema and the
+// fact store spell it "PERCENTAGE". They are one unit. Without this alias every percent-denominated
+// candidate failed both the unit-family check and value normalisation, so its actual was never matched.
+const UNIT_ALIASES = { PERCENT: 'PERCENTAGE' };
+const canonicalUnitName = (unit) => {
+  const upper = String(unit || '').toUpperCase().trim();
+  return UNIT_ALIASES[upper] || upper;
+};
+
 export const normalizeFinancialValue = (value, unit) => {
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue)) return null;
-  const normalizedUnit = String(unit || '').toUpperCase();
-  const multiplier = UNIT_MULTIPLIERS[normalizedUnit];
+  const multiplier = UNIT_MULTIPLIERS[canonicalUnitName(unit)];
   return multiplier == null ? null : numericValue * multiplier;
 };
 
 export const financialUnitFamily = (unit) => {
-  const normalizedUnit = String(unit || '').toUpperCase();
+  const normalizedUnit = canonicalUnitName(unit);
   if (normalizedUnit.startsWith('USD_')) return 'USD';
   if (normalizedUnit.startsWith('INR_')) return 'INR';
   return normalizedUnit;

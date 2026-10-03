@@ -341,39 +341,28 @@ export const calculateFinancialDeliveryScore = (snapshot) => {
   return Math.min(100, Math.max(30, Math.round(score)));
 };
 
+export const GUIDANCE_ACCURACY_METHODOLOGY = 'Importance-weighted target-hit rate: sum(weight x hit) / sum(weight) x 100 over completed, evaluable targets only, where hit = 1 for MET or EXCEEDED and 0 for MISSED, and weight = 1.5 (HIGH importance), 1.0 (MEDIUM, the default) or 0.75 (LOW). Outcomes are recomputed from the stored target and actual with the current rules. Pending, insufficient-evidence and qualitative statements are excluded; an achievement percentage is never averaged in, so a 97%-of-target miss counts as a miss.';
+
 /**
- * Calculates Guidance Accuracy & Success Rate from Verified Promises
+ * calculateGuidanceAccuracyScore - importance-weighted target-hit rate (see
+ * GUIDANCE_ACCURACY_METHODOLOGY). It used to average achievement percentages,
+ * which scored a just-missed target as ~97 and a qualitative statement stored
+ * "FULFILLED" as 100 -- reading as near-perfect delivery for a company that
+ * had met none of its numeric targets. null (never 0) when nothing is evaluable.
  */
-export const calculateGuidanceAccuracyScore = (promises = []) => {
-  const verifiedPromises = promises.filter(p => {
-    const status = p.verification?.status || p.status;
-    return status && status !== 'PENDING';
-  });
-
-  if (verifiedPromises.length === 0) return null;
-
+export const calculateGuidanceAccuracyScore = (promises = [], { asOf = new Date() } = {}) => {
   let totalWeight = 0;
-  let weightedScore = 0;
-
-  verifiedPromises.forEach(p => {
-    const status = p.verification?.status || p.status;
+  let weightedHits = 0;
+  for (const p of promises) {
+    const { outcome } = resolveRecordOutcome(p, { asOf });
+    if (!['MET', 'EXCEEDED', 'MISSED'].includes(outcome)) continue;
     const importance = p.promise?.importance || p.importance || 'MEDIUM';
     const weight = importance === 'HIGH' ? 1.5 : importance === 'LOW' ? 0.75 : 1.0;
-
-    let achievement = p.verification?.achievementPercentage ?? p.achievementPercentage;
-    if (achievement === null || achievement === undefined) {
-      if (status === 'FULFILLED' || status === 'EXCEEDED') achievement = 100;
-      else if (status === 'PARTIALLY_FULFILLED') achievement = 60;
-      else achievement = 0;
-    }
-
-    const cappedScore = Math.min(100, Math.max(0, achievement));
-    weightedScore += cappedScore * weight;
+    weightedHits += (outcome === 'MISSED' ? 0 : 1) * weight;
     totalWeight += weight;
-  });
-
+  }
   if (totalWeight === 0) return null;
-  return Math.round(weightedScore / totalWeight);
+  return Math.round((weightedHits / totalWeight) * 100);
 };
 
 /**
@@ -655,5 +644,6 @@ export default {
   calculateCompanyExecutionScore,
   calculateConfidence,
   EXECUTION_SCORE_BASE_WEIGHTS,
-  EXECUTION_SCORE_METHODOLOGY
+  EXECUTION_SCORE_METHODOLOGY,
+  GUIDANCE_ACCURACY_METHODOLOGY
 };

@@ -95,7 +95,9 @@ test('REAL AUDIT RESULT: TCS-FY2025-001 and TCS-FY2026-002 (real primary-source-
 test('score recalculation: Faith Score correctly recomputes to null once a resolved record is quarantined (2 < the 3-resolved-record minimum)', async () => {
   const promises = await getCompanyPromises('TCS');
   const faith = calculateFaithScore(promises);
-  assert.equal(faith.resolvedCount, 2);
+  // Two public records remain, but only one is a resolved numeric target: the attrition ceiling (MISSED).
+  // The other is a qualitative statement (stored ACHIEVED), which is never scored -- QUALITATIVE_ONLY.
+  assert.equal(faith.resolvedCount, 1);
   assert.equal(faith.faithScore, null, 'Faith Score must never be computed from fewer than 3 resolved, publicly-verified promises');
 });
 

@@ -12,12 +12,14 @@ import {
   buildFinancialSnapshot,
   calculateCagr,
   calculateYoY,
-  getExecutionRatingLabel
+  getExecutionRatingLabel,
+  calculateGuidanceAccuracyScore,
+  GUIDANCE_ACCURACY_METHODOLOGY
 } from './ExecutionScoreService.js';
 import openai from './openaiClient.js';
 import { logger } from '../utils/logger.js';
 import { periodsMatch, normalizeFinancialValue } from '../utils/financialNormalization.js';
-import { evaluatePromiseOutcome, toLegacyVerificationStatus } from '../utils/promiseOutcome.js';
+import { evaluatePromiseOutcome, toLegacyVerificationStatus, resolveRecordOutcome } from '../utils/promiseOutcome.js';
 import { PUBLIC_SAFE_EVIDENCE_QUERY } from '../utils/earningsIntelligenceValidation.js';
 import { searchActualOutcomesFromIndianApi } from './OutcomeEvidenceService.js';
 import { getCompanyResearchBundle } from './CompanyResearchService.js';
@@ -170,23 +172,26 @@ export const recencyWeight = (date) => {
  */
 export const calculateReliability = (promises = []) => {
   promises = promises.filter((promise) => promise.dataOrigin !== 'SEEDED_DEMO');
+  // Every status below is the RECOMPUTED outcome (utils/promiseOutcome.js), in the legacy vocabulary
+  // (MET -> FULFILLED), never a stored status that may predate the current rules.
+  const recomputed = new Map(promises.map((p) => [p, toLegacyVerificationStatus(resolveRecordOutcome(p).outcome)]));
+  const statusOf = (p) => recomputed.get(p);
   const totalPromises = promises.length;
   const pending = promises.filter((p) => {
-    const status = p.verification?.status || p.status;
-    return status === 'PENDING';
+    return statusOf(p) === 'PENDING';
   }).length;
 
   const historical = promises.filter((promise) => {
-    const status = promise.verification?.status || promise.status;
+    const status = statusOf(promise);
     const confidence = promise.verification?.confidence ?? promise.confidenceScore ?? promise.confidence;
     if (confidence != null && Number(confidence) < 0.8) return false;
     return status === 'FULFILLED' || status === 'EXCEEDED' || status === 'PARTIALLY_FULFILLED' || status === 'MISSED';
   });
 
-  const fulfilled = historical.filter(p => (p.verification?.status || p.status) === 'FULFILLED').length;
-  const exceeded = historical.filter(p => (p.verification?.status || p.status) === 'EXCEEDED').length;
-  const partiallyFulfilled = historical.filter(p => (p.verification?.status || p.status) === 'PARTIALLY_FULFILLED').length;
-  const missed = historical.filter(p => (p.verification?.status || p.status) === 'MISSED').length;
+  const fulfilled = historical.filter(p => statusOf(p) === 'FULFILLED').length;
+  const exceeded = historical.filter(p => statusOf(p) === 'EXCEEDED').length;
+  const partiallyFulfilled = historical.filter(p => statusOf(p) === 'PARTIALLY_FULFILLED').length;
+  const missed = historical.filter(p => statusOf(p) === 'MISSED').length;
 
   // Requirement: at least 3 historical promises have verified outcomes
   if (historical.length < 3) {
@@ -217,7 +222,7 @@ export const calculateReliability = (promises = []) => {
     const rWeight = recencyWeight(pDate);
     const weight = importanceWeight * rWeight;
 
-    const status = promise.verification?.status || promise.status;
+    const status = statusOf(promise);
     const scoreVal = STATUS_SCORE[status] != null ? STATUS_SCORE[status] : 0;
 
     weightedTotal += weight;
@@ -240,7 +245,8 @@ export const calculateReliability = (promises = []) => {
   const avgAchievement = (items) => {
     if (!items.length) return 0;
     return items.reduce((sum, item) => {
-      const pct = item.verification?.achievementPercentage != null ? item.verification.achievementPercentage : (item.achievementPercentage != null ? item.achievementPercentage : (STATUS_SCORE[item.status] * 100));
+      // Met / missed only: an achievement percentage is never averaged in (a 97%-of-target miss is a miss).
+      const pct = (STATUS_SCORE[statusOf(item)] ?? 0) * 100;
       return sum + Number(pct || 0);
     }, 0) / items.length;
   };
@@ -1382,6 +1388,23 @@ export const getCompanySummary = async (symbol, { annualFinancials = null } = {}
     financialFacts: annualFinancials?.facts ?? null
   });
 
+  // Management delivery is read from the SAME computation Promises vs Actuals
+  // uses (curated-first record set, revisions grouped, outcomes recomputed with
+  // the current rules), so the company card, the report overview and the
+  // Promises vs Actuals tab can never show different counts for one company.
+  // Lazy import: PromisesVsActualsService itself imports this module.
+  let delivery = null;
+  try {
+    const { buildManagementDelivery } = await import('./PromisesVsActualsService.js');
+    delivery = await buildManagementDelivery(normalized);
+  } catch (err) {
+    logger.warn(`[ManagementPromiseService] management-delivery lookup failed for ${normalized}: ${err.message}`);
+  }
+  const deliveryScore = delivery?.managementDeliveryScore || null;
+  const countedRows = (delivery?.rows || []).filter((row) => row.countsTowardScore);
+  const deliveryAccuracy = delivery ? calculateGuidanceAccuracyScore(countedRows.map((row) => ({ canonicalOutcome: row.outcome }))) : (executionScoreResult.guidanceAccuracyScore ?? null);
+  if (executionScoreResult.scoreBreakdown) executionScoreResult.scoreBreakdown.guidanceAccuracy = deliveryAccuracy;
+
   const periods = executionScoreResult.financialSnapshot.coveredYears;
   const coverageYears = periods.length ? `${periods[0]}–${periods[periods.length - 1]}` : 'Coverage unavailable';
 
@@ -1426,16 +1449,47 @@ export const getCompanySummary = async (symbol, { annualFinancials = null } = {}
     financialSnapshot: executionScoreResult.financialSnapshot,
     financialDataStatus: annualFinancials ? { ...annualFinancials, facts: undefined } : { provider: 'STORED_FILINGS' },
     financialIntelligence,
-    guidanceSuccessRate: executionScoreResult.guidanceSuccessRate,
-    guidanceAccuracyScore: executionScoreResult.guidanceAccuracyScore ?? null,
-    targetHitRate: executionScoreResult.targetHitRate ?? null,
+    guidanceSuccessRate: deliveryScore ? deliveryScore.targetHitRate : executionScoreResult.guidanceSuccessRate,
+    guidanceAccuracyScore: deliveryAccuracy,
+    guidanceAccuracyMethodology: GUIDANCE_ACCURACY_METHODOLOGY,
+    targetHitRate: deliveryScore ? {
+      targetHitRate: deliveryScore.targetHitRate,
+      hits: deliveryScore.targetHitRateNumerator,
+      completed: deliveryScore.targetHitRateDenominator,
+      met: deliveryScore.metCount,
+      exceeded: deliveryScore.exceededCount,
+      missed: deliveryScore.missedCount,
+      pending: deliveryScore.pendingCount,
+      insufficientEvidence: deliveryScore.insufficientEvidenceCount,
+      qualitativeOnly: deliveryScore.qualitativeOnlyCount,
+    } : (executionScoreResult.targetHitRate ?? null),
+    managementDelivery: deliveryScore ? {
+      ...deliveryScore,
+      emptyState: delivery.emptyState,
+      researchState: delivery.researchState,
+      dataSource: delivery.dataSource,
+    } : null,
     executionScoreMethodology: executionScoreResult.methodology ?? null,
     confidence: confidence.level,
     confidenceReason: annualFinancials && executionScoreResult.financialSnapshot.quality.historicalExcludedFactsCount > 0 ? 'Legacy financial extracts failed annual selection checks; historical research needs review. Upstox financial coverage is reported separately.' : confidence.reason,
     coverage: coverageYears,
     factsCount: facts.length,
     sourcesCount: uniqueSourceUrls.size || latestRun?.sourceStats?.documentsFound || 0,
-    managementTrackRecord: {
+    // Counts from the shared delivery computation (recomputed outcomes). There is no partial credit any
+    // more, so partiallyFulfilled is always 0 -- kept only so older clients still find the key.
+    managementTrackRecord: deliveryScore ? {
+      totalTargets: deliveryScore.totalTargets,
+      completed: deliveryScore.completedCount,
+      fulfilled: deliveryScore.metCount,
+      exceeded: deliveryScore.exceededCount,
+      partiallyFulfilled: 0,
+      missed: deliveryScore.missedCount,
+      pending: deliveryScore.pendingCount,
+      insufficientEvidence: deliveryScore.insufficientEvidenceCount,
+      qualitativeOnly: deliveryScore.qualitativeOnlyCount,
+      score: deliveryScore.targetHitRate,
+      trend: reliability.trend
+    } : {
       totalTargets: promises.length,
       fulfilled: reliability.fulfilled,
       partiallyFulfilled: reliability.partiallyFulfilled,
@@ -1577,6 +1631,10 @@ export const getCompanyReport = async (symbol) => {
     ratingLabel: summary.ratingLabel,
     guidanceSuccessRate: summary.guidanceSuccessRate,
     guidanceAccuracyScore: summary.guidanceAccuracyScore,
+    guidanceAccuracyMethodology: summary.guidanceAccuracyMethodology,
+    // The shared management-delivery computation (same as Promises vs Actuals): counts, target-hit rate
+    // with its denominator, and the specific empty state when nothing is evaluable.
+    managementDelivery: summary.managementDelivery,
     executionScoreMethodology: summary.executionScoreMethodology,
     scoreBreakdown: summary.scoreBreakdown,
     weightsUsed: summary.weightsUsed,
@@ -1632,12 +1690,14 @@ export const getCompanyReport = async (symbol) => {
         ? `${facts.length} verified historical facts and ${promises.length} management targets tracked across ${summary.coverage}.`
         : 'No verified historical records found in database. Run Historical AI Research to analyze official disclosures.'
     },
-    promises,
+    // Each record carries its RECOMPUTED outcome (displayStatus, legacy vocabulary) next to the stored one,
+    // so the guidance cards show the same verdict as Promises vs Actuals instead of a stale stored label.
+    promises: promises.map((promise) => {
+      const verdict = resolveRecordOutcome(promise);
+      return { ...promise, displayStatus: toLegacyVerificationStatus(verdict.outcome), displayAchievementPercentage: verdict.achievementPercentage ?? null };
+    }),
     trend: summary.financialSnapshot?.annualSeries || [],
-    currentGuidance: promises.filter((promise) => {
-      const status = promise.verification?.status || promise.status;
-      return status === 'PENDING';
-    })
+    currentGuidance: promises.filter((promise) => resolveRecordOutcome(promise).outcome === 'PENDING')
   };
 };
 

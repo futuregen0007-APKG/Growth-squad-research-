@@ -28,11 +28,12 @@ import mongoose from 'mongoose';
 import { logger } from '../utils/logger.js';
 import { SUPPORTED_STOCKS } from '../utils/constants.js';
 import PromiseCandidate from '../models/PromiseCandidate.js';
+import { resolveCuratedRecordOutcome, toCandidateOutcomeStatus } from '../utils/promiseOutcome.js';
+import { metricLabelFor } from '../utils/promiseMetrics.js';
 import {
   validateManagementPromiseRecord,
   validateCuratedCompanyRecord,
   findDuplicatePromiseIds,
-  RESOLVED_STATUSES,
   isPubliclyVisibleRecord,
 } from '../utils/earningsIntelligenceValidation.js';
 
@@ -236,6 +237,9 @@ const fetchAcceptedCandidates = async (symbol) => {
       promiseEvidence: doc.promiseEvidence,
       outcomeEvidence: doc.outcomeEvidence || null,
       verification: doc.verification,
+      // The reviewer's assertion recorded at acceptance (scripts/earningsReview.js). Absent on candidates
+      // accepted before it was stored, which stay fail-closed until their committed JSON copy is deployed.
+      ...(doc.evidenceIntegrity?.status ? { evidenceIntegrity: doc.evidenceIntegrity } : {}),
       reviewedBy: doc.reviewedBy || null,
       reviewedAt: doc.reviewedAt ? new Date(doc.reviewedAt).toISOString() : null,
     }));
@@ -299,8 +303,9 @@ const applyPromiseFilters = (records, filters = {}) => {
     results = results.filter((r) => r.promise?.category === category);
   }
   if (filters.status) {
+    // Filters on the recomputed outcome (either vocabulary: ACHIEVED or MET), the same one every surface shows.
     const status = String(filters.status).toUpperCase();
-    results = results.filter((r) => r.outcome?.status === status);
+    results = results.filter((r) => toCandidateOutcomeStatus(canonicalOf(r)) === status || canonicalOf(r) === status);
   }
 
   return [...results].sort((a, b) => new Date(a.promise?.promiseDate || 0) - new Date(b.promise?.promiseDate || 0));
@@ -309,8 +314,8 @@ const applyPromiseFilters = (records, filters = {}) => {
 /** Recomputes a coverage record's dataMode/coverageStatus/counts live from the actual merged record set, so an accepted-in-Mongo-but-not-yet-committed-to-git promise still reports correctly. */
 const buildLiveCoverage = (staticRecord, merged) => {
   if (!merged.length) return deepClone(staticRecord);
-  const resolved = merged.filter((r) => RESOLVED_STATUSES.includes(r.outcome?.status));
-  const pending = merged.filter((r) => r.outcome?.status === 'PENDING');
+  const resolved = merged.filter(isResolved);
+  const pending = merged.filter((r) => canonicalOf(r) === 'PENDING');
   return {
     ...deepClone(staticRecord),
     dataMode: 'CURATED_VERIFIED',
@@ -373,10 +378,24 @@ export const getCompanyPromisesDebug = async (symbol, filters = {}) => {
   }));
 };
 
-// EXCEEDED added additively (a met-and-beaten target scores like ACHIEVED);
-// RESOLVED_STATUSES (utils/earningsIntelligenceValidation.js) includes it too.
-const STATUS_VALUE = { ACHIEVED: 1, EXCEEDED: 1, PARTIAL: 0.5, MISSED: 0 };
+// Every count and score below reads the RECOMPUTED canonical outcome
+// (utils/promiseOutcome.js resolveCuratedRecordOutcome) -- the same verdict the
+// Promises vs Actuals table shows -- never a stored status, which may predate
+// the current rules (e.g. a sub-target result stored as "PARTIAL", or a
+// qualitative statement stored as "ACHIEVED"). There is no partial credit: a
+// target is met or missed, so MET/EXCEEDED score 1 and MISSED scores 0.
+const CANONICAL_VALUE = { MET: 1, EXCEEDED: 1, MISSED: 0 };
+const RESOLVED_CANONICAL = Object.keys(CANONICAL_VALUE);
 const MIN_RESOLVED_FOR_SCORE = 3;
+
+/** canonicalOf - the recomputed canonical outcome of one curated record (memoised on the record object). */
+export const canonicalOf = (record, asOf = new Date()) => {
+  if (!record) return null;
+  if (record.canonicalOutcome) return record.canonicalOutcome; // already resolved by the caller (Promises vs Actuals rows)
+  if (!record.__verdict) Object.defineProperty(record, '__verdict', { value: resolveCuratedRecordOutcome(record, { asOf }), enumerable: false });
+  return record.__verdict.outcome;
+};
+const isResolved = (record) => RESOLVED_CANONICAL.includes(canonicalOf(record));
 
 export const faithScoreLabel = (score) => {
   if (score == null) return 'Insufficient verified history';
@@ -388,13 +407,14 @@ export const faithScoreLabel = (score) => {
 
 /**
  * Deterministic Faith Score. Never asks an LLM for the number.
- * statusValue: ACHIEVED=1.0, EXCEEDED=1.0, PARTIAL=0.5, MISSED=0.0; PENDING/INSUFFICIENT_EVIDENCE/QUALITATIVE_ONLY excluded.
+ * statusValue (recomputed canonical outcome): MET=1.0, EXCEEDED=1.0, MISSED=0.0;
+ * PENDING / INSUFFICIENT_EVIDENCE / QUALITATIVE_ONLY excluded.
  * weightedResult = statusValue * evidenceConfidence
  * faithScore = round(sum(weightedResult) / sum(evidenceConfidence) * 100)
  * Requires >= 3 resolved, verified promises; otherwise returns null (never 0).
  */
 export const calculateFaithScore = (records = []) => {
-  const eligible = records.filter((r) => RESOLVED_STATUSES.includes(r.outcome?.status));
+  const eligible = records.filter(isResolved);
 
   if (eligible.length < MIN_RESOLVED_FOR_SCORE) {
     return { faithScore: null, faithScoreLabel: faithScoreLabel(null), resolvedCount: eligible.length, breakdown: [] };
@@ -403,12 +423,13 @@ export const calculateFaithScore = (records = []) => {
   let weightedSum = 0;
   let confidenceSum = 0;
   const breakdown = eligible.map((r) => {
-    const statusValue = STATUS_VALUE[r.outcome.status] ?? 0;
+    const canonical = canonicalOf(r);
+    const statusValue = CANONICAL_VALUE[canonical] ?? 0;
     const evidenceConfidence = typeof r.verification?.evidenceConfidence === 'number' ? r.verification.evidenceConfidence : 0;
     const weightedResult = statusValue * evidenceConfidence;
     weightedSum += weightedResult;
     confidenceSum += evidenceConfidence;
-    return { id: r.id, period: r.promise?.targetPeriod || null, status: r.outcome.status, statusValue, evidenceConfidence, weightedResult };
+    return { id: r.id, period: r.promise?.targetPeriod || null, status: toCandidateOutcomeStatus(canonical), canonicalOutcome: canonical, storedStatus: r.outcome?.status ?? null, statusValue, evidenceConfidence, weightedResult };
   });
 
   const faithScore = confidenceSum > 0 ? Math.round((weightedSum / confidenceSum) * 100) : null;
@@ -435,19 +456,21 @@ const targetPeriodToQuarterKeys = (targetPeriod) => {
  * which this curated-data-only function has no direct visibility into.
  */
 export const computeFaithScoreCoverage = (records = [], { coverageStatus, researchFailed = false, dataAsOf = null } = {}) => {
-  const resolved = records.filter((r) => RESOLVED_STATUSES.includes(r.outcome?.status));
+  const resolved = records.filter(isResolved);
   const quarterSet = new Set();
   for (const r of resolved) for (const key of targetPeriodToQuarterKeys(r.promise?.targetPeriod)) quarterSet.add(key);
   const completedQuarters = Math.min(quarterSet.size, EXPECTED_QUARTERS_WINDOW);
 
-  const counts = { achieved: 0, exceeded: 0, partial: 0, missed: 0, pending: 0 };
+  // `partial` is kept (always 0) so existing API consumers still find the key: there is no partial credit any more.
+  const counts = { achieved: 0, exceeded: 0, partial: 0, missed: 0, pending: 0, insufficientEvidence: 0, qualitativeOnly: 0 };
   for (const r of records) {
-    const status = r.outcome?.status;
-    if (status === 'ACHIEVED') counts.achieved += 1;
-    else if (status === 'EXCEEDED') counts.exceeded += 1;
-    else if (status === 'PARTIAL') counts.partial += 1;
-    else if (status === 'MISSED') counts.missed += 1;
-    else if (status === 'PENDING') counts.pending += 1;
+    const canonical = canonicalOf(r);
+    if (canonical === 'MET') counts.achieved += 1;
+    else if (canonical === 'EXCEEDED') counts.exceeded += 1;
+    else if (canonical === 'MISSED') counts.missed += 1;
+    else if (canonical === 'PENDING') counts.pending += 1;
+    else if (canonical === 'INSUFFICIENT_EVIDENCE') counts.insufficientEvidence += 1;
+    else if (canonical === 'QUALITATIVE_ONLY') counts.qualitativeOnly += 1;
   }
 
   let scoreStatus;
@@ -475,6 +498,8 @@ export const computeFaithScoreCoverage = (records = [], { coverageStatus, resear
     partial: counts.partial,
     missed: counts.missed,
     pending: counts.pending,
+    insufficientEvidence: counts.insufficientEvidence,
+    qualitativeOnly: counts.qualitativeOnly,
     missingQuarters,
     coveredQuarterLabels: sortedQuarterKeys,
     dataAsOf: dataAsOf || new Date().toISOString(),
@@ -487,7 +512,7 @@ export const computeFaithScoreCoverage = (records = [], { coverageStatus, resear
  * Returns null when there is no resolved evidence to average at all (never 0).
  */
 export const calculateEvidenceConfidence = (records = []) => {
-  const eligible = records.filter((r) => RESOLVED_STATUSES.includes(r.outcome?.status));
+  const eligible = records.filter(isResolved);
   if (!eligible.length) return null;
   const mean = eligible.reduce((sum, r) => sum + (typeof r.verification?.evidenceConfidence === 'number' ? r.verification.evidenceConfidence : 0), 0) / eligible.length;
   return Math.round(mean * 100);
@@ -522,12 +547,12 @@ export const calculateCoverageScore = (company, records = []) => {
   const distinctPeriods = new Set(records.map((r) => r.promise?.targetPeriod).filter(Boolean));
   const periodsScore = (Math.min(distinctPeriods.size, 5) / 5) * 25;
 
-  const resolved = records.filter((r) => RESOLVED_STATUSES.includes(r.outcome?.status));
+  const resolved = records.filter(isResolved);
   const resolvedScore = (Math.min(resolved.length, 8) / 8) * 35;
 
   const withCompleteEvidence = records.filter((r) => {
     const hasPromiseEvidence = Boolean(r.promiseEvidence);
-    const needsOutcomeEvidence = RESOLVED_STATUSES.includes(r.outcome?.status);
+    const needsOutcomeEvidence = isResolved(r);
     return hasPromiseEvidence && (!needsOutcomeEvidence || Boolean(r.outcomeEvidence));
   });
   const evidenceScore = records.length ? (withCompleteEvidence.length / records.length) * 25 : 0;
@@ -567,15 +592,25 @@ const toTimelineEntry = (record) => ({
     unit: record.promise.targetUnit ?? null,
     operator: record.promise.operator,
     type: record.promise.targetType,
+    reportingBasis: record.promise.reportingBasis ?? null,
+    currencyBasis: record.promise.currencyBasis ?? null,
+    scope: record.promise.scope ?? null,
   },
   metric: record.promise.metric ?? null,
+  metricLabel: record.promise.metric ? metricLabelFor(record.promise.metric) : metricLabelFor(record.promise.category),
   revisesPromiseId: record.promise.revisesPromiseId ?? null,
-  status: record.outcome.status,
+  // `status` is the RECOMPUTED outcome (stored vocabulary), so this tab can never disagree with
+  // Promises vs Actuals; what was originally stored stays visible as `storedStatus`.
+  status: toCandidateOutcomeStatus(canonicalOf(record)),
+  canonicalOutcome: canonicalOf(record),
+  storedStatus: record.outcome.status,
   outcome: {
     actualValue: record.outcome.actualValue ?? null,
     actualUnit: record.outcome.actualUnit ?? null,
+    actualPeriod: record.outcome.actualPeriod ?? null,
     evaluationDate: record.outcome.evaluationDate ?? null,
     explanation: record.outcome.explanation ?? null,
+    calculationExplanation: record.__verdict?.calculationExplanation ?? null,
   },
   promiseEvidence: record.promiseEvidence,
   outcomeEvidence: record.outcomeEvidence,
@@ -616,19 +651,10 @@ export const getCompanyTimeline = async (symbol, filters = {}) => {
   const coverageScore = calculateCoverageScore(coverage, records);
   const faithCoverage = computeFaithScoreCoverage(records, { coverageStatus: coverage.coverageStatus, dataAsOf: coverage.lastVerifiedAt });
 
-  const counts = { achieved: 0, exceeded: 0, partial: 0, missed: 0, pending: 0, insufficientEvidence: 0, qualitativeOnly: 0 };
-  for (const record of records) {
-    switch (record.outcome?.status) {
-      case 'ACHIEVED': counts.achieved++; break;
-      case 'EXCEEDED': counts.exceeded++; break;
-      case 'QUALITATIVE_ONLY': counts.qualitativeOnly++; break;
-      case 'PARTIAL': counts.partial++; break;
-      case 'MISSED': counts.missed++; break;
-      case 'PENDING': counts.pending++; break;
-      case 'INSUFFICIENT_EVIDENCE': counts.insufficientEvidence++; break;
-      default: break;
-    }
-  }
+  const counts = {
+    achieved: faithCoverage.achieved, exceeded: faithCoverage.exceeded, partial: 0, missed: faithCoverage.missed,
+    pending: faithCoverage.pending, insufficientEvidence: faithCoverage.insufficientEvidence, qualitativeOnly: faithCoverage.qualitativeOnly,
+  };
 
   return {
     symbol: normalized,

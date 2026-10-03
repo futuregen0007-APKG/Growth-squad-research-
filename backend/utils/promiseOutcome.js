@@ -223,8 +223,116 @@ export const detectStatedBasis = (...texts) => {
   if (/revenue from operations/i.test(text)) definitions.add('REVENUE_FROM_OPERATIONS');
   if (/\btotal income\b/i.test(text)) definitions.add('TOTAL_INCOME');
   if (/attributable to (?:the )?(?:owners|equity holders|shareholders)/i.test(text)) definitions.add('PROFIT_ATTRIBUTABLE_TO_OWNERS');
+  else if (/\bprofit for the (?:period|year)\b/i.test(text)) definitions.add('PROFIT_AFTER_TAX');
   if (definitions.size === 1) [result.metricDefinition] = [...definitions];
   return result;
+};
+
+// Metrics whose figure is a revenue / profit line. When the guidance text does
+// not name the line itself, the plain reading is assumed explicitly (never
+// silently): "revenue" is revenue from operations -- so it can never be scored
+// against total income, which also carries other income -- and "PAT" / "net
+// profit" is the profit for the period.
+const DEFAULT_TARGET_DEFINITION = {
+  REVENUE: 'REVENUE_FROM_OPERATIONS', REVENUE_GROWTH: 'REVENUE_FROM_OPERATIONS',
+  PAT: 'PROFIT_AFTER_TAX', PAT_GROWTH: 'PROFIT_AFTER_TAX',
+};
+
+const BASIS_FIELD_VALUES = {
+  statementBasis: ['CONSOLIDATED', 'STANDALONE'],
+  currencyBasis: ['CONSTANT_CURRENCY', 'REPORTED_CURRENCY'],
+};
+
+/**
+ * mergeBasis - text-detected basis overlaid with explicit, structured fields a
+ * record may carry (promise.reportingBasis / currencyBasis / scope /
+ * metricDefinition). An explicit field wins; an absent one falls back to the
+ * text. Unknown values are ignored rather than trusted.
+ */
+const mergeBasis = (detected, explicit = {}) => {
+  const out = { ...detected };
+  const statement = String(explicit.reportingBasis || explicit.statementBasis || '').toUpperCase();
+  if (BASIS_FIELD_VALUES.statementBasis.includes(statement)) out.statementBasis = statement;
+  const currency = String(explicit.currencyBasis || '').toUpperCase();
+  if (BASIS_FIELD_VALUES.currencyBasis.includes(currency)) out.currencyBasis = currency;
+  if (explicit.scope && String(explicit.scope).toUpperCase() !== 'COMPANY') out.scope = String(explicit.scope).toUpperCase();
+  if (explicit.metricDefinition) out.metricDefinition = String(explicit.metricDefinition).toUpperCase();
+  return out;
+};
+
+/**
+ * resolveCuratedRecordOutcome - THE outcome for one stored promise record in
+ * the curated shape (promises/<SYMBOL>.json, an ACCEPTED or pending
+ * PromiseCandidate: promise / outcome / promiseEvidence / outcomeEvidence).
+ * Every surface that shows or counts an outcome -- the Promises vs Actuals
+ * table, the Management Guidance tab, the Faith Score, coverage counts, the
+ * company report and the company cards -- calls this one function, so they
+ * cannot disagree. Stored target / actual / evidence are only read; the stored
+ * status is never trusted when a numeric target and actual are on file.
+ *
+ * Returns the evaluatePromiseOutcome result plus targetBasis / actualBasis.
+ */
+export const resolveCuratedRecordOutcome = (record, { asOf = new Date() } = {}) => {
+  const promise = record?.promise || {};
+  const outcome = record?.outcome || {};
+  const metric = String(promise.metric || '').toUpperCase();
+  const detectedTarget = detectStatedBasis(promise.statement, promise.originalExcerpt, record?.promiseEvidence?.excerpt);
+  if (!detectedTarget.metricDefinition && DEFAULT_TARGET_DEFINITION[metric]) detectedTarget.metricDefinition = DEFAULT_TARGET_DEFINITION[metric];
+  const targetBasis = mergeBasis(detectedTarget, promise);
+  // The actual's basis is read from the outcome SOURCE's own words (or explicit fields), never the curator's narrative.
+  const actualBasis = mergeBasis(detectStatedBasis(record?.outcomeEvidence?.excerpt), outcome.basis || {});
+  // Every actual this project records comes from a company-level results filing, so a segment target
+  // (one business, product or geography) is never scored against it.
+  if (targetBasis.scope && !actualBasis.scope && !isMissingNumber(outcome.actualValue)) actualBasis.scope = 'COMPANY';
+
+  const storedCanonical = canonicalOutcomeFromStoredStatus(outcome.status);
+  const hasActual = !isMissingNumber(outcome.actualValue);
+  const evidenceUnavailableReason = !hasActual && storedCanonical === 'INSUFFICIENT_EVIDENCE' && outcome.explanation ? outcome.explanation : null;
+
+  // No numeric target on record but not marked qualitative either: nothing to recompute from, so the
+  // recorded status is kept (a human verdict without figures, or a pending record), never re-labelled.
+  const markedQualitative = String(promise.operator || '').toUpperCase() === 'QUALITATIVE' || String(promise.targetType || '').toUpperCase() === 'QUALITATIVE';
+  if (isMissingNumber(promise.targetValue) && !markedQualitative && storedCanonical) {
+    const recordedVerdict = ['MET', 'EXCEEDED', 'MISSED'].includes(storedCanonical);
+    return {
+      comparisonType: null, outcome: storedCanonical, achievementPercentage: null, achievementReason: 'No numeric target is recorded.', shortfall: null,
+      reason: recordedVerdict ? null : (outcome.explanation || 'No numeric target is recorded for this promise.'),
+      calculationExplanation: `No numeric target is recorded; the status is shown as recorded (${outcome.status}). ${outcome.explanation || ''}`.trim(),
+      targetBasis, actualBasis,
+    };
+  }
+
+  const verdict = evaluatePromiseOutcome({
+    targetValue: promise.targetValue,
+    targetValueMax: promise.targetValueMax ?? null,
+    targetUnit: promise.targetUnit ?? null,
+    actualValue: hasActual ? outcome.actualValue : null,
+    actualUnit: outcome.actualUnit ?? promise.targetUnit ?? null,
+    operator: promise.operator ?? null,
+    direction: promise.direction ?? null,
+    metric: metric || promise.category || '',
+    targetType: promise.targetType ?? null,
+    targetPeriod: promise.targetPeriod || '',
+    actualPeriod: outcome.actualPeriod ?? null,
+    targetBasis,
+    actualBasis,
+    asOf,
+    evidenceUnavailableReason,
+  });
+
+  // A human-resolved met/missed verdict with no single actual figure (rare)
+  // has nothing numeric to recompute from; it is kept rather than downgraded.
+  if (!hasActual && verdict.outcome === 'INSUFFICIENT_EVIDENCE' && ['MET', 'EXCEEDED', 'MISSED'].includes(storedCanonical)) {
+    return {
+      ...verdict,
+      outcome: storedCanonical,
+      reason: null,
+      calculationExplanation: `No single actual figure is recorded; the curated verdict (${outcome.status}) is shown as recorded. ${outcome.explanation || ''}`.trim(),
+      targetBasis,
+      actualBasis,
+    };
+  }
+  return { ...verdict, targetBasis, actualBasis };
 };
 
 const basisLabel = (key, value) => {
@@ -524,6 +632,8 @@ export const resolveRecordOutcome = (record, { asOf = new Date() } = {}) => {
   if (!record) return { outcome: null };
   if (typeof record === 'string') return { outcome: canonicalOutcomeFromStoredStatus(record) };
   if (record.canonicalOutcome) return { outcome: record.canonicalOutcome };
+  // Curated shape (JSON record / PromiseCandidate): the one shared resolver.
+  if (record.promiseEvidence || record.outcomeEvidence !== undefined) return resolveCuratedRecordOutcome(record, { asOf });
   const promise = record.promise || {};
   const outcome = record.outcome || {};
   const storedStatus = outcome.status || record.verification?.status || record.status;
@@ -532,8 +642,8 @@ export const resolveRecordOutcome = (record, { asOf = new Date() } = {}) => {
   const actualValue = outcome.actualValue ?? record.actualValue;
 
   if (isMissingNumber(targetValue)) {
-    // A legacy record that genuinely lacks a target field but carries a stored verdict keeps it.
-    if (!promise.operator && !promise.targetType && storedCanonical && storedCanonical !== 'PENDING') return { outcome: storedCanonical };
+    // A legacy record that genuinely lacks a target field keeps its stored status (nothing to recompute from).
+    if (!promise.operator && !promise.targetType && storedCanonical) return { outcome: storedCanonical };
     return evaluatePromiseOutcome({ targetValue: null, operator: promise.operator, targetType: promise.targetType });
   }
   if (isMissingNumber(actualValue) && ['MET', 'EXCEEDED', 'MISSED'].includes(storedCanonical)) {
@@ -551,6 +661,8 @@ export const resolveRecordOutcome = (record, { asOf = new Date() } = {}) => {
     targetType: promise.targetType ?? null,
     targetPeriod: promise.targetPeriod || record.targetPeriod || '',
     actualPeriod: outcome.actualPeriod ?? record.actualPeriod ?? null,
+    targetBasis: detectStatedBasis(promise.statement, record.evidence?.promiseSource?.excerpt),
+    actualBasis: detectStatedBasis(outcome.excerpt, record.evidence?.outcomeSource?.excerpt),
     asOf,
   });
 };
@@ -575,4 +687,5 @@ export default {
   toCandidateOutcomeStatus,
   canonicalOutcomeFromStoredStatus,
   resolveRecordOutcome,
+  resolveCuratedRecordOutcome,
 };

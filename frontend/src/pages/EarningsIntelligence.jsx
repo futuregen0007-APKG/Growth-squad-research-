@@ -104,6 +104,45 @@ function RatingBadge({ rating, score }) {
   );
 }
 
+// One sentence for each kind of "no score", so an empty state is never mistaken for a 0% record.
+const DELIVERY_EMPTY_TEXT = {
+  NOT_RESEARCHED: 'Guidance not yet researched',
+  NO_MEASURABLE_GUIDANCE: 'Researched: no measurable numeric guidance found',
+  GUIDANCE_PENDING_REVIEW: 'Guidance found: awaiting evidence review',
+  SOURCES_FAILED: 'Guidance documents could not be read',
+  GUIDANCE_UNVERIFIED: 'Targets published: outcomes not yet verifiable',
+  NO_GUIDANCE: 'No management guidance on file',
+};
+
+/**
+ * ManagementDeliveryLine - the company card's management-delivery summary:
+ * "X of Y completed targets met", from the same computation as Promises vs
+ * Actuals. Never a percentage without its denominator, never 0% when nothing
+ * is evaluable.
+ */
+export function ManagementDeliveryLine({ delivery, trackRecord = {} }) {
+  if (!delivery) return null;
+  const completed = delivery.targetHitRateDenominator || 0;
+  if (completed > 0) {
+    return (
+      <div className="flex items-center justify-between gap-2 text-[11px] font-mono px-2.5 py-1.5 bg-gs-panel/20 border border-gs-border/30 rounded" data-testid="card-management-delivery">
+        <span className="text-gs-textDim">Management delivery:</span>
+        <span className="text-gs-text font-semibold text-right">
+          <strong className="text-gs-gold">{delivery.targetHitRateNumerator} of {completed}</strong> completed targets met ({delivery.targetHitRate}%)
+          <span className="text-gs-textDim font-normal"> · {delivery.metCount || 0} met · {delivery.exceededCount || 0} exceeded · {delivery.missedCount || 0} missed{(delivery.pendingCount || 0) + (delivery.insufficientEvidenceCount || 0) > 0 ? ` · ${(delivery.pendingCount || 0) + (delivery.insufficientEvidenceCount || 0)} unresolved` : ''}</span>
+        </span>
+      </div>
+    );
+  }
+  const text = DELIVERY_EMPTY_TEXT[delivery.emptyState] || (trackRecord.totalTargets > 0 ? DELIVERY_EMPTY_TEXT.GUIDANCE_UNVERIFIED : DELIVERY_EMPTY_TEXT.NO_GUIDANCE);
+  return (
+    <div className="text-[11px] font-mono text-gs-textDim px-2.5 py-1 bg-gs-panel/20 rounded flex items-center justify-between gap-2" data-testid="card-management-delivery">
+      <span>Management delivery:</span>
+      <span className="text-gs-textMuted text-right">{text} · score unavailable</span>
+    </div>
+  );
+}
+
 /**
  * Featured Company Summary Card
  */
@@ -191,16 +230,16 @@ function CompanyCard({ report, onOpen }) {
               <div className="font-bold text-gs-text mt-0.5 text-xs">{breakdown.financialDelivery ?? '—'}</div>
             </div>
             <div>
-              <div className="text-gs-textDim truncate">Guidance</div>
-              <div className="font-bold text-gs-gold mt-0.5 text-xs">{breakdown.guidanceAccuracy ?? 'N/A'}</div>
-            </div>
-            <div>
               <div className="text-gs-textDim truncate">Strategic</div>
               <div className="font-bold text-emerald-400 mt-0.5 text-xs">{breakdown.strategicExecution ?? '—'}</div>
             </div>
             <div>
               <div className="text-gs-textDim truncate">Operational</div>
               <div className="font-bold text-blue-400 mt-0.5 text-xs">{breakdown.operationalDelivery ?? '—'}</div>
+            </div>
+            <div>
+              <div className="text-gs-textDim truncate">Capital</div>
+              <div className="font-bold text-gs-text mt-0.5 text-xs">{breakdown.capitalAllocation ?? '—'}</div>
             </div>
           </div>
         )}
@@ -283,20 +322,9 @@ function CompanyCard({ report, onOpen }) {
           </div>
         )}
 
-        {/* Management Track Record Bar */}
-        {trackRecord.totalTargets > 0 ? (
-          <div className="flex items-center justify-between text-[11px] font-mono px-2.5 py-1.5 bg-gs-panel/20 border border-gs-border/30 rounded">
-            <span className="text-gs-textDim">Guidance Success:</span>
-            <span className="text-gs-text font-semibold">
-              <strong className="text-gs-gold">{report.guidanceSuccessRate != null ? `${report.guidanceSuccessRate}%` : 'Tracked'}</strong> ({trackRecord.fulfilled || 0} achieved · {trackRecord.partiallyFulfilled || 0} partial · {trackRecord.missed || 0} missed)
-            </span>
-          </div>
-        ) : hasHistory ? (
-          <div className="text-[11px] font-mono text-gs-textDim px-2.5 py-1 bg-gs-panel/20 rounded flex items-center justify-between">
-            <span>Management Targets:</span>
-            <span className="text-gs-textMuted">Limited measurable numerical guidance</span>
-          </div>
-        ) : null}
+        {/* Management delivery -- a separate measure from the execution score above, read from the same
+            computation as the Promises vs Actuals tab, so the two can never disagree. */}
+        <ManagementDeliveryLine delivery={report.managementDelivery} trackRecord={trackRecord} />
 
         {/* Verified Facts & Sources Metadata */}
         <div className="flex items-center justify-between text-[11px] font-mono text-gs-textDim pt-1">
@@ -634,10 +662,15 @@ function CuratedPromiseEntryCard({ entry }) {
         <div className="space-y-2 min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-mono text-xs font-bold text-gs-gold">{entry.period || 'PERIOD'}</span>
-            <span className="font-mono text-[11px] text-gs-textDim">{entry.category?.replace(/_/g, ' ')}</span>
+            <span className="font-mono text-[11px] text-gs-textDim">{entry.metricLabel || entry.category?.replace(/_/g, ' ')}</span>
             <Badge variant="outline" className={`text-[10px] font-mono flex items-center gap-1 ${cls}`}>
-              <StatusIcon className="w-3 h-3" /> {status}
+              <StatusIcon className="w-3 h-3" /> {status.replace(/_/g, ' ')}
             </Badge>
+            {entry.storedStatus && entry.storedStatus !== status && (
+              <span className="text-[10px] font-mono text-gs-textDim" title="Outcomes are recomputed from the stored target and actual with the current rules; this is what was originally stored.">
+                (recorded as {String(entry.storedStatus).replace(/_/g, ' ')})
+              </span>
+            )}
             {entry.dataMode === 'DEMO_SYNTHETIC' && (
               <Badge variant="destructive" className="text-[9px] font-mono px-1 py-0 bg-purple-900/60 text-purple-200 border-purple-500/50">
                 DEMO DATA
@@ -929,15 +962,16 @@ function CuratedFaithScorePanel({ curated }) {
  */
 function PromiseRow({ promise }) {
   const [expanded, setExpanded] = useState(false);
-  const isPending = (promise.verification?.status || promise.status) === 'PENDING';
-  const status = promise.verification?.status || promise.status || 'PENDING';
+  // displayStatus is the RECOMPUTED outcome sent by the API (the same one every other surface shows).
+  const status = promise.displayStatus || promise.verification?.status || promise.status || 'PENDING';
+  const isPending = status === 'PENDING';
   const statement = promise.promise?.statement || promise.promiseTitle || promise.promiseDescription || 'Guidance Statement';
   const metric = promise.promise?.metric || promise.metric || 'Metric';
   const targetValue = promise.promise?.targetValue ?? promise.targetValue;
   const targetUnit = promise.promise?.targetUnit || promise.targetUnit || '';
   const actualValue = promise.outcome?.actualValue ?? promise.actualValue;
   const actualUnit = promise.outcome?.actualUnit || promise.actualUnit || '';
-  const achievement = promise.verification?.achievementPercentage ?? promise.achievementPercentage;
+  const achievement = promise.displayAchievementPercentage !== undefined ? promise.displayAchievementPercentage : (promise.verification?.achievementPercentage ?? promise.achievementPercentage);
 
   let statusBadge = (
     <Badge variant="outline" className="text-[10px] font-mono border-zinc-600 text-zinc-400 bg-zinc-900/50 flex items-center gap-1">
@@ -1270,16 +1304,25 @@ function PromisesVsActualsPanel({ data }) {
   const financial = data?.summary?.financialPerformanceScore || {};
   const coverage = delivery.evidenceCoverage || {};
 
+  const research = data?.researchState || {};
+  // Each kind of "nothing to score" says what was actually done -- "not researched" is never shown as
+  // "no guidance", and "guidance awaiting review" is never shown as "nothing found".
+  const EMPTY_STATES = {
+    NOT_RESEARCHED: ['Guidance not researched yet', 'No earnings-call transcript or investor presentation for this company has been read yet, so there is nothing to report either way.'],
+    GUIDANCE_PENDING_REVIEW: ['Guidance found, awaiting evidence review', `${research.candidatesPendingReview || 0} extracted target(s) are waiting for the evidence-review gate (excerpt re-checked on the exchange copy, metric and period stated). None is published until it passes.`],
+    SOURCES_FAILED: ['Guidance documents could not be read', `${research.documentsFailed || 0} guidance document(s) were found but could not be downloaded or read from the exchange.`],
+    NO_MEASURABLE_GUIDANCE: ['No measurable guidance found for this company', research.documentsRead
+      ? `${research.documentsRead} earnings-call transcript(s) / presentation(s) were read in full; none stated a numeric target with a future period. Qualitative statements, if any, are listed below and never scored.`
+      : 'Only qualitative management statements were found; they are listed below for context and never scored.'],
+    NO_GUIDANCE: ['No management guidance on file', 'No numeric management target has been extracted and verified from official disclosures.'],
+  };
   let emptyMessage = null;
-  if (data?.emptyState === 'NO_GUIDANCE' || data?.emptyState === 'NO_MEASURABLE_GUIDANCE') {
+  if (EMPTY_STATES[data?.emptyState]) {
+    const [title, body] = EMPTY_STATES[data.emptyState];
     emptyMessage = (
       <div className="p-6 text-center bg-gs-panel/30 border border-gs-border rounded font-mono text-xs space-y-1" data-testid="pva-empty-state">
-        <div className="font-semibold text-gs-text">No measurable guidance found for this company</div>
-        <div className="text-gs-textDim">
-          {data.emptyState === 'NO_MEASURABLE_GUIDANCE'
-            ? 'Only qualitative management statements were found; they are listed below for context and never scored.'
-            : 'No numeric management target has been extracted and verified from official disclosures yet.'}
-        </div>
+        <div className="font-semibold text-gs-text">{title}</div>
+        <div className="text-gs-textDim">{body}</div>
       </div>
     );
   } else if (data?.emptyState === 'GUIDANCE_UNVERIFIED') {
@@ -1700,10 +1743,21 @@ function CompanyReport({ symbol, onBack }) {
           <div className="text-[10px] font-mono text-gs-textDim mt-0.5">Revenue & Profit Trajectory</div>
         </Card>
 
-        <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">
-          <div className="text-[11px] font-mono text-gs-textDim uppercase">Guidance Accuracy (not in score)</div>
-          <div className="font-display text-2xl font-bold text-gs-gold mt-1">{breakdown.guidanceAccuracy ?? 'N/A'}</div>
-          <div className="text-[10px] font-mono text-gs-textDim mt-0.5">Reported separately · see Promises vs Actuals</div>
+        <Card className="bg-gs-panel/40 border-gs-border p-3 text-center" data-testid="overview-management-delivery">
+          <div className="text-[11px] font-mono text-gs-textDim uppercase">Management Delivery (not in score)</div>
+          {report.managementDelivery?.targetHitRateDenominator > 0 ? (
+            <>
+              <div className="font-display text-2xl font-bold text-gs-gold mt-1">
+                {report.managementDelivery.targetHitRateNumerator} of {report.managementDelivery.targetHitRateDenominator}
+              </div>
+              <div className="text-[10px] font-mono text-gs-textDim mt-0.5">completed targets met · see Promises vs Actuals</div>
+            </>
+          ) : (
+            <>
+              <div className="font-display text-base font-bold text-zinc-400 mt-1">Unavailable</div>
+              <div className="text-[10px] font-mono text-gs-textDim mt-0.5">{DELIVERY_EMPTY_TEXT[report.managementDelivery?.emptyState] || 'No completed, evaluable targets yet'}</div>
+            </>
+          )}
         </Card>
 
         <Card className="bg-gs-panel/40 border-gs-border p-3 text-center">

@@ -22,6 +22,7 @@ import CompanyHistoricalFact from '../models/CompanyHistoricalFact.js';
 import { CompanyDocumentRegistry } from '../models/CompanyDocumentRegistry.js';
 import { getDocumentBuffer } from '../providers/ExchangeFilingDocumentProvider.js';
 import { extractFactsFromDocument } from './FactExtractionService.js';
+import { describeTargetPeriod } from '../utils/promiseOutcome.js';
 
 export const OUTCOME_EVIDENCE_TYPES = Object.freeze([
   'FINANCIAL_ACTUAL',
@@ -200,18 +201,28 @@ export const matchPromiseToIndianApiEvidence = (promise, evidenceList = []) => {
 // and backfillHistoricalFacts.js's manual records) or OTHER_QUANTIFIABLE-style
 // aliases. A promise metric with no listed alias falls back to an exact
 // (case-insensitive) string match -- never a guessed mapping.
+// STRICT one-to-one: a promise metric only ever matches the identical figure.
+// The previous table matched "MARGIN" against operating and EBITDA margin,
+// EBITDA margin against operating margin, PAT against adjusted PAT, order
+// intake against the order book, free cash flow against operating cash flow
+// and gross debt against net debt -- different figures that must never be
+// compared. A growth rate is never matched against a level (see tier (a)).
+// "MARGIN" (type not stated) matches nothing.
 const FACT_METRIC_ALIASES = {
-  MARGIN: ['MARGIN', 'OPERATING_MARGIN', 'EBITDA_MARGIN'],
-  EBITDA_MARGIN: ['EBITDA_MARGIN', 'OPERATING_MARGIN'],
+  MARGIN: [],
+  REVENUE_GROWTH: [],
+  PAT_GROWTH: [],
+  EBITDA_MARGIN: ['EBITDA_MARGIN'],
+  OPERATING_MARGIN: ['OPERATING_MARGIN'],
+  EBIT_MARGIN: ['OPERATING_MARGIN'],
   REVENUE: ['REVENUE'],
-  REVENUE_GROWTH: ['REVENUE'],
-  PAT: ['PAT', 'ADJUSTED_PAT'],
-  PAT_GROWTH: ['PAT', 'ADJUSTED_PAT'],
+  PAT: ['PAT'],
   ORDER_BOOK: ['ORDER_BOOK'],
-  ORDER_INTAKE: ['ORDER_BOOK'],
-  DEBT: ['DEBT', 'NET_DEBT'],
-  DEBT_REDUCTION: ['DEBT', 'NET_DEBT'],
-  FREE_CASH_FLOW: ['FREE_CASH_FLOW', 'OPERATING_CASH_FLOW'],
+  ORDER_INTAKE: ['ORDER_INTAKE'],
+  DEBT: ['DEBT'],
+  NET_DEBT: ['NET_DEBT'],
+  DEBT_REDUCTION: [],
+  FREE_CASH_FLOW: ['FREE_CASH_FLOW'],
   NIM: ['NIM'],
 };
 
@@ -258,35 +269,199 @@ const buildLocalMatch = (promise, fact, source) => {
   };
 };
 
+// ---------------------------------------------------------------------------
+// Tier (a): exchange XBRL actuals, matched like-for-like
+// ---------------------------------------------------------------------------
+
+// The financial line a stored XBRL fact actually reports, read from the fact's
+// own sentence ("... reported Revenue from operations of X for FY2026
+// (Consolidated, Audited)."). The fact's metric key alone is NOT enough: for a
+// bank the key "REVENUE" holds Total income, which also carries other income.
+const FACT_LINE_DEFINITIONS = [
+  [/revenue from operations/i, 'REVENUE_FROM_OPERATIONS'],
+  [/\btotal income\b/i, 'TOTAL_INCOME'],
+  [/attributable to (?:the )?(?:owners|equity holders|shareholders)/i, 'PROFIT_ATTRIBUTABLE_TO_OWNERS'],
+  [/\bprofit (?:\(loss\) )?for the (?:period|year)\b/i, 'PROFIT_AFTER_TAX'],
+  [/\bdiluted earnings per share\b/i, 'DILUTED_EPS'],
+  [/\bbasic earnings per share\b/i, 'BASIC_EPS'],
+];
+const DEFINITION_WORDS = {
+  REVENUE_FROM_OPERATIONS: 'revenue from operations', TOTAL_INCOME: 'total income', PROFIT_AFTER_TAX: 'profit for the period',
+  PROFIT_ATTRIBUTABLE_TO_OWNERS: 'profit attributable to owners', BASIC_EPS: 'basic EPS', DILUTED_EPS: 'diluted EPS',
+};
+
+/** describeXbrlFact - pure. The line definition, statement basis and period granularity a stored fact states about itself. */
+export const describeXbrlFact = (fact) => {
+  const text = String(fact?.fact || '');
+  const definition = (FACT_LINE_DEFINITIONS.find(([re]) => re.test(text)) || [])[1] || null;
+  const basisMatch = text.match(/\((Consolidated|Standalone)\b/i);
+  return {
+    definition,
+    basis: basisMatch ? basisMatch[1].toUpperCase() : null,
+    period: describeTargetPeriod(fact?.period),
+    isXbrl: /\/xbrl\//i.test(String(fact?.source?.url || '')),
+  };
+};
+
+// Promise metric -> the fact series that measures it, and (for a level) the
+// line definition the guidance means when it does not name one. Growth is
+// derived from two annual levels of the SAME line and basis.
+const LEVEL_SERIES = { REVENUE: 'REVENUE', PAT: 'PAT', EPS: 'EPS' };
+const GROWTH_SERIES = { REVENUE_GROWTH: 'REVENUE', PAT_GROWTH: 'PAT' };
+const DEFAULT_DEFINITION = { REVENUE: 'REVENUE_FROM_OPERATIONS', PAT: 'PROFIT_AFTER_TAX', EPS: 'BASIC_EPS' };
+
+// Two bases whose figures differ by less than this are treated as the same
+// number for an unstated-basis target; beyond it the basis would change the
+// actual materially, so no verdict is given.
+const BASIS_AMBIGUITY_TOLERANCE = 0.02;
+
+const samePeriod = (a, b) => a && b && !a.openEnded && !b.openEnded
+  && a.granularity === b.granularity && a.fiscalYear === b.fiscalYear && a.index === b.index;
+
+const statedTargetBasis = (promise) => {
+  const explicit = String(promise.reportingBasis || '').toUpperCase();
+  if (explicit === 'CONSOLIDATED' || explicit === 'STANDALONE') return explicit;
+  const text = String(promise.statementText || '');
+  const standalone = /\bstand[- ]?alone\b/i.test(text);
+  const consolidated = /\bconsolidated\b/i.test(text);
+  return standalone !== consolidated ? (standalone ? 'STANDALONE' : 'CONSOLIDATED') : null;
+};
+
+const statedTargetDefinition = (promise, series) => {
+  if (promise.metricDefinition) return String(promise.metricDefinition).toUpperCase();
+  const text = String(promise.statementText || '');
+  if (/\btotal income\b/i.test(text)) return 'TOTAL_INCOME';
+  if (/attributable to (?:the )?(?:owners|equity holders|shareholders)/i.test(text)) return 'PROFIT_ATTRIBUTABLE_TO_OWNERS';
+  if (/\bdiluted\b/i.test(text) && series === 'EPS') return 'DILUTED_EPS';
+  return DEFAULT_DEFINITION[series];
+};
+
 /**
- * searchActualOutcomeFromHistoricalFacts - Tier (a). Looks for a
- * REAL_RESEARCH CompanyHistoricalFact this project already extracted from a
- * real primary-source document, for a period compatible with the promise's
- * targetPeriod and a metric this project's own extraction is known to
- * produce. Never fabricates: returns null if nothing compatible is on file.
+ * pickByBasis - pure. From same-line facts for one period, the value to use
+ * for a target whose basis is `targetBasis` (or null when unstated), or a
+ * specific reason there is none. Latest filing first, so a restated figure
+ * replaces the original.
+ */
+const pickByBasis = (facts, targetBasis) => {
+  const byBasis = new Map();
+  for (const f of facts) {
+    const key = f.described.basis || 'UNSTATED';
+    if (!byBasis.has(key)) byBasis.set(key, f); // facts arrive newest-first
+  }
+  if (targetBasis) {
+    const hit = byBasis.get(targetBasis);
+    return hit ? { fact: hit, note: `${targetBasis.toLowerCase()} basis, as the target states` } : { reason: `the target is stated on a ${targetBasis.toLowerCase()} basis but only ${[...byBasis.keys()].map((k) => k.toLowerCase()).join(' / ')} figures are on file` };
+  }
+  const consolidated = byBasis.get('CONSOLIDATED');
+  const standalone = byBasis.get('STANDALONE');
+  if (consolidated && standalone) {
+    const a = consolidated.metrics.actualValue;
+    const b = standalone.metrics.actualValue;
+    const diff = Math.abs(a - b) / Math.max(Math.abs(a), Math.abs(b), 1e-9);
+    if (diff > BASIS_AMBIGUITY_TOLERANCE) {
+      return { reason: `the target does not state a reporting basis, and the consolidated (${a}) and standalone (${b}) figures differ by ${(diff * 100).toFixed(1)}%, so the basis would decide the verdict` };
+    }
+    return { fact: consolidated, note: `target basis not stated; consolidated and standalone figures agree within ${BASIS_AMBIGUITY_TOLERANCE * 100}%` };
+  }
+  const only = consolidated || standalone;
+  if (only) return { fact: only, note: `target basis not stated; the only ${only.described.basis.toLowerCase()} figure on file is used` };
+  return { reason: 'the filed figure does not state whether it is consolidated or standalone' };
+};
+
+const factSentence = (f) => String(f.fact || '').replace(/\s+/g, ' ').trim();
+
+/**
+ * searchActualOutcomeFromHistoricalFacts - Tier (a). The verified actual for a
+ * promise from the company's own exchange XBRL filings (CompanyHistoricalFact
+ * rows whose source is an NSE/BSE XBRL document), matched like-for-like:
+ *   - the SAME financial line (revenue from operations is never total income;
+ *     profit for the period is never profit attributable to owners),
+ *   - the SAME period granularity, fiscal year and quarter,
+ *   - the SAME statement basis (an unstated-basis target is only scored when
+ *     the basis cannot change the figure materially),
+ *   - growth derived from two annual figures of the same line and basis.
+ * Transcript-derived facts are never used as actuals (they mix up margin types
+ * and units). Quarantined facts are excluded.
+ *
+ * Returns a match, or `{ unavailableReason }` saying exactly why there is no
+ * comparable actual -- never a guessed value, never null for a supported
+ * metric. Returns null only when the promise lacks a metric or period.
  */
 export const searchActualOutcomeFromHistoricalFacts = async (profile, promise) => {
   if (!promise?.targetPeriod || !promise?.metric) return null;
-
-  const facts = await CompanyHistoricalFact.find({
-    symbol: profile.symbol, dataOrigin: 'REAL_RESEARCH', 'metrics.actualValue': { $ne: null }, 'quarantine.quarantined': { $ne: true },
-  }).sort({ date: -1 }).lean();
-
-  for (const record of facts) {
-    if (!factMetricMatches(promise.metric, record.metrics?.metric)) continue;
-    if (!isCompatiblePeriodComparison(promise.targetPeriod, record.period)) continue;
-
-    const match = buildLocalMatch(promise, {
-      actualValue: record.metrics.actualValue, unit: record.metrics.unit, period: record.period,
-    }, {
-      title: record.source?.title, url: record.source?.url, date: record.source?.publishedAt || record.date, provider: 'company-historical-fact', confidence: record.confidence,
-    });
-    if (match) {
-      logger.info(`[OutcomeEvidence] CompanyHistoricalFact deterministic match for ${profile.symbol} ${promise.metric} ${promise.targetPeriod}`);
-      return match;
-    }
+  const metric = String(promise.metric).toUpperCase();
+  const series = LEVEL_SERIES[metric] || GROWTH_SERIES[metric];
+  if (!series) {
+    return { unavailableReason: `no verified exchange-filed actual exists for ${metric.toLowerCase().replace(/_/g, ' ')} -- the XBRL results filings on file carry revenue, profit and EPS lines only` };
   }
-  return null;
+  const target = describeTargetPeriod(promise.targetPeriod);
+  if (!target || target.openEnded) return { unavailableReason: `the target period "${promise.targetPeriod}" has no fixed end date to compare against` };
+  if (GROWTH_SERIES[metric] && target.granularity !== 'ANNUAL') {
+    return { unavailableReason: `${target.granularity.toLowerCase()} growth guidance does not say whether it is quarter-on-quarter or year-on-year, so it is not derived` };
+  }
+
+  const facts = (await CompanyHistoricalFact.find({
+    symbol: profile.symbol, dataOrigin: 'REAL_RESEARCH', 'metrics.metric': series, 'metrics.actualValue': { $ne: null }, 'quarantine.quarantined': { $ne: true },
+  }).sort({ date: -1, updatedAt: -1 }).lean())
+    .map((f) => ({ ...f, described: describeXbrlFact(f) }))
+    .filter((f) => f.described.isXbrl);
+  if (!facts.length) return { unavailableReason: `no exchange XBRL ${series.toLowerCase()} figures are on file for ${profile.symbol}` };
+
+  const definition = statedTargetDefinition(promise, series);
+  const targetBasis = statedTargetBasis(promise);
+  const sameLine = facts.filter((f) => f.described.definition === definition);
+  if (!sameLine.length) {
+    const filed = [...new Set(facts.map((f) => f.described.definition).filter(Boolean))].map((d) => DEFINITION_WORDS[d] || d);
+    return { unavailableReason: `the guidance is for ${DEFINITION_WORDS[definition] || definition}, but the company's filings report ${filed.join(' / ') || 'a different line'}; different lines are never compared` };
+  }
+
+  const at = (period) => sameLine.filter((f) => samePeriod(f.described.period, period));
+  const source = (f) => ({ url: f.source?.url || null, date: f.source?.publishedAt || f.date });
+
+  if (LEVEL_SERIES[metric]) {
+    const pick = pickByBasis(at(target), targetBasis);
+    if (!pick.fact) return { unavailableReason: pick.reason || `no filed ${DEFINITION_WORDS[definition]} figure for ${promise.targetPeriod}` };
+    const f = pick.fact;
+    const match = buildLocalMatch(promise, { actualValue: f.metrics.actualValue, unit: f.metrics.unit, period: f.period }, {
+      title: `NSE XBRL results filing (${f.period})`, url: source(f).url, date: source(f).date, provider: 'nse-xbrl', confidence: 0.95,
+    });
+    if (!match) return { unavailableReason: `the filed figure is in ${f.metrics.unit}, which cannot be compared with a target in ${promise.targetUnit}` };
+    return {
+      ...match,
+      actualPeriod: f.period,
+      outcomeStatement: `${factSentence(f)} [${pick.note}]`,
+      basis: { statementBasis: f.described.basis, metricDefinition: definition },
+    };
+  }
+
+  // Growth: year-on-year from two annual figures of the same line and basis.
+  const prior = describeTargetPeriod(`FY${target.fiscalYear - 1}`);
+  const currentPick = pickByBasis(at(target), targetBasis);
+  if (!currentPick.fact) return { unavailableReason: currentPick.reason || `no filed ${DEFINITION_WORDS[definition]} figure for FY${target.fiscalYear}` };
+  const basis = currentPick.fact.described.basis;
+  const priorPick = pickByBasis(at(prior).filter((f) => f.described.basis === basis), basis);
+  if (!priorPick.fact) return { unavailableReason: `no filed ${basis ? basis.toLowerCase() : ''} ${DEFINITION_WORDS[definition]} figure for FY${target.fiscalYear - 1}, so year-on-year growth cannot be derived` };
+  const cur = currentPick.fact.metrics.actualValue;
+  const prev = priorPick.fact.metrics.actualValue;
+  if (!(prev > 0)) return { unavailableReason: `the FY${target.fiscalYear - 1} figure (${prev}) is zero or negative, so a growth rate would be meaningless` };
+  if (financialUnitFamily(promise.targetUnit) !== financialUnitFamily('PERCENTAGE')) {
+    return { unavailableReason: `growth is a percentage, but the target is in ${promise.targetUnit}` };
+  }
+  const growth = Number((((cur - prev) / prev) * 100).toFixed(2));
+  return {
+    actualValue: growth,
+    actualUnit: 'PERCENTAGE',
+    actualPeriod: `FY${target.fiscalYear}`,
+    outcomeStatement: `Year-on-year growth of ${growth}% derived from two exchange XBRL filings of the same line and basis: ${factSentence(currentPick.fact)} ${factSentence(priorPick.fact)} [${currentPick.note}; reported-currency (INR) growth]`,
+    outcomeSource: `NSE XBRL results filings (FY${target.fiscalYear} vs FY${target.fiscalYear - 1})`,
+    outcomeSourceUrl: source(currentPick.fact).url,
+    outcomeSourceDate: source(currentPick.fact).date,
+    evidenceType: 'DOCUMENT_EVIDENCE',
+    provider: 'nse-xbrl',
+    confidence: 0.95,
+    basis: { statementBasis: basis, metricDefinition: definition, currencyBasis: 'REPORTED_CURRENCY' },
+    derivedFrom: [source(currentPick.fact).url, source(priorPick.fact).url],
+  };
 };
 
 /**
@@ -386,12 +561,18 @@ export const searchActualOutcomesLocalFirst = async (profile, promise, {
   indianApiFn = searchActualOutcomesFromIndianApi,
 } = {}) => {
   const fromFacts = await historicalFactsFn(profile, promise);
-  if (fromFacts) return fromFacts;
+  if (fromFacts && fromFacts.actualValue != null) return fromFacts;
+  // For a line the exchange XBRL filings cover (revenue / profit / EPS and their growth), tier (a) is
+  // authoritative: when it says there is no comparable figure (a different line, an ambiguous basis, a
+  // missing prior year), a looser source must not supply one instead.
+  const metric = String(promise?.metric || '').toUpperCase();
+  if (fromFacts?.unavailableReason && (LEVEL_SERIES[metric] || GROWTH_SERIES[metric])) return fromFacts;
 
   const fromDocuments = await persistedDocumentsFn(profile, promise);
   if (fromDocuments) return fromDocuments;
 
-  return indianApiFn(profile, promise);
+  const fromIndianApi = await indianApiFn(profile, promise);
+  return fromIndianApi || (fromFacts?.unavailableReason ? fromFacts : null);
 };
 
 export const searchActualOutcomesFromIndianApi = async (profile, promise) => {

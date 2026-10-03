@@ -134,7 +134,11 @@ export const buildCompanyOverride = (symbol, existingOverride, promiseRecords) =
 };
 
 const toPromotedRecord = (candidateDoc) => {
-  const { reviewStatus, reviewedBy, reviewedAt, _id, __v, createdAt, updatedAt, ...rest } = candidateDoc;
+  // reevaluation / autoReview are Mongo-side bookkeeping (job audit trail, gate reasons), not part of the
+  // published record; the published evidenceIntegrity carries the reviewer's assertion instead.
+  const {
+    reviewStatus, reviewedBy, reviewedAt, _id, __v, createdAt, updatedAt, reevaluation, autoReview, ...rest
+  } = candidateDoc;
   return rest;
 };
 
@@ -232,7 +236,11 @@ export const acceptCandidate = async (symbol, candidateId, { reviewer, secret, e
     logger.warn(`[earnings:review] companies.json update failed for ${symbol}: ${err.message}`);
   }
 
-  await PromiseCandidate.updateOne({ symbol, id: candidateId }, { reviewStatus: 'ACCEPTED', reviewedBy: reviewer, reviewedAt: new Date() });
+  // The evidence assertion is stored on the candidate too, so the acceptance is durably public from the
+  // database even where the JSON file above cannot persist (a scheduled job on an ephemeral filesystem).
+  await PromiseCandidate.updateOne({ symbol, id: candidateId }, {
+    reviewStatus: 'ACCEPTED', reviewedBy: reviewer, reviewedAt: new Date(), evidenceIntegrity: promoted.evidenceIntegrity,
+  });
 
   reloadCuratedDataset(); // refreshes this process's JSON-file cache; harmless no-op for a separate running server process
 

@@ -153,6 +153,25 @@ export const resolveCandidateMetric = (candidate) => {
 };
 
 /**
+ * outcomeQueryFor - pure. What the outcome matcher needs to match like-for-like:
+ * the metric, period, value and unit, plus the target's own words and any
+ * explicitly stated basis / line, so "standalone" or "total income" in the
+ * guidance is honoured rather than assumed away.
+ */
+export const outcomeQueryFor = (candidate, metric = resolveCandidateMetric(candidate)) => {
+  const promise = candidate?.promise || {};
+  return {
+    metric,
+    targetPeriod: promise.targetPeriod,
+    targetValue: promise.targetValue,
+    targetUnit: canonicalUnit(promise.targetUnit),
+    statementText: [promise.statement, promise.originalExcerpt, candidate?.promiseEvidence?.excerpt].filter(Boolean).join(' \n '),
+    reportingBasis: promise.reportingBasis ?? null,
+    metricDefinition: promise.metricDefinition ?? null,
+  };
+};
+
+/**
  * isDueForReevaluation - pure. Open-status pool. `curated` is the
  * createCuratedRecordLoader result for an ACCEPTED candidate (omit otherwise).
  * INSUFFICIENT_EVIDENCE is revisited whoever set it (a later filing may now
@@ -187,7 +206,8 @@ export const isDueForDriftCheck = (candidate, { curated = null } = {}) => {
  * match, or the literal NO_TIER_A_MATCH when tier (a) found nothing.
  */
 export const computeEvidenceHash = (match) => {
-  if (!match) return NO_TIER_A_MATCH;
+  // A "no comparable figure" reason is not evidence: it hashes the same as no match.
+  if (!match || match.actualValue === null || match.actualValue === undefined) return NO_TIER_A_MATCH;
   const norm = (value) => (value instanceof Date ? value.toISOString() : (value ?? null));
   const payload = JSON.stringify([
     norm(match.actualValue), norm(match.actualUnit), norm(match.actualPeriod), norm(match.outcomeSourceUrl), norm(match.outcomeSourceDate),
@@ -249,11 +269,14 @@ export const reevaluateCandidate = async (candidate, { profile, outcomeSearchFn,
     lookupFailure = `the promise's metric is not recorded and its category (${promise.category || 'none'}) does not identify one metric unambiguously, so no actual could be looked up automatically.`;
   } else if (promise.targetValue !== null && promise.targetValue !== undefined) {
     try {
-      match = await outcomeSearchFn(profile, {
-        metric, targetPeriod: promise.targetPeriod, targetValue: promise.targetValue, targetUnit: canonicalUnit(promise.targetUnit),
-      });
+      match = await outcomeSearchFn(profile, outcomeQueryFor(candidate, metric));
     } catch (error) {
       lookupFailure = `the actual-result lookup failed (${error.message}); no value was substituted.`;
+      match = null;
+    }
+    // A specific "no comparable actual" reason from the matcher (different line, ambiguous basis, ...).
+    if (match && (match.actualValue === null || match.actualValue === undefined) && match.unavailableReason) {
+      lookupFailure = match.unavailableReason;
       match = null;
     }
   }
@@ -463,13 +486,10 @@ export const runReevaluation = async ({
     if (outOfTime()) { stats.stopReason = 'the --max-runtime-min budget is used up'; break; }
     const label = `  ${String(candidate.symbol).padEnd(10)} ${String(candidate.id).padEnd(26)} drift`;
     try {
-      const promise = candidate.promise || {};
       const profile = getProfileFn(candidate.symbol);
       // Tier (a) only: DB-only and cheap. The LLM / paid tiers run only on a detected change.
       // eslint-disable-next-line no-await-in-loop
-      const tierA = await historicalFactsFn(profile, {
-        metric: resolveCandidateMetric(candidate), targetPeriod: promise.targetPeriod, targetValue: promise.targetValue, targetUnit: canonicalUnit(promise.targetUnit),
-      });
+      const tierA = await historicalFactsFn(profile, outcomeQueryFor(candidate));
       const newHash = computeEvidenceHash(tierA);
       const storedHash = candidate.reevaluation?.evidenceHash ?? null;
       stats.drift.checked += 1;

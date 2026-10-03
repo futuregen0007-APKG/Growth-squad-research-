@@ -21,6 +21,11 @@ const companyResearchProfileSchema = new mongoose.Schema({
   researchEnabled: { type: Boolean, default: true },
   aliases: { type: [String], default: [] },
   lastProfileSyncAt: { type: Date, default: null },
+  // Written by scripts/collectNseTranscripts.js after each guidance-discovery attempt (transcripts and
+  // presentations). The rotation key: the least recently attempted company goes first, so a bounded
+  // run never re-selects the same companies, and settled companies are revisited for new filings.
+  lastGuidanceDiscoveryAt: { type: Date, default: null },
+  lastGuidanceDiscoveryResult: { type: mongoose.Schema.Types.Mixed, default: null },
 }, { timestamps: true });
 
 companyResearchProfileSchema.index({ researchEnabled: 1, marketCapCr: -1 });

@@ -13,13 +13,17 @@ import CompanyHistoricalFact from '../models/CompanyHistoricalFact.js';
  * fact therefore cannot match.
  */
 
+// Tier (a) reads exchange XBRL facts only (a transcript-derived fact is never an actual), so the fixture
+// is an XBRL revenue fact whose own sentence states its line and basis, as the real collector writes it.
+const GOOD_URL = 'https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_ZZGOOD_WEB.xml';
 const fact = (overrides = {}) => ({
   dataOrigin: 'REAL_RESEARCH',
   symbol: 'ZZQUARANTINE',
   date: new Date('2026-04-15'),
   period: 'FY2026',
-  metrics: { metric: 'OPERATING_MARGIN', actualValue: 22, unit: 'PERCENTAGE' },
-  source: { title: 'Q4 FY2026 results', url: 'https://www.bseindia.com/xml-data/corpfiling/AttachLive/zz-good.pdf', publishedAt: new Date('2026-04-15') },
+  fact: 'ZZ Ltd reported Revenue from operations of 2200 INR_CRORE for FY2026 (Consolidated, Audited).',
+  metrics: { metric: 'REVENUE', actualValue: 2200, unit: 'INR_CRORE' },
+  source: { title: 'Q4 FY2026 results', url: GOOD_URL, publishedAt: new Date('2026-04-15') },
   confidence: 0.9,
   quarantine: { quarantined: false },
   ...overrides,
@@ -45,7 +49,8 @@ const mockFind = (t, docs) => {
   return queries;
 };
 
-const promise = { metric: 'MARGIN', targetValue: 20, targetUnit: 'PERCENTAGE', targetPeriod: 'FY2026' };
+const promise = { metric: 'REVENUE', targetValue: 2000, targetUnit: 'INR_CRORE', targetPeriod: 'FY2026' };
+const isMatch = (m) => m && m.actualValue != null;
 
 test('the tier-(a) query excludes quarantined facts', async (t) => {
   const queries = mockFind(t, []);
@@ -57,18 +62,20 @@ test('the tier-(a) query excludes quarantined facts', async (t) => {
 
 test('a quarantined fact is never returned as a match, even when it is the only compatible fact', async (t) => {
   mockFind(t, [fact({ quarantine: { quarantined: true, reason: 'provenance' } })]);
-  assert.equal(await searchActualOutcomeFromHistoricalFacts({ symbol: 'ZZQUARANTINE' }, promise), null);
+  const result = await searchActualOutcomeFromHistoricalFacts({ symbol: 'ZZQUARANTINE' }, promise);
+  assert.equal(isMatch(result), false);
+  assert.match(result.unavailableReason, /no exchange XBRL/);
 });
 
 test('with a quarantined and a clean fact on file, only the clean one can match', async (t) => {
   mockFind(t, [
-    fact({ metrics: { metric: 'OPERATING_MARGIN', actualValue: 99, unit: 'PERCENTAGE' }, source: { title: 'bad', url: 'https://example.invalid/bad.pdf' }, quarantine: { quarantined: true } }),
+    fact({ date: new Date('2026-05-01'), metrics: { metric: 'REVENUE', actualValue: 9900, unit: 'INR_CRORE' }, fact: 'ZZ Ltd reported Revenue from operations of 9900 INR_CRORE for FY2026 (Consolidated, Audited).', source: { title: 'bad', url: 'https://nsearchives.nseindia.com/corporate/xbrl/ZZBAD_WEB.xml' }, quarantine: { quarantined: true } }),
     fact(),
   ]);
   const match = await searchActualOutcomeFromHistoricalFacts({ symbol: 'ZZQUARANTINE' }, promise);
-  assert.ok(match);
-  assert.equal(match.actualValue, 22);
-  assert.equal(match.outcomeSourceUrl, 'https://www.bseindia.com/xml-data/corpfiling/AttachLive/zz-good.pdf');
+  assert.ok(isMatch(match));
+  assert.equal(match.actualValue, 2200);
+  assert.equal(match.outcomeSourceUrl, GOOD_URL);
 });
 
 test('a fact with no quarantine sub-document (pre-quarantine data) is still eligible', async (t) => {
@@ -76,5 +83,5 @@ test('a fact with no quarantine sub-document (pre-quarantine data) is still elig
   delete legacy.quarantine;
   mockFind(t, [legacy]);
   const match = await searchActualOutcomeFromHistoricalFacts({ symbol: 'ZZQUARANTINE' }, promise);
-  assert.equal(match?.actualValue, 22);
+  assert.equal(match?.actualValue, 2200);
 });

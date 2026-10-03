@@ -38,7 +38,9 @@ import dotenv from 'dotenv';
 import { pathToFileURL } from 'node:url';
 import { CompanyDocumentRegistry } from '../models/CompanyDocumentRegistry.js';
 import { getDocumentBuffer } from '../providers/ExchangeFilingDocumentProvider.js';
-import { extractPromisesFromPdfBuffer, buildPromiseCandidate, PROMISE_ELIGIBLE_SOURCE_TYPES } from '../services/PromiseExtractionService.js';
+import {
+  extractPromisesFromPdfBuffer, buildPromiseCandidate, PROMISE_ELIGIBLE_SOURCE_TYPES, EXTRACTION_VERSION,
+} from '../services/PromiseExtractionService.js';
 import { saveCandidates } from '../services/PromiseCandidateService.js';
 import PromiseCandidate from '../models/PromiseCandidate.js';
 import { getCompanyResearchProfile } from '../research/CompanyResearchProfiles.js';
@@ -98,7 +100,10 @@ export const runPromiseBackfillForSymbol = async (symbol, {
   const profile = getCompanyResearchProfile(normalized);
 
   const query = { symbol: normalized, sourceType: { $in: [...PROMISE_ELIGIBLE_SOURCE_TYPES] }, extractionStatus: 'EXTRACTED' };
-  if (resume) query.promiseExtractionStatus = { $ne: 'EXTRACTED' };
+  // Resumable: a document is (re)read when its promise stage has not finished, OR it was finished by an
+  // older extraction version (null = v1). Earlier candidates are never deleted -- the v2 pass writes its
+  // own records alongside them, keyed by the precise metric.
+  if (resume) query.$or = [{ promiseExtractionStatus: { $ne: 'EXTRACTED' } }, { promiseExtractionVersion: { $ne: EXTRACTION_VERSION } }];
   if (fromYear && toYear) {
     const years = [];
     for (let y = fromYear; y <= toYear; y += 1) years.push(`FY${y}`);
@@ -125,7 +130,7 @@ export const runPromiseBackfillForSymbol = async (symbol, {
         if (!buffer) throw new Error(`No durable copy and source re-fetch failed (${source})`);
 
         const extracted = await extractPromisesFromPdfBuffer(buffer, {
-          symbol: normalized, companyName: doc.companyName, sourceType: doc.sourceType, url: doc.url, title: doc.sourceType,
+          symbol: normalized, companyName: doc.companyName, sourceType: doc.sourceType, url: doc.url, title: doc.sourceType, publicationDate: doc.publicationDate,
         });
         onProgress(`${progressPrefix} -- extracted ${extracted.length} raw promise candidate(s), verifying outcomes`);
 
@@ -134,7 +139,7 @@ export const runPromiseBackfillForSymbol = async (symbol, {
           sequence += 1;
           // eslint-disable-next-line no-await-in-loop
           const record = await buildPromiseCandidate(item, {
-            symbol: normalized, url: doc.url, sourceType: doc.sourceType, title: `${doc.companyName} -- ${doc.sourceType} (${doc.fiscalYear})`, publicationDate: doc.publicationDate, profile,
+            symbol: normalized, url: doc.url, sourceType: doc.sourceType, title: doc.title || `${doc.companyName} -- ${doc.sourceType} (${doc.fiscalYear})`, publicationDate: doc.publicationDate, profile,
           }, sequence);
           if (record) candidates.push(record);
         }
@@ -145,7 +150,7 @@ export const runPromiseBackfillForSymbol = async (symbol, {
           saved = results.filter((r) => r.action === 'INSERTED' || r.action === 'UPDATED').length;
         }
 
-        await CompanyDocumentRegistry.updateOne({ _id: doc._id }, { $set: { promiseExtractionStatus: 'EXTRACTED', promisesExtracted: candidates.length } });
+        await CompanyDocumentRegistry.updateOne({ _id: doc._id }, { $set: { promiseExtractionStatus: 'EXTRACTED', promisesExtracted: candidates.length, promiseExtractionVersion: EXTRACTION_VERSION } });
         summary.documentsProcessed += 1;
         // Read in full and nothing qualified: a finding about the document, recorded apart from the failure path below.
         if (!candidates.length) summary.documentsWithNoGuidance += 1;

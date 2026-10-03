@@ -30,6 +30,11 @@ const researchJobSchema = new mongoose.Schema({
   lastError: { type: String, default: null },
   startedAt: { type: Date, default: null },
   completedAt: { type: Date, default: null },
+  // Every collection attempt, including on an already-COMPLETED job (whose status is never downgraded):
+  // the scheduled XBRL refresh rotates on this, least recently attempted first.
+  lastAttemptAt: { type: Date, default: null },
+  lastAttemptFacts: { type: Number, default: null },
+  lastAttemptError: { type: String, default: null },
   cursor: {
     lastCompletedYear: { type: Number, default: null }, // years <= this are done; resume starts at lastCompletedYear+1
   },

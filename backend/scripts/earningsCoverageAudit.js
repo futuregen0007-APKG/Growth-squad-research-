@@ -39,14 +39,14 @@ import { SUPPORTED_STOCKS, FEATURED_SYMBOLS, EARNINGS_COVERAGE_METRICS } from '.
 // Kept in sync with models/ReconciliationCheck.js's OK_STATUSES by hand, not by import: this file imports no
 // Mongoose models (see header) so connecting here never creates that collection/its indexes as a side effect.
 const RECONCILIATION_OK_STATUSES = ['MATCH', 'SUM_MATCH'];
-import { PUBLIC_SAFE_EVIDENCE_STATUSES, isPubliclyVisibleRecord } from '../utils/earningsIntelligenceValidation.js';
+import { PUBLIC_SAFE_EVIDENCE_STATUSES, isPubliclyVisibleRecord, PROMISE_DOCUMENT_TYPES } from '../utils/earningsIntelligenceValidation.js';
 import { describeMongoTarget, assertMongoTarget } from '../utils/mongoTarget.js';
 import { getFiscalWindow } from '../utils/fiscalWindow.js';
 
 const BACKEND_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-// Mirrors services/PromiseExtractionService.js PROMISE_ELIGIBLE_SOURCE_TYPES (a test pins the two together).
-export const PROMISE_ELIGIBLE_TYPES = ['EARNINGS_CALL_TRANSCRIPT', 'FINANCIAL_RESULTS'];
+// The shared list (utils/earningsIntelligenceValidation.js), also used by PromiseExtractionService -- a test pins the two together.
+export const PROMISE_ELIGIBLE_TYPES = [...PROMISE_DOCUMENT_TYPES];
 const ACTIVE_JOB_STATUSES = ['QUEUED', 'DISCOVERING', 'DOWNLOADING', 'EXTRACTING', 'VERIFYING'];
 
 export { describeMongoTarget };
@@ -360,7 +360,7 @@ export const collectCoverageRows = async (db, { symbols = null, now = new Date()
 
   for (const job of latestBy(jobs, (j) => j.symbol).values()) {
     const row = rowFor(job.symbol);
-    if (row) row.job = { status: job.status, attempt: job.attempt, lastError: job.lastError || null, processedDocuments: job.processedDocuments, fromYear: job.fromYear, toYear: job.toYear, updatedAt: job.updatedAt };
+    if (row) row.job = { status: job.status, attempt: job.attempt, lastError: job.lastError || null, processedDocuments: job.processedDocuments, fromYear: job.fromYear, toYear: job.toYear, updatedAt: job.updatedAt, lastAttemptAt: job.lastAttemptAt || null };
   }
   for (const run of latestBy(runs, (r) => r.companySymbol).values()) {
     const row = rowFor(run.companySymbol);
@@ -368,7 +368,16 @@ export const collectCoverageRows = async (db, { symbols = null, now = new Date()
   }
   for (const profile of profiles) {
     const row = rowFor(profile.symbol);
-    if (row) row.profile = { present: true, researchEnabled: profile.researchEnabled, bseScripCode: profile.bseScripCode || null, marketCapCr: profile.marketCapCr ?? null };
+    if (row) {
+      row.profile = {
+        present: true,
+        researchEnabled: profile.researchEnabled,
+        bseScripCode: profile.bseScripCode || null,
+        marketCapCr: profile.marketCapCr ?? null,
+        lastGuidanceDiscoveryAt: profile.lastGuidanceDiscoveryAt || null,
+        lastGuidanceDiscoveryResult: profile.lastGuidanceDiscoveryResult || null,
+      };
+    }
   }
 
   for (const row of rows.values()) {

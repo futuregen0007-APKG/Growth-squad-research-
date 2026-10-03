@@ -117,29 +117,33 @@ test('an unsupported/unknown symbol resolves to null, never another company\'s d
 // ---------------------------------------------------------------------------
 test('faith score is computed deterministically from status value * evidence confidence', () => {
   const records = [
-    validPromiseRecord({ id: 'TESTCO-FY2023-001', outcome: { status: 'ACHIEVED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2023-05-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 1.0, notes: null } }),
-    validPromiseRecord({ id: 'TESTCO-FY2024-001', outcome: { status: 'PARTIAL', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2024-05-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 0.5, notes: null } }),
-    validPromiseRecord({ id: 'TESTCO-FY2025-001', outcome: { status: 'MISSED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2025-05-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 1.0, notes: null } }),
+    validPromiseRecord({ id: 'TESTCO-FY2023-001', outcome: { status: 'ACHIEVED', actualValue: 12, actualUnit: 'PERCENT', evaluationDate: '2023-05-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 1.0, notes: null } }),
+    validPromiseRecord({ id: 'TESTCO-FY2024-001', outcome: { status: 'PARTIAL', actualValue: 9, actualUnit: 'PERCENT', evaluationDate: '2024-05-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 0.5, notes: null } }),
+    validPromiseRecord({ id: 'TESTCO-FY2025-001', outcome: { status: 'MISSED', actualValue: 8, actualUnit: 'PERCENT', evaluationDate: '2025-05-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 1.0, notes: null } }),
   ];
 
-  // weighted = 1*1.0 + 0.5*0.5 + 0*1.0 = 1.25; confidenceSum = 1.0+0.5+1.0 = 2.5
-  // faithScore = round(1.25 / 2.5 * 100) = 50
+  // Outcomes are recomputed from target and actual, and there is no partial credit: the record stored
+  // as "PARTIAL" (9% against an at-least-10% floor) is a miss.
+  // weighted = 1*1.0 + 0*0.5 + 0*1.0 = 1.0; confidenceSum = 1.0+0.5+1.0 = 2.5
+  // faithScore = round(1.0 / 2.5 * 100) = 40
   const result = calculateFaithScore(records);
-  assert.equal(result.faithScore, 50);
+  assert.equal(result.faithScore, 40);
   assert.equal(result.faithScoreLabel, 'Mixed execution history');
   assert.equal(result.resolvedCount, 3);
+  // 12% against an at-least-10% floor is more than 10% above it: EXCEEDED, which scores like MET.
+  assert.deepEqual(result.breakdown.map((b) => b.canonicalOutcome), ['EXCEEDED', 'MISSED', 'MISSED']);
 });
 
 test('pending promises are excluded from both the numerator and denominator', () => {
   const withoutPending = calculateFaithScore([
-    validPromiseRecord({ id: 'TESTCO-A-001', outcome: { status: 'ACHIEVED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2023-01-01', explanation: null } }),
-    validPromiseRecord({ id: 'TESTCO-A-002', outcome: { status: 'ACHIEVED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2024-01-01', explanation: null } }),
-    validPromiseRecord({ id: 'TESTCO-A-003', outcome: { status: 'ACHIEVED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2025-01-01', explanation: null } }),
+    validPromiseRecord({ id: 'TESTCO-A-001', outcome: { status: 'ACHIEVED', actualValue: 12, actualUnit: 'PERCENT', evaluationDate: '2023-01-01', explanation: null } }),
+    validPromiseRecord({ id: 'TESTCO-A-002', outcome: { status: 'ACHIEVED', actualValue: 12, actualUnit: 'PERCENT', evaluationDate: '2024-01-01', explanation: null } }),
+    validPromiseRecord({ id: 'TESTCO-A-003', outcome: { status: 'ACHIEVED', actualValue: 12, actualUnit: 'PERCENT', evaluationDate: '2025-01-01', explanation: null } }),
   ]);
   const withPendingAdded = calculateFaithScore([
-    validPromiseRecord({ id: 'TESTCO-A-001', outcome: { status: 'ACHIEVED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2023-01-01', explanation: null } }),
-    validPromiseRecord({ id: 'TESTCO-A-002', outcome: { status: 'ACHIEVED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2024-01-01', explanation: null } }),
-    validPromiseRecord({ id: 'TESTCO-A-003', outcome: { status: 'ACHIEVED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2025-01-01', explanation: null } }),
+    validPromiseRecord({ id: 'TESTCO-A-001', outcome: { status: 'ACHIEVED', actualValue: 12, actualUnit: 'PERCENT', evaluationDate: '2023-01-01', explanation: null } }),
+    validPromiseRecord({ id: 'TESTCO-A-002', outcome: { status: 'ACHIEVED', actualValue: 12, actualUnit: 'PERCENT', evaluationDate: '2024-01-01', explanation: null } }),
+    validPromiseRecord({ id: 'TESTCO-A-003', outcome: { status: 'ACHIEVED', actualValue: 12, actualUnit: 'PERCENT', evaluationDate: '2025-01-01', explanation: null } }),
     validPromiseRecord({ id: 'TESTCO-A-004', outcome: { status: 'PENDING', actualValue: null, actualUnit: null, evaluationDate: null, explanation: null }, outcomeEvidence: null }),
   ]);
 
@@ -149,9 +153,9 @@ test('pending promises are excluded from both the numerator and denominator', ()
 
 test('insufficient-evidence records are excluded from the score', () => {
   const base = [
-    validPromiseRecord({ id: 'TESTCO-B-001', outcome: { status: 'ACHIEVED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2023-01-01', explanation: null } }),
-    validPromiseRecord({ id: 'TESTCO-B-002', outcome: { status: 'ACHIEVED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2024-01-01', explanation: null } }),
-    validPromiseRecord({ id: 'TESTCO-B-003', outcome: { status: 'ACHIEVED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2025-01-01', explanation: null } }),
+    validPromiseRecord({ id: 'TESTCO-B-001', outcome: { status: 'ACHIEVED', actualValue: 12, actualUnit: 'PERCENT', evaluationDate: '2023-01-01', explanation: null } }),
+    validPromiseRecord({ id: 'TESTCO-B-002', outcome: { status: 'ACHIEVED', actualValue: 12, actualUnit: 'PERCENT', evaluationDate: '2024-01-01', explanation: null } }),
+    validPromiseRecord({ id: 'TESTCO-B-003', outcome: { status: 'ACHIEVED', actualValue: 12, actualUnit: 'PERCENT', evaluationDate: '2025-01-01', explanation: null } }),
   ];
   const withInsufficient = [
     ...base,
@@ -179,14 +183,14 @@ test('fewer than three resolved verified promises returns faithScore null, never
 
 test('evidence confidence changes the weighted score even when statuses are identical', () => {
   const highConfidence = calculateFaithScore([
-    validPromiseRecord({ id: 'TESTCO-D-001', outcome: { status: 'ACHIEVED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2023-01-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 1.0, notes: null } }),
-    validPromiseRecord({ id: 'TESTCO-D-002', outcome: { status: 'MISSED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2024-01-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 0.9, notes: null } }),
-    validPromiseRecord({ id: 'TESTCO-D-003', outcome: { status: 'ACHIEVED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2025-01-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 1.0, notes: null } }),
+    validPromiseRecord({ id: 'TESTCO-D-001', outcome: { status: 'ACHIEVED', actualValue: 12, actualUnit: 'PERCENT', evaluationDate: '2023-01-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 1.0, notes: null } }),
+    validPromiseRecord({ id: 'TESTCO-D-002', outcome: { status: 'MISSED', actualValue: 8, actualUnit: 'PERCENT', evaluationDate: '2024-01-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 0.9, notes: null } }),
+    validPromiseRecord({ id: 'TESTCO-D-003', outcome: { status: 'ACHIEVED', actualValue: 12, actualUnit: 'PERCENT', evaluationDate: '2025-01-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 1.0, notes: null } }),
   ]);
   const lowConfidenceOnTheMiss = calculateFaithScore([
-    validPromiseRecord({ id: 'TESTCO-D-001', outcome: { status: 'ACHIEVED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2023-01-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 1.0, notes: null } }),
-    validPromiseRecord({ id: 'TESTCO-D-002', outcome: { status: 'MISSED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2024-01-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 0.1, notes: null } }),
-    validPromiseRecord({ id: 'TESTCO-D-003', outcome: { status: 'ACHIEVED', actualValue: 1, actualUnit: 'PERCENT', evaluationDate: '2025-01-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 1.0, notes: null } }),
+    validPromiseRecord({ id: 'TESTCO-D-001', outcome: { status: 'ACHIEVED', actualValue: 12, actualUnit: 'PERCENT', evaluationDate: '2023-01-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 1.0, notes: null } }),
+    validPromiseRecord({ id: 'TESTCO-D-002', outcome: { status: 'MISSED', actualValue: 8, actualUnit: 'PERCENT', evaluationDate: '2024-01-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 0.1, notes: null } }),
+    validPromiseRecord({ id: 'TESTCO-D-003', outcome: { status: 'ACHIEVED', actualValue: 12, actualUnit: 'PERCENT', evaluationDate: '2025-01-01', explanation: null }, verification: { verifiedAt: '2026-09-10', verifiedBy: 'X', evidenceConfidence: 1.0, notes: null } }),
   ]);
 
   // Lowering confidence on the MISSED record raises the score (a low-confidence
@@ -337,14 +341,22 @@ test('getCompanyPromises filters by year, category and status', async () => {
   assert.equal((await getCompanyPromises('TCS', { year: '1999' })).length, 0);
   assert.equal((await getCompanyPromises('TCS', { category: 'MARGIN' })).length, 0);
   assert.equal((await getCompanyPromises('TCS', { category: 'ORDER_BOOK' })).length, 0);
-  assert.equal((await getCompanyPromises('TCS', { status: 'PARTIAL' })).length, 1);
-  assert.equal((await getCompanyPromises('TCS', { status: 'ACHIEVED' })).length, 1);
+  // Status filters apply to the RECOMPUTED outcome (the same one every tab shows): the attrition record
+  // stored as PARTIAL (13.3% against an at-most-13% ceiling) is MISSED, and the qualitative revenue
+  // statement stored as ACHIEVED has no numeric target, so it is QUALITATIVE_ONLY.
+  assert.equal((await getCompanyPromises('TCS', { status: 'PARTIAL' })).length, 0);
+  assert.equal((await getCompanyPromises('TCS', { status: 'ACHIEVED' })).length, 0);
+  assert.equal((await getCompanyPromises('TCS', { status: 'MISSED' })).length, 1);
+  assert.equal((await getCompanyPromises('TCS', { status: 'QUALITATIVE_ONLY' })).length, 1);
 });
 
 test('getCompanyTimeline forwards filters through to its summary counts', async () => {
-  const filtered = await getCompanyTimeline('TCS', { status: 'ACHIEVED' });
+  const filtered = await getCompanyTimeline('TCS', { status: 'MISSED' });
   assert.equal(filtered.summary.totalPromises, 1);
-  assert.equal(filtered.summary.achieved, 1);
+  assert.equal(filtered.summary.missed, 1);
+  assert.equal(filtered.summary.achieved, 0);
+  assert.equal(filtered.timeline[0].status, 'MISSED');
+  assert.equal(filtered.timeline[0].storedStatus, 'PARTIAL');
 });
 
 // ---------------------------------------------------------------------------

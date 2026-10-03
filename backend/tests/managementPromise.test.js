@@ -177,9 +177,11 @@ test('pending promises do not reduce weighted reliability and are tracked accura
   assert.equal(result.verifiedPromises, 3);
   assert.equal(result.pending, 1);
   assert.equal(result.fulfilled, 1);
-  assert.equal(result.missed, 1);
-  assert.equal(result.partiallyFulfilled, 1);
-  assert.ok(result.score > 5);
+  // No partial credit: a stored PARTIALLY_FULFILLED (a result short of its target) counts as a miss.
+  assert.equal(result.missed, 2);
+  assert.equal(result.partiallyFulfilled, 0);
+  // weighted: met HIGH 1.5x1 + missed LOW 0.5x0 + missed MEDIUM 1.0x0 = 1.5 of 3.0 -> 5.0 / 10; pending never lowers it.
+  assert.equal(result.score, 5);
 });
 
 test('reliability returns null score if fewer than 3 verified promises exist', () => {

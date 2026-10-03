@@ -60,14 +60,24 @@ const MONTH_INDEX = Object.freeze({
  * a results letter is not a transcript, and a row without a PDF cannot be
  * downloaded.
  */
+// An investor / analyst / earnings presentation filed as a document -- the deck itself. Companies file it
+// under "Updates", "Investor Presentation" or the analyst-meet family. Excluded: an intimation or schedule
+// of a meeting (the PDF is a cover letter, not the deck) and a recording.
+const PRESENTATION_TEXT = /\b(?:investors?|analysts?|earnings|results|corporate)\s+(?:day\s+)?presentation\b/i;
+const PRESENTATION_CATEGORY = /^\s*(?:updates|investor presentation|analysts?\/institutional investors? meet|general updates)\b/i;
+const NOT_A_DECK = /\b(?:intimation|schedule[d]?|invitation|invite|will be (?:held|made)|to be held|audio|video|recording|link)\b/i;
+
 export const classifyNseAnnouncement = (row) => {
   if (!row || !/\.pdf$/i.test(String(row.attchmntFile || ''))) return null;
   const category = String(row.desc || '');
   const text = String(row.attchmntText || '');
-  if (!CALL_FAMILY.test(category)) return null;
-  if (TRANSCRIPT_LEADING_CATEGORY.test(category) || /transcript/i.test(text)) return 'EARNINGS_CALL_TRANSCRIPT';
+  if (CALL_FAMILY.test(category) && (TRANSCRIPT_LEADING_CATEGORY.test(category) || /transcript/i.test(text))) return 'EARNINGS_CALL_TRANSCRIPT';
+  if ((PRESENTATION_CATEGORY.test(category) || CALL_FAMILY.test(category)) && PRESENTATION_TEXT.test(`${category} ${text}`) && !NOT_A_DECK.test(text)) return 'INVESTOR_PRESENTATION';
   return null;
 };
+
+/** Every document type this provider can discover (transcripts and presentations). */
+export const NSE_GUIDANCE_DOCUMENT_TYPES = Object.freeze(['EARNINGS_CALL_TRANSCRIPT', 'INVESTOR_PRESENTATION']);
 
 const fiscalYearOfDate = (date) => date.getUTCFullYear() + (date.getUTCMonth() >= 6 ? 1 : 0);
 
@@ -186,7 +196,7 @@ export const registerNseFiling = async (filing, {
   }
 
   const base = {
-    symbol: filing.symbol, companyName: filing.companyName, fiscalYear: filing.fiscalYear, sourceType: filing.documentType, url: filing.url, publicationDate: filing.publicationDate,
+    symbol: filing.symbol, companyName: filing.companyName, fiscalYear: filing.fiscalYear, sourceType: filing.documentType, url: filing.url, publicationDate: filing.publicationDate, title: filing.title || null,
   };
 
   let buffer;

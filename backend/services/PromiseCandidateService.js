@@ -266,10 +266,15 @@ export const generateCandidatesForSymbol = async (symbol, {
  * generation run must never silently overwrite a human decision.
  */
 export const saveCandidate = async (record) => {
+  // Same key as the unique index (models/PromiseCandidate.js): precise metric and scope included, so two
+  // different targets from one document never overwrite each other. v1 records have metric/scope null.
   const filter = {
     symbol: record.symbol,
     'promise.targetPeriod': record.promise.targetPeriod,
     'promise.category': record.promise.category,
+    'promise.metric': record.promise.metric ?? null,
+    'promise.scope': record.promise.scope ?? null,
+    'promise.segment': record.promise.segment ?? null,
     'promiseEvidence.sourceUrl': record.promiseEvidence.sourceUrl,
   };
 
@@ -287,7 +292,10 @@ export const saveCandidate = async (record) => {
     promiseEvidence: record.promiseEvidence,
     outcomeEvidence: record.outcomeEvidence,
     verification: record.verification,
+    extractionVersion: record.extractionVersion ?? null,
     reviewStatus: 'PENDING_REVIEW',
+    // A new extraction of this candidate invalidates any earlier gate decision; it is re-checked.
+    autoReview: null,
   };
 
   const saved = await PromiseCandidate.findOneAndUpdate(filter, update, { upsert: true, new: true }).lean();

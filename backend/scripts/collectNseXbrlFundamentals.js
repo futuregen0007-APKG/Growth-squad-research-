@@ -271,7 +271,13 @@ const collectSymbol = async (symbol, {
 const recordJob = async (result, { fromYear, toYear }) => {
   const key = { symbol: result.symbol, jobType: 'HISTORICAL_FACTS_BACKFILL', fromYear, toYear };
   const existing = await ResearchJob.findOne(key).lean();
-  if (existing?.status === 'COMPLETED') return existing.status;
+  if (existing?.status === 'COMPLETED') {
+    // Never downgraded -- but the attempt itself is recorded, because it is the scheduled refresh's
+    // rotation key (scripts/earningsXbrlBatch.js): without it a completed company would keep its old
+    // timestamp and be re-selected first on every run.
+    await ResearchJob.updateOne(key, { $set: { lastAttemptAt: new Date(), lastAttemptFacts: result.stored ?? 0, lastAttemptError: result.error || null } });
+    return existing.status;
+  }
 
   const coveredYears = (result.fiscalYears || []).filter((y) => y >= fromYear && y <= toYear);
   const outcome = deriveJobOutcome({
@@ -292,6 +298,9 @@ const recordJob = async (result, { fromYear, toYear }) => {
         processedDocuments: result.filings,
         startedAt: existing?.startedAt || new Date(),
         completedAt: new Date(),
+        lastAttemptAt: new Date(),
+        lastAttemptFacts: result.stored ?? 0,
+        lastAttemptError: result.error || null,
         cursor: { lastCompletedYear: coveredYears.length ? Math.max(...coveredYears) : null },
       },
       $inc: { attempt: 1 },

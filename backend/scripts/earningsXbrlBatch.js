@@ -42,15 +42,25 @@ import { claimRun, heartbeat, completeRun } from '../services/ScheduledJobRunSer
 const BACKEND_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const MAX_CONSECUTIVE_INDEX_FAILURES = 3;
 
-/** incompleteRows - pure. Supported companies still missing at least one fiscal year of financial coverage, alphabetical. */
+// FAIR ROTATION: the company whose XBRL collection was attempted longest ago goes first (its ResearchJob
+// row, written by recordJob on every attempt, is the durable per-company marker). Alphabetical order with
+// a runtime cap meant a weekly run refreshed the same early-alphabet companies and never reached the rest.
+const lastAttempt = (r) => {
+  const at = r.job?.lastAttemptAt || r.job?.updatedAt;
+  const t = at ? new Date(at).getTime() : NaN;
+  return Number.isFinite(t) ? t : -Infinity;
+};
+const byLastAttempt = (a, b) => (lastAttempt(a) - lastAttempt(b)) || a.symbol.localeCompare(b.symbol);
+
+/** incompleteRows - pure. Supported companies still missing at least one fiscal year of financial coverage, least recently attempted first. */
 export const incompleteRows = (rows) => rows
   .filter((r) => r.category !== 'COMPLETE' && (r.facts?.missingYears?.length ?? 0) > 0)
-  .sort((a, b) => a.symbol.localeCompare(b.symbol));
+  .sort(byLastAttempt);
 
-/** withFactsRows - pure. Supported companies that already hold real facts, alphabetical (the full-year pass revisits these). */
+/** withFactsRows - pure. Supported companies that already hold real facts, least recently attempted first (the scheduled refresh revisits these). */
 export const withFactsRows = (rows) => rows
   .filter((r) => (r.facts?.real ?? 0) > 0)
-  .sort((a, b) => a.symbol.localeCompare(b.symbol));
+  .sort(byLastAttempt);
 
 /**
  * planBatch - pure. The next symbols to process: the explicit list if given,

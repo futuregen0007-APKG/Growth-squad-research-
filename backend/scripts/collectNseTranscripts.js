@@ -57,11 +57,23 @@ import { claimRun, heartbeat, completeRun } from '../services/ScheduledJobRunSer
 const BACKEND_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const MAX_CONSECUTIVE_FAILURES = 4;
 
+const discoveredAt = (r) => {
+  const t = r.profile?.lastGuidanceDiscoveryAt ? new Date(r.profile.lastGuidanceDiscoveryAt).getTime() : NaN;
+  return Number.isFinite(t) ? t : -Infinity; // never attempted -> first
+};
+
 /**
- * planTranscriptBatch - pure. Supported companies whose promise stage is not
- * settled (never run, documents still pending, or documents that failed), in
- * the requested priority order then alphabetically, minus anything already
- * attempted in this run.
+ * planTranscriptBatch - pure. FAIR ROTATION over the whole supported universe:
+ * the requested priority symbols first, then every company ordered by when
+ * its guidance discovery was last attempted (never-attempted first, then
+ * oldest), unsettled before settled on a tie, then alphabetically -- minus
+ * anything already attempted in this run.
+ *
+ * It used to take only "unsettled" companies alphabetically, with no memory
+ * between runs: a company with no transcript on NSE stays NOT_RUN for ever, so
+ * every bounded (weekly cron) run re-selected the same alphabetically-first
+ * companies, and a settled company was never revisited -- so its NEXT
+ * quarter's call would never be discovered.
  */
 export const planTranscriptBatch = (rows, {
   batchSize = 10, explicit = null, attempted = new Set(), priority = [],
@@ -74,11 +86,33 @@ export const planTranscriptBatch = (rows, {
   } else {
     const rank = new Map(priority.map((symbol, i) => [symbol, i]));
     candidates = rows
-      .filter(unsettled)
-      .sort((a, b) => ((rank.get(a.symbol) ?? Infinity) - (rank.get(b.symbol) ?? Infinity)) || a.symbol.localeCompare(b.symbol));
+      .filter((r) => r.profile?.researchEnabled !== false)
+      .sort((a, b) => ((rank.get(a.symbol) ?? Infinity) - (rank.get(b.symbol) ?? Infinity))
+        || (discoveredAt(a) - discoveredAt(b))
+        || (Number(unsettled(b)) - Number(unsettled(a)))
+        || a.symbol.localeCompare(b.symbol));
   }
   return candidates.filter((r) => !attempted.has(r.symbol)).slice(0, batchSize).map((r) => r.symbol);
 };
+
+/** discoveryRecord - pure. What is written to the company profile after one attempt. */
+export const discoveryRecord = (result, at = new Date()) => ({
+  lastGuidanceDiscoveryAt: at,
+  lastGuidanceDiscoveryResult: {
+    at,
+    discovered: result.discovered,
+    byType: result.byType || {},
+    registered: result.registered,
+    duplicates: result.duplicates,
+    downloadFailed: result.downloadFailed,
+    promiseDocsProcessed: result.promiseDocsProcessed,
+    noGuidanceDocs: result.noGuidanceDocs,
+    promiseFailures: result.promiseFailures,
+    candidates: result.candidates,
+    noDocuments: Boolean(result.noTranscripts),
+    error: result.error || null,
+  },
+});
 
 /** shouldStopTranscripts - pure. Why the run must stop now, or null. */
 export const shouldStopTranscripts = ({
@@ -116,7 +150,11 @@ export const processSymbol = async (symbol, {
   let filings = found.filings;
   if (maxDocs) filings = filings.slice(-maxDocs);
   result.discovered = filings.length;
-  for (const filing of filings) result.byFiscalYear[filing.fiscalYear] = (result.byFiscalYear[filing.fiscalYear] || 0) + 1;
+  result.byType = {};
+  for (const filing of filings) {
+    result.byFiscalYear[filing.fiscalYear] = (result.byFiscalYear[filing.fiscalYear] || 0) + 1;
+    result.byType[filing.documentType] = (result.byType[filing.documentType] || 0) + 1;
+  }
   result.noTranscripts = filings.length === 0;
   if (dryRun) return result;
 
@@ -167,6 +205,7 @@ const parseArgs = (argv) => {
     dryRun: argv.includes('--dry-run'),
     label: get('--label') || 'transcripts',
     noOverlapGuard: argv.includes('--no-overlap-guard'),
+    documentTypes: list('--document-types'),
   };
 };
 
@@ -185,8 +224,14 @@ if (isMainModule) {
 
     const window = getFiscalWindow();
     const fromYear = args.fromYear ?? window.fromYear;
-    const toYear = args.toYear ?? window.toYear;
-    const { searchNseAnnouncements, registerNseFiling, configureNseDiscoveryConcurrency } = await import('../providers/NseAnnouncementProvider.js');
+    // The financial window ends at the last COMPLETED fiscal year, but guidance for the year in progress is
+    // given on THIS year's calls -- so discovery runs through the current fiscal year by default.
+    const now = new Date();
+    const currentFiscalYear = now.getUTCMonth() >= 3 ? now.getUTCFullYear() + 1 : now.getUTCFullYear();
+    const toYear = args.toYear ?? Math.max(window.toYear, currentFiscalYear);
+    const {
+      searchNseAnnouncements, registerNseFiling, configureNseDiscoveryConcurrency, NSE_GUIDANCE_DOCUMENT_TYPES,
+    } = await import('../providers/NseAnnouncementProvider.js');
     const { runPromiseBackfillForSymbol } = await import('./backfillPromises.js');
     const { configurePromiseExtractionConcurrency } = await import('../services/PromiseExtractionService.js');
     const { getDocumentBuffer } = await import('../providers/ExchangeFilingDocumentProvider.js');
@@ -248,7 +293,7 @@ if (isMainModule) {
       dryRun: args.dryRun,
       skipPromises: args.skipPromises,
       maxDocs: args.maxDocs,
-      discover: (symbol, range) => searchNseAnnouncements(symbol, range),
+      discover: (symbol, range) => searchNseAnnouncements(symbol, { ...range, documentTypes: args.documentTypes || NSE_GUIDANCE_DOCUMENT_TYPES }),
       register: (filing) => registerNseFiling(filing),
       runPromises: (symbol, options) => runPromiseBackfillForSymbol(symbol, {
         resume: true,
@@ -298,6 +343,11 @@ if (isMainModule) {
           consecutiveFailures = failed ? consecutiveFailures + 1 : 0;
           const line = { at: new Date().toISOString(), symbol, seconds: Math.round((Date.now() - t0) / 1000), ...result };
           fs.appendFileSync(ledger, `${JSON.stringify(line)}\n`);
+          // Durable rotation marker (Render's filesystem is ephemeral, so the ledger above is not enough).
+          if (!args.dryRun) {
+            // eslint-disable-next-line no-await-in-loop
+            await mongoose.connection.db.collection('companyresearchprofiles').updateOne({ symbol }, { $set: discoveryRecord(result) }).catch((err) => console.warn(`  (could not record discovery attempt for ${symbol}: ${err.message})`));
+          }
           const years = Object.entries(result.byFiscalYear).map(([fy, n]) => `${fy}:${n}`).join(' ') || 'none';
           console.log(`  ${symbol.padEnd(12)} transcripts=${result.discovered} [${years}] registered=${result.registered} dup=${result.duplicates} dlFail=${result.downloadFailed} | promise docs=${result.promiseDocsProcessed} noGuidance=${result.noGuidanceDocs} failed=${result.promiseFailures} candidates=${result.candidates} ${line.seconds}s${result.error ? ` | ${result.error}` : ''}${result.noTranscripts && !result.error ? ' | NO TRANSCRIPTS ON NSE IN WINDOW' : ''}`);
           stopReason = shouldStopTranscripts({

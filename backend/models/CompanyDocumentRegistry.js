@@ -40,6 +40,11 @@ const companyDocumentRegistrySchema = new mongoose.Schema({
   // produced zero promises without mistaking it for "not yet processed"
   // (promisesExtracted:0 alone is ambiguous between those two cases).
   promiseExtractionStatus: { type: String, enum: ['PENDING', 'EXTRACTED', 'FAILED'], default: 'PENDING', index: true },
+  // Which promise-extraction version last read this document (null = v1, before versioning). A document
+  // read by an older version is re-read by the current one on a resumed run, with no status reset.
+  promiseExtractionVersion: { type: String, default: null },
+  // The exchange's own announcement text for the filing (e.g. "Analyst Presentation - Q4 / FY26").
+  title: { type: String, default: null },
   fetchedAt: { type: Date, default: null },
   error: { type: String, default: null },
 }, { timestamps: true });

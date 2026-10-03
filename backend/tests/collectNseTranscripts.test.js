@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  planTranscriptBatch, shouldStopTranscripts, processSymbol, MAX_CONSECUTIVE_FAILURES, estimateModelCostUsd,
+  planTranscriptBatch, shouldStopTranscripts, processSymbol, MAX_CONSECUTIVE_FAILURES, estimateModelCostUsd, discoveryRecord,
 } from '../scripts/collectNseTranscripts.js';
 
 /**
@@ -13,25 +13,59 @@ import {
  * "found nothing" stays apart from "could not look".
  */
 
-const row = (symbol, promiseStage = 'NOT_RUN', registry = {}) => ({ symbol, promiseStage, registry: { promisePending: 0, promiseFailed: 0, ...registry } });
+const row = (symbol, promiseStage = 'NOT_RUN', registry = {}, lastGuidanceDiscoveryAt = null) => ({
+  symbol, promiseStage, registry: { promisePending: 0, promiseFailed: 0, ...registry }, profile: { researchEnabled: true, lastGuidanceDiscoveryAt },
+});
 
-test('companies with an unsettled promise stage are selected: never run, documents pending, or documents failed', () => {
+test('fair rotation: never-attempted companies first, then the least recently attempted, settled companies included', () => {
   const rows = [
-    row('SETTLED', 'EXTRACTED_NONE_FOUND'),
-    row('NEVER'),
-    row('PENDING_DOCS', 'CANDIDATES_PENDING_REVIEW', { promisePending: 2 }),
-    row('FAILED_DOCS', 'ACCEPTED_PRESENT', { promiseFailed: 1 }),
-    row('DONE_WITH_CANDIDATES', 'CANDIDATES_PENDING_REVIEW'),
+    row('SETTLED_OLD', 'EXTRACTED_NONE_FOUND', {}, '2026-01-01T00:00:00Z'),
+    row('NEVER_B'),
+    row('RECENT', 'NOT_RUN', {}, '2026-09-30T00:00:00Z'),
+    row('NEVER_A', 'CANDIDATES_PENDING_REVIEW', { promisePending: 2 }),
+    row('MIDDLE', 'ACCEPTED_PRESENT', { promiseFailed: 1 }, '2026-06-01T00:00:00Z'),
   ];
-  assert.deepEqual(planTranscriptBatch(rows, { batchSize: 10 }), ['FAILED_DOCS', 'NEVER', 'PENDING_DOCS']);
+  // A settled company is revisited (its next quarter's call must be found); it just waits its turn.
+  assert.deepEqual(planTranscriptBatch(rows, { batchSize: 10 }), ['NEVER_A', 'NEVER_B', 'SETTLED_OLD', 'MIDDLE', 'RECENT']);
+});
+
+test('on a tie in last attempt, unsettled companies go before settled ones, then alphabetically', () => {
+  const at = '2026-05-01T00:00:00Z';
+  const rows = [row('B_SETTLED', 'EXTRACTED_NONE_FOUND', {}, at), row('C_UNSETTLED', 'NOT_RUN', {}, at), row('A_SETTLED', 'ACCEPTED_PRESENT', {}, at)];
+  assert.deepEqual(planTranscriptBatch(rows, { batchSize: 10 }), ['C_UNSETTLED', 'A_SETTLED', 'B_SETTLED']);
+});
+
+test('consecutive bounded runs never re-select the same companies once each attempt is recorded', () => {
+  let clock = Date.parse('2026-10-01T00:00:00Z');
+  const rows = ['AAA', 'BBB', 'CCC', 'DDD', 'EEE'].map((s) => row(s, 'NOT_RUN'));
+  const seen = [];
+  for (let run = 0; run < 3; run += 1) {
+    const batch = planTranscriptBatch(rows, { batchSize: 2 });
+    seen.push(batch);
+    // What the collector writes after each company (discoveryRecord): a newer attempt timestamp.
+    for (const symbol of batch) { clock += 1000; rows.find((r) => r.symbol === symbol).profile.lastGuidanceDiscoveryAt = new Date(clock).toISOString(); }
+  }
+  assert.deepEqual(seen, [['AAA', 'BBB'], ['CCC', 'DDD'], ['EEE', 'AAA']]);
 });
 
 test('priority order, batch size, attempted companies and an explicit list are honoured', () => {
   const rows = [row('AAA'), row('BBB'), row('CCC'), row('DDD', 'EXTRACTED_NONE_FOUND')];
-  assert.deepEqual(planTranscriptBatch(rows, { batchSize: 10, priority: ['CCC', 'BBB'] }), ['CCC', 'BBB', 'AAA']);
+  assert.deepEqual(planTranscriptBatch(rows, { batchSize: 10, priority: ['CCC', 'BBB'] }), ['CCC', 'BBB', 'AAA', 'DDD']);
   assert.deepEqual(planTranscriptBatch(rows, { batchSize: 2 }), ['AAA', 'BBB']);
-  assert.deepEqual(planTranscriptBatch(rows, { batchSize: 10, attempted: new Set(['AAA']) }), ['BBB', 'CCC']);
+  assert.deepEqual(planTranscriptBatch(rows, { batchSize: 10, attempted: new Set(['AAA']) }), ['BBB', 'CCC', 'DDD']);
   assert.deepEqual(planTranscriptBatch(rows, { batchSize: 10, explicit: ['DDD', 'ZZZ', 'AAA'] }), ['DDD', 'AAA']);
+});
+
+test('discoveryRecord records the attempt time and an honest result: no documents, error, and counts by type', () => {
+  const at = new Date('2026-10-03T00:00:00Z');
+  const record = discoveryRecord({
+    discovered: 0, byType: {}, registered: 0, duplicates: 0, downloadFailed: 0, promiseDocsProcessed: 0, noGuidanceDocs: 0, promiseFailures: 0, candidates: 0, noTranscripts: true, error: null,
+  }, at);
+  assert.equal(record.lastGuidanceDiscoveryAt, at);
+  assert.equal(record.lastGuidanceDiscoveryResult.noDocuments, true);
+  assert.equal(record.lastGuidanceDiscoveryResult.error, null);
+  const failed = discoveryRecord({ discovered: 0, error: 'discovery failed: NSE returned a non-JSON page', noTranscripts: false }, at);
+  assert.match(failed.lastGuidanceDiscoveryResult.error, /non-JSON/);
 });
 
 test('the run stops on repeated failure, the time budget or the batch limit, and otherwise continues', () => {

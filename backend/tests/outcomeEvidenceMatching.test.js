@@ -99,39 +99,56 @@ const cleanupTestFacts = async () => {
   await CompanyHistoricalFact.deleteMany({ symbol: TEST_SYMBOL });
 };
 
-test('searchActualOutcomeFromHistoricalFacts matches a real REAL_RESEARCH fact for a compatible period and equivalent metric', async (t) => {
+const xbrlFact = (overrides = {}) => ({
+  dataOrigin: 'REAL_RESEARCH',
+  symbol: TEST_SYMBOL,
+  companyName: 'ZZ Test Outcome Co',
+  date: new Date('2026-05-05'),
+  period: 'FY2026',
+  category: 'FINANCIAL_PERFORMANCE',
+  title: 'FY2026 revenue from operations',
+  fact: 'ZZ Test Outcome Co reported Revenue from operations of 2200 INR_CRORE for FY2026 (Consolidated, Audited).',
+  metrics: { metric: 'REVENUE', actualValue: 2200, unit: 'INR_CRORE' },
+  source: { type: 'QUARTERLY_REPORT', title: 'Integrated filing', url: 'https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_ZZTEST_FY26_WEB.xml', publishedAt: new Date('2026-05-05'), excerpt: 'RevenueFromOperations 2200 (Consolidated)' },
+  confidence: 0.95,
+  ...overrides,
+});
+
+test('searchActualOutcomeFromHistoricalFacts matches an exchange XBRL figure of the same line, period and basis', async (t) => {
   t.after(cleanupTestFacts);
   await cleanupTestFacts();
+  await CompanyHistoricalFact.create(xbrlFact());
 
-  await CompanyHistoricalFact.create({
-    dataOrigin: 'REAL_RESEARCH',
-    symbol: TEST_SYMBOL,
-    companyName: 'ZZ Test Outcome Co',
-    date: new Date('2026-04-15'),
-    period: 'FY2026',
-    category: 'FINANCIAL_PERFORMANCE',
-    title: 'FY2026 full-year operating margin',
+  const match = await searchActualOutcomeFromHistoricalFacts({ symbol: TEST_SYMBOL }, { metric: 'REVENUE', targetValue: 2000, targetUnit: 'INR_CRORE', targetPeriod: 'FY2026' });
+  assert.equal(match.actualValue, 2200);
+  assert.equal(match.provider, 'nse-xbrl');
+  assert.equal(match.actualPeriod, 'FY2026');
+  assert.match(match.outcomeStatement, /Revenue from operations/);
+  assert.match(match.outcomeStatement, /Consolidated/);
+});
+
+test('an unspecified "margin" target is never matched against a specific margin, and a transcript-derived fact is never an actual', async (t) => {
+  t.after(cleanupTestFacts);
+  await cleanupTestFacts();
+  // The kind of fact the old alias table matched a MARGIN target against: a transcript sentence, a specific margin type.
+  await CompanyHistoricalFact.create(xbrlFact({
     fact: 'ZZ Test Outcome Co reported FY2026 operating margin of 22%.',
     metrics: { metric: 'OPERATING_MARGIN', actualValue: 22, unit: 'PERCENTAGE' },
     source: { type: 'EARNINGS_CALL_TRANSCRIPT', title: 'Q4 FY2026 earnings call transcript', url: 'https://www.bseindia.com/xml-data/corpfiling/AttachLive/zztest-outcome.pdf', publishedAt: new Date('2026-04-15'), excerpt: 'Our FY26 operating margin was at 22%.' },
-    confidence: 0.9,
-  });
-
-  const promise = { metric: 'MARGIN', targetValue: 20, targetUnit: 'PERCENTAGE', targetPeriod: 'FY2026' };
-  const match = await searchActualOutcomeFromHistoricalFacts({ symbol: TEST_SYMBOL }, promise);
-  assert.ok(match, 'a compatible REAL_RESEARCH fact must produce a match');
-  assert.equal(match.actualValue, 22);
-  assert.equal(match.provider, 'company-historical-fact');
-  assert.equal(match.outcomeSourceUrl, 'https://www.bseindia.com/xml-data/corpfiling/AttachLive/zztest-outcome.pdf');
+  }));
+  const margin = await searchActualOutcomeFromHistoricalFacts({ symbol: TEST_SYMBOL }, { metric: 'MARGIN', targetValue: 20, targetUnit: 'PERCENTAGE', targetPeriod: 'FY2026' });
+  assert.equal(margin.actualValue, undefined);
+  assert.match(margin.unavailableReason, /no verified exchange-filed actual/);
+  const operating = await searchActualOutcomeFromHistoricalFacts({ symbol: TEST_SYMBOL }, { metric: 'EBIT_MARGIN', targetValue: 20, targetUnit: 'PERCENTAGE', targetPeriod: 'FY2026' });
+  assert.equal(operating.actualValue, undefined, 'a transcript sentence is not an exchange-filed actual');
 });
 
-test('searchActualOutcomeFromHistoricalFacts returns null (never guesses) when no compatible fact exists', async (t) => {
+test('searchActualOutcomeFromHistoricalFacts never guesses: no figure on file gives a specific reason, not a value', async (t) => {
   t.after(cleanupTestFacts);
   await cleanupTestFacts();
-
-  const promise = { metric: 'MARGIN', targetValue: 20, targetUnit: 'PERCENTAGE', targetPeriod: 'FY2099' };
-  const match = await searchActualOutcomeFromHistoricalFacts({ symbol: TEST_SYMBOL }, promise);
-  assert.equal(match, null);
+  const match = await searchActualOutcomeFromHistoricalFacts({ symbol: TEST_SYMBOL }, { metric: 'REVENUE', targetValue: 20, targetUnit: 'INR_CRORE', targetPeriod: 'FY2099' });
+  assert.equal(match.actualValue, undefined);
+  assert.match(match.unavailableReason, /no exchange XBRL revenue figures are on file/);
 });
 
 test('searchActualOutcomesLocalFirst returns the CompanyHistoricalFact match and never even calls IndianAPI when tier (a) already resolves it', async () => {
